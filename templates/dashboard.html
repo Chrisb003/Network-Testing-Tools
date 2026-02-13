@@ -27,36 +27,21 @@
 <div class="container mt-4">
     <h1 class="text-center mb-4">Network Diagnostics Dashboard</h1>
 
-    <div class="row mb-4">
-        <div class="col-md-4">
-            <div class="alert alert-info shadow-sm text-center">
-                <small class="text-muted d-block">Local LAN IP</small>
-                <strong>{{ local_ip }}</strong>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="alert alert-primary shadow-sm text-center">
-                <small class="text-muted d-block">Public WAN IP</small>
-                <strong id="header-wan-ip">{{ wan_ip }}</strong>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="alert alert-warning shadow-sm text-center">
-                <small class="text-muted d-block">Service Provider</small>
-                <strong id="header-isp">{{ isp_name }}</strong>
-            </div>
-        </div>
+        <div class="row mb-2 text-center">
+        <div class="col-md-4"><div class="alert alert-info shadow-sm py-2 small">LAN: <strong>{{ local_ip }}</strong></div></div>
+        <div class="col-md-4"><div class="alert alert-primary shadow-sm py-2 small">WAN: <strong id="header-wan-ip">{{ wan_ip }}</strong></div></div>
+        <div class="col-md-4"><div class="alert alert-warning shadow-sm py-2 small">ISP: <strong id="header-isp">{{ isp_name }}</strong></div></div>
     </div>
 
     <div class="row mb-4 text-center">
         <div class="col-md-6">
             <div class="alert alert-secondary shadow-sm py-2 small">
-                Router IP (Gateway): <strong>{{ router_ip }}</strong>
+                Router IP (Gateway): <strong id="header-router-ip">{{ router_ip }}</strong>
             </div>
         </div>
         <div class="col-md-6">
             <div class="alert alert-secondary shadow-sm py-2 small">
-                DNS Servers: <strong>{{ dns_servers }}</strong>
+                DNS Servers: <strong id="header-dns">{{ dns_servers }}</strong>
             </div>
         </div>
     </div>
@@ -297,42 +282,74 @@
 
     // --- Network Adapters Logic ---
     function fetchAdapters() {
-        const noMac = document.getElementById('hideNoMacCheck').checked, 
-              hidden = document.getElementById('showHiddenCheck').checked;
-              
-        fetch('/api/adapters').then(r=>r.json()).then(data => {
-            // Update live metrics cards
-            document.getElementById('live-down').innerText = data.global_speed.download;
-            document.getElementById('live-up').innerText = data.global_speed.upload;
+        // 1. Get filter states
+        const noMac = document.getElementById('hideNoMacCheck').checked;
+        const hidden = document.getElementById('showHiddenCheck').checked;
             
-            const tbody = document.getElementById('adapter-table'); 
-            tbody.innerHTML = '';
-            
-            data.adapters.forEach(a => {
-                // Filter No-MAC adapters (Loopback)
-                if(noMac && (a.mac === '-' || !a.mac)) return;
-                // Filter Hidden adapters
-                if(!a.visible && !hidden) return;
+        fetch('/api/adapters')
+            .then(r => r.json())
+            .then(data => {
+                // Safety Check: If the backend sent an error or malformed data
+                if (!data || !data.adapters) {
+                    console.error("Malformed data received from /api/adapters", data);
+                    return;
+                }
+
+                // 2. Update Live Metrics (MB/s)
+                if (data.global_speed) {
+                    document.getElementById('live-down').innerText = data.global_speed.download || "0.00 MB/s";
+                    document.getElementById('live-up').innerText = data.global_speed.upload || "0.00 MB/s";
+                }
+
+                // 3. Update Dynamic Header Info
+                if (data.primary_router && data.primary_router !== "Unknown") {
+                    document.getElementById('header-router-ip').innerText = data.primary_router;
+                }
+                if (data.primary_dns && data.primary_dns !== "Unknown") {
+                    document.getElementById('header-dns').innerText = data.primary_dns;
+                }
                 
-                const statusCls = a.status === 'Active' ? 'status-active' : 'status-inactive';
-                const opacity = !a.visible ? 'opacity-50' : '';
+                // 4. Build the Table
+                const tbody = document.getElementById('adapter-table'); 
+                if (!tbody) return; // Prevent errors if table isn't on current page
                 
-                tbody.innerHTML += `
-                <tr class="${opacity}">
-                    <td><strong>${a.name}</strong></td>
-                    <td class="text-muted small">${a.id}</td>
-                    <td class="${statusCls}">${a.status}</td>
-                    <td class="font-monospace small">${a.mac}</td>
-                    <td>${a.ip4}</td>
-                    <td>${a.gateway}</td>
-                    <td>${a.dns}</td>
-                    <td>${a.speed}</td>
-                    <td class="text-end">
-                        <i class="bi bi-pencil edit-icon" onclick="openAdapterConfig('${a.mac}','${a.id}','${a.name}',${a.visible})"></i>
-                    </td>
-                </tr>`;
+                let htmlBuffer = ''; // Using a buffer is more efficient than innerHTML += in a loop
+                
+                data.adapters.forEach(a => {
+                    // Apply Filter: Hide Loopback/Virtual (No-MAC)
+                    if (noMac && (a.mac === '-' || !a.mac)) return;
+                    
+                    // Apply Filter: Hide User-flagged adapters
+                    if (!a.visible && !hidden) return;
+                    
+                    const statusCls = a.status === 'Active' ? 'status-active' : 'status-inactive';
+                    const opacityClass = !a.visible ? 'opacity-50' : '';
+                    
+                    htmlBuffer += `
+                    <tr class="${opacityClass}">
+                        <td><strong>${a.name}</strong></td>
+                        <td class="text-muted small">${a.id}</td>
+                        <td class="${statusCls}">${a.status}</td>
+                        <td class="font-monospace small">${a.mac}</td>
+                        <td>${a.ip4}</td>
+                        <td>${a.gateway}</td>
+                        <td>${a.dns}</td>
+                        <td>${a.speed}</td>
+                        <td class="text-end">
+                            <i class="bi bi-gear edit-icon" 
+                            onclick="openAdapterConfig('${a.mac}','${a.id}','${a.name}',${a.visible})">
+                            </i>
+                        </td>
+                    </tr>`;
+                });
+                
+                tbody.innerHTML = htmlBuffer;
+            })
+            .catch(err => {
+                console.error("Fetch Error:", err);
+                const tbody = document.getElementById('adapter-table');
+                if (tbody) tbody.innerHTML = `<tr><td colspan="9" class="text-center text-danger">Connection Error: ${err.message}</td></tr>`;
             });
-        });
     }
 
     function openAdapterConfig(mac, id, name, vis) {

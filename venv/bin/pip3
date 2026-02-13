@@ -1,4 +1,4 @@
-#!/Users/chrisblewett/Documents/GitHub/Network-Testing-Tools/venv/bin/python3
+#!/Users/chrisblewett/Documents/GitHub/Network-Testing-Tools/venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

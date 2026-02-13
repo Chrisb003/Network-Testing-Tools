@@ -11,6 +11,7 @@ import csv
 import io
 import base64
 import re
+import os
 from datetime import datetime
 from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp
@@ -146,28 +147,58 @@ def get_local_ip():
         s.close()
 
 def get_extended_iface_info():
-    """Gathers Gateway (Router IP) and DNS details for network interfaces."""
     info_map = {}
     system = platform.system()
     try:
         if system == "Windows":
             output = subprocess.check_output(["ipconfig", "/all"], text=True)
-            curr_adapter = None
+            curr = None
             for line in output.split('\n'):
                 line = line.strip()
                 if "adapter" in line and ":" in line:
-                    curr_adapter = line.split("adapter")[-1].replace(":", "").strip()
-                    info_map[curr_adapter] = {"gateway": "-", "dns": "-"}
-                if curr_adapter:
-                    if "Default Gateway" in line and ":" in line:
-                        info_map[curr_adapter]["gateway"] = line.split(":")[1].strip()
-                    elif "DNS Servers" in line and ":" in line:
-                        info_map[curr_adapter]["dns"] = line.split(":")[1].strip()
-        else:
-            # Fallback for Linux/Mac - can be expanded with 'nmcli' or 'scutil' if needed
+                    curr = line.split("adapter")[-1].replace(":", "").strip()
+                    info_map[curr] = {"gateway": "-", "dns": "-"}
+                if curr:
+                    if "Default Gateway" in line and ":" in line: 
+                        info_map[curr]["gateway"] = line.split(":")[1].strip()
+                    elif "DNS Servers" in line and ":" in line: 
+                        info_map[curr]["dns"] = line.split(":")[1].strip()
+                        
+        elif system == "Darwin":  # macOS Logic
+            # 1. Get Default Gateway (Router IP)
+            # We look for the 'default' route in the routing table
+            gateway = "-"
+            try:
+                # 'netstat -nr' shows the routing table; we look for the default gateway
+                route_output = subprocess.check_output(["netstat", "-nr"], text=True)
+                for line in route_output.split('\n'):
+                    if "default" in line:
+                        parts = line.split()
+                        if len(parts) > 1:
+                            gateway = parts[1]
+                            break
+            except: pass
+
+            # 2. Get DNS Servers
+            dns_servers = "-"
+            try:
+                # 'scutil --dns' provides detailed DNS configuration
+                dns_output = subprocess.check_output(["scutil", "--dns"], text=True)
+                # We typically want the first nameserver listed in Resolver #1
+                for line in dns_output.split('\n'):
+                    if "nameserver[0]" in line:
+                        dns_servers = line.split(":")[1].strip()
+                        break
+            except: pass
+
+            # On Mac, these are usually global settings for the active interface
+            info_map["global"] = {"gateway": gateway, "dns": dns_servers}
+            
+        else: # Linux Fallback
             info_map["global"] = {"gateway": "-", "dns": "-"}
-    except:
-        pass
+            
+    except Exception as e:
+        print(f"Error fetching extended info: {e}")
     return info_map
 
 # --- Bandwidth Tracking Logic ---
@@ -198,11 +229,35 @@ def get_bandwidth():
 
 # --- Device Discovery & Port Scanning ---
 def resolve_hostname(ip):
-    """Attempts a Reverse DNS lookup to find a device name."""
+    """
+    Improved hostname resolution for macOS.
+    Tries system resolver first, then falls back to the system ARP cache.
+    """
+    # Method 1: Standard System Resolver
     try:
-        return socket.gethostbyaddr(ip)[0]
+        name = socket.gethostbyaddr(ip)[0]
+        if name and not name.startswith(ip):
+            return name
     except:
-        return "Unknown Device"
+        pass
+
+    # Method 2: System ARP Cache (Often has names on macOS)
+    try:
+        # Run 'arp -a' and look for the IP
+        arp_output = subprocess.check_output(["arp", "-a"], text=True)
+        for line in arp_output.split('\n'):
+            if ip in line:
+                # Format is usually: hostname (ip) at mac_address ...
+                # Example: router (192.168.1.1) at 0:1:2:3:4:5
+                match = re.search(r'^(\S+)\s+\(', line)
+                if match:
+                    name = match.group(1)
+                    if name != "?" and name != ip:
+                        return name
+    except:
+        pass
+
+    return "Unknown Device"
 
 def check_open_ports(ip):
     """Scans specific ports to identify web interfaces or SSH services."""
@@ -282,48 +337,75 @@ def index():
 
 @app.route('/api/adapters')
 def get_adapters():
-    """Fetches adapter list merged with persistent database settings."""
+    """
+    Fetches all network interfaces, merges them with persistent DB settings,
+    calculates live global bandwidth, and identifies primary Router/DNS info.
+    """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     extended_info = get_extended_iface_info()
     
-    # Load saved settings (Name/Visibility) from DB
+    # Initialize variables for the dynamic Header update
+    primary_gateway = "Unknown"
+    primary_dns = "Unknown"
+    
+    # Load user-defined settings (Custom Names & Visibility) from the database
     settings_map = {}
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings")
-        for row in c.fetchall():
-            settings_map[row[0]] = {"custom_name": row[1], "is_visible": row[2]}
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            c = conn.cursor()
+            c.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings")
+            for row in c.fetchall():
+                # Keyed by MAC address (or System ID for Loopback)
+                settings_map[row[0]] = {"custom_name": row[1], "is_visible": row[2]}
+    except Exception as e:
+        print(f"Database error in get_adapters: {e}")
 
+    # Iterate through all hardware and virtual interfaces detected by the OS
     for iface_name, addrs in interfaces.items():
         iface_stats = stats.get(iface_name)
+        
+        # Basic status and speed
         is_up = "Active" if (iface_stats and iface_stats.isup) else "Inactive"
         link_speed = f"{iface_stats.speed} Mbps" if (iface_stats and iface_stats.speed > 0) else "N/A"
         
+        # Extract IP and MAC addresses
         ip4, ip6, mac = "-", "-", "-"
         for addr in addrs:
-            if addr.family == socket.AF_INET: ip4 = addr.address
-            elif addr.family == socket.AF_INET6: ip6 = addr.address.split('%')[0]
-            elif addr.family == psutil.AF_LINK: mac = addr.address
+            if addr.family == socket.AF_INET:
+                ip4 = addr.address
+            elif addr.family == socket.AF_INET6:
+                ip6 = addr.address.split('%')[0] # Clean IPv6 scope ID
+            elif addr.family == psutil.AF_LINK:
+                mac = addr.address
 
-        # Determine Gateway/DNS
+        # Retrieve Gateway and DNS from extended system info
+        # Windows uses specific names; Mac/Linux typically fall back to 'global'
         gateway = extended_info.get(iface_name, {}).get("gateway", "-")
         dns = extended_info.get(iface_name, {}).get("dns", "-")
+        
         if gateway == "-" and is_up == "Active":
             gateway = extended_info.get("global", {}).get("gateway", "-")
             dns = extended_info.get("global", {}).get("dns", "-")
 
-        # Apply User Customization (Keyed by MAC, fallback to ID)
+        # If this interface is active and has a gateway, nominate it for the Header display
+        if is_up == "Active" and gateway != "-" and primary_gateway == "Unknown":
+            primary_gateway = gateway
+            primary_dns = dns
+
+        # Apply User Customization (DB Lookup)
+        # Use MAC as primary key; fallback to Interface Name for No-MAC adapters (Loopback)
         user_name = iface_name
         is_visible = True
-        key = mac if (mac and mac != "-") else iface_name
+        db_key = mac if (mac and mac != "-") else iface_name
         
-        if key in settings_map:
-            if settings_map[key]["custom_name"]: 
-                user_name = settings_map[key]["custom_name"]
-            is_visible = bool(settings_map[key]["is_visible"])
+        if db_key in settings_map:
+            if settings_map[db_key]["custom_name"]: 
+                user_name = settings_map[db_key]["custom_name"]
+            is_visible = bool(settings_map[db_key]["is_visible"])
             
+        # Append the processed adapter data
         adapters_data.append({
             "id": iface_name,
             "name": user_name,
@@ -337,7 +419,13 @@ def get_adapters():
             "visible": is_visible
         })
         
-    return jsonify({"adapters": adapters_data, "global_speed": get_bandwidth()})
+    # Final combined response: Table Data + Live Usage + Header Info
+    return jsonify({
+        "adapters": adapters_data, # The list of interfaces
+        "global_speed": get_bandwidth(),
+        "primary_router": primary_gateway,
+        "primary_dns": primary_dns
+    })
 
 @app.route('/api/adapters/update', methods=['POST'])
 def update_adapter_settings():
@@ -389,7 +477,10 @@ def scan_network():
 
 @app.route('/api/wifi')
 def get_wifi_networks():
-    """Scans for available Wi-Fi networks visible to the hardware."""
+    """
+    Scans for available Wi-Fi networks.
+    Handles macOS 'Status 5' (Access Denied) by suggesting permission fixes.
+    """
     networks = []
     sys_plat = platform.system()
     try:
@@ -397,26 +488,66 @@ def get_wifi_networks():
             output = subprocess.check_output(["netsh", "wlan", "show", "network", "mode=bssid"], text=True)
             ssid = ""
             for line in output.split('\n'):
-                if line.strip().startswith("SSID"): 
+                line = line.strip()
+                if line.startswith("SSID"): 
                     ssid = line.split(":")[1].strip()
-                elif line.strip().startswith("Signal") and ssid:
+                elif line.startswith("Signal") and ssid:
                     networks.append({"ssid": ssid, "signal": line.split(":")[1].strip()})
                     ssid = ""
+
+        elif sys_plat == "Darwin":  # macOS Logic
+            # Check for the airport utility first
+            airport_paths = [
+                "/usr/sbin/airport",
+                "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+            ]
+            
+            for path in airport_paths:
+                if os.path.exists(path):
+                    try:
+                        output = subprocess.check_output([path, "-s"], text=True)
+                        lines = output.strip().split('\n')
+                        for line in lines[1:]:
+                            parts = line.split()
+                            if len(parts) >= 3:
+                                networks.append({"ssid": parts[0], "signal": f"{parts[2]} dBm"})
+                        return jsonify(networks)
+                    except subprocess.CalledProcessError:
+                        continue
+
+            # Fallback to networksetup
+            try:
+                # Detect active Wi-Fi interface
+                iface_out = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
+                wifi_iface = "en0"
+                if "Wi-Fi" in iface_out:
+                    lines = iface_out.split('\n')
+                    for i, line in enumerate(lines):
+                        if "Wi-Fi" in line:
+                            wifi_iface = lines[i+1].split(":")[1].strip()
+                            break
+                
+                output = subprocess.check_output(["networksetup", "-getavailablenetworks", wifi_iface], text=True)
+                for line in output.strip().split('\n'):
+                    ssid = line.strip()
+                    if ssid and "Available networks" not in ssid:
+                        networks.append({"ssid": ssid, "signal": "N/A"})
+            except subprocess.CalledProcessError as e:
+                if e.returncode == 5:
+                    return jsonify({"error": "Permission Denied: Enable Location Services for Terminal/Python."})
+                return jsonify({"error": f"macOS Error: {str(e)}"})
+
         elif sys_plat == "Linux":
             cmd = ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi"]
             out = subprocess.check_output(cmd, text=True)
             for line in out.strip().split('\n'):
                 p = line.split(':')
                 if len(p) >= 2: 
-                    networks.append({"ssid": p[0], "signal": p[1] + "%", "security": p[2] if len(p)>2 else "N/A"})
-        elif sys_plat == "Darwin": # macOS
-            cmd = ["/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport", "-s"]
-            out = subprocess.check_output(cmd, text=True)
-            for line in out.split('\n')[1:]: # Skip header
-                p = line.split()
-                if len(p) >= 2: 
-                    networks.append({"ssid": p[0], "signal": p[2] + " dBm"})
-    except: pass
+                    networks.append({"ssid": p[0], "signal": p[1] + "%", "security": p[2] if len(p) > 2 else "N/A"})
+                    
+    except Exception as e:
+        return jsonify({"error": str(e)})
+        
     return jsonify(networks)
 
 @app.route('/api/speedtest', methods=['POST'])
