@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Network Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <style>
+        body { padding-bottom: 70px; }
+        .hidden { display: none; }
+        .nav-link { cursor: pointer; }
+        .status-active { color: #198754; font-weight: bold; }
+        .status-inactive { color: #dc3545; }
+        .version-footer { position: fixed; bottom: 0; left: 0; width: 100%; background: #212529; color: #adb5bd; font-size: 0.85em; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #343a40; z-index: 1000; }
+        .ver-tag { cursor: pointer; margin-left: 15px; padding: 3px 8px; border-radius: 4px; border: 1px solid #444; transition: 0.2s; }
+        .ver-tag:hover { background: #343a40; color: #fff; }
+        .ver-update { color: #ffc107; border-color: #ffc107; font-weight: bold; }
+        .edit-icon { cursor: pointer; color: #6c757d; font-size: 0.9em; }
+        .edit-icon:hover { color: #0d6efd; }
+    </style>
+</head>
+<body class="bg-light">
+
+<div class="container mt-4">
+    <div class="row mb-4 text-center">
+        <div class="col-md-4"><div class="alert alert-info shadow-sm small">LAN: <strong>{{ local_ip }}</strong></div></div>
+        <div class="col-md-4"><div class="alert alert-primary shadow-sm small">WAN: <strong id="header-wan-ip">{{ wan_ip }}</strong></div></div>
+        <div class="col-md-4"><div class="alert alert-warning shadow-sm small">ISP: <strong id="header-isp">{{ isp_name }}</strong></div></div>
+    </div>
+
+    <ul class="nav nav-pills mb-4 justify-content-center">
+        <li class="nav-item"><a class="nav-link active" onclick="showPage('adapters', this)">Adapters</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('devices', this)">Devices</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">History</a></li>
+    </ul>
+
+    <div id="adapters" class="page-section">
+        <div class="card shadow-sm mb-4">
+            <div class="card-body row align-items-center">
+                <div class="col-md-8"><input type="text" id="st-network-name" class="form-control" placeholder="Network Name"></div>
+                <div class="col-md-2"><select id="st-conn-type" class="form-select"><option>Ethernet</option><option>Wi-Fi</option></select></div>
+                <div class="col-md-2"><button class="btn btn-primary w-100" onclick="runSpeedTest()">Speed Test</button></div>
+                <div id="speedtest-result" class="col-12 mt-2 text-center small text-muted"></div>
+            </div>
+        </div>
+        <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between">
+                <h5 class="mb-0">Interfaces</h5>
+                <div class="d-flex gap-3">
+                    <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="fetchAdapters()"><label class="small">Hide No-MAC</label></div>
+                    <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="showHiddenCheck" onchange="fetchAdapters()"><label class="small">Show Hidden</label></div>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0 small">
+                    <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>MAC</th><th>IPv4</th><th>Gateway</th><th>DNS</th><th>Speed</th><th></th></tr></thead>
+                    <tbody id="adapter-table"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="devices" class="page-section hidden">
+        <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Devices</h5>
+                <div class="d-flex gap-2">
+                    <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
+                    <button class="btn btn-success btn-sm" onclick="scanDevices()">Scan</button>
+                    <button class="btn btn-outline-primary btn-sm" onclick="exportDevicesCSV()">CSV</button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0 small">
+                    <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC</th><th>Services</th></tr></thead>
+                    <tbody id="device-list"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="wifi" class="page-section hidden">
+        <div class="card shadow-sm">
+            <div class="card-header"><button class="btn btn-info btn-sm float-end text-white" onclick="scanWifi()">Refresh</button><h5 class="mb-0 pt-1">Networks</h5></div>
+            <div class="card-body"><div class="row" id="wifi-list"></div></div>
+        </div>
+    </div>
+
+    <div id="history" class="page-section hidden">
+        <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">History</h5>
+                <div class="d-flex gap-2">
+                    <input type="text" id="history-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterHistory()">
+                    <button class="btn btn-outline-primary btn-sm" onclick="exportHistoryCSV()">CSV</button>
+                    <button class="btn btn-outline-danger btn-sm" onclick="clearHistory()">Clear</button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0 small">
+                    <thead><tr><th>Date</th><th>Name</th><th>ISP</th><th>Type</th><th>Down</th><th>Up</th><th>Ping</th></tr></thead>
+                    <tbody id="history-table"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="version-footer">
+    <div>Network Tool Beta</div>
+    <div>
+        <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Global: {{ global_version }}</span>
+        <span class="ver-tag" onclick="openUpdateModal()">Setup: {{ setup_version }}</span>
+        <span class="ver-tag" onclick="openUpdateModal()">App: {{ app_version }}</span>
+    </div>
+</div>
+
+<div class="modal fade" id="updateModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Update & Changelog</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div id="update-msg" class="alert alert-info">Checking...</div><pre id="changelog-text" class="bg-light p-3 border rounded small" style="white-space: pre-wrap;"></pre></div><div class="modal-footer"><button id="btn-apply" class="btn btn-success" disabled onclick="applyUpdate()">Update</button></div></div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    let updateModal, allDevices = [], allHistory = [], remoteVer = "0.0.0";
+
+    document.addEventListener("DOMContentLoaded", () => {
+        updateModal = new bootstrap.Modal(document.getElementById('updateModal'));
+        fetch('/api/get_last_name').then(r=>r.json()).then(d => { 
+            if(d.last_name) document.getElementById('st-network-name').value = d.last_name;
+            document.getElementById('header-wan-ip').innerText = d.wan_ip;
+            document.getElementById('header-isp').innerText = d.isp;
+        });
+        fetchAdapters(); checkUpdates();
+    });
+
+    function showPage(id, link) {
+        document.querySelectorAll('.page-section').forEach(p => p.classList.add('hidden'));
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        document.getElementById(id).classList.remove('hidden'); link.classList.add('active');
+        if(id === 'history') fetchHistory();
+    }
+
+    function fetchAdapters() {
+        const noMac = document.getElementById('hideNoMacCheck').checked, hidden = document.getElementById('showHiddenCheck').checked;
+        fetch('/api/adapters').then(r=>r.json()).then(data => {
+            const tbody = document.getElementById('adapter-table'); tbody.innerHTML = '';
+            data.adapters.forEach(a => {
+                if(noMac && (a.mac === '-' || !a.mac)) return;
+                if(!a.visible && !hidden) return;
+                const statusCls = a.status === 'Active' ? 'status-active' : 'status-inactive';
+                const opacity = !a.visible ? 'opacity-50' : '';
+                tbody.innerHTML += `<tr class="${opacity}"><td>${a.name}</td><td class="text-muted">${a.id}</td><td class="${statusCls}">${a.status}</td><td>${a.mac}</td><td>${a.ip4}</td><td>${a.gateway}</td><td>${a.dns}</td><td>${a.speed}</td><td><i class="bi bi-gear edit-icon" onclick="editAdapter('${a.mac}','${a.id}','${a.name}',${a.visible})"></i></td></tr>`;
+            });
+        });
+    }
+
+    function editAdapter(mac, id, name, vis) {
+        const newName = prompt("Adapter Name:", name);
+        const hide = confirm("Display this adapter?");
+        fetch('/api/adapters/update', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mac:mac, id:id, name:newName||name, visible:hide})}).then(()=>fetchAdapters());
+    }
+
+    function scanDevices() {
+        const tb = document.getElementById('device-list'); tb.innerHTML = '<tr><td colspan="4" class="text-center">Scanning...</td></tr>';
+        fetch('/api/scan_network').then(r=>r.json()).then(d => {
+            allDevices = d; renderDevices(d);
+        });
+    }
+
+    function renderDevices(d) {
+        document.getElementById('device-list').innerHTML = d.map(x => `<tr><td>${x.hostname}</td><td>${x.has_web ? `<a href="http://${x.ip}:${x.web_port}" target="_blank">${x.ip}</a>` : x.ip}</td><td>${x.mac}</td><td><span class="badge bg-info text-dark">${x.services}</span></td></tr>`).join('');
+    }
+
+    function filterDevices() {
+        const q = document.getElementById('device-filter').value.toLowerCase();
+        renderDevices(allDevices.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q))));
+    }
+
+    function fetchHistory() {
+        fetch('/api/history').then(r=>r.json()).then(d => { allHistory = d; renderHistory(d); });
+    }
+
+    function renderHistory(d) {
+        document.getElementById('history-table').innerHTML = d.map(x => `<tr onclick="editHistory(${x.id},'${x.network_name}')"><td><small>${x.timestamp}</small></td><td>${x.network_name}</td><td>${x.isp}</td><td>${x.connection_type}</td><td class="text-primary">${x.download}</td><td class="text-success">${x.upload}</td><td>${x.ping}</td></tr>`).join('');
+    }
+
+    function filterHistory() {
+        const q = document.getElementById('history-filter').value.toLowerCase();
+        renderHistory(allHistory.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q))));
+    }
+
+    function editHistory(id, old) {
+        const n = prompt("Rename network for this entry:", old);
+        if(n) fetch('/api/history/update', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:id, name:n})}).then(()=>fetchHistory());
+    }
+
+    function checkUpdates() {
+        fetch('/api/update/check').then(r=>r.json()).then(d => {
+            if(d.status==='success') {
+                remoteVer = d.remote_version;
+                if(remoteVer !== "{{ app_version }}") {
+                    const tag = document.getElementById('ver-global');
+                    tag.classList.add('ver-update'); tag.innerHTML += ' <i class="bi bi-arrow-up-circle"></i>';
+                }
+            }
+        });
+    }
+
+    function openUpdateModal() {
+        updateModal.show();
+        fetch('/api/update/changelog').then(r=>r.json()).then(d => {
+            document.getElementById('changelog-text').innerText = d.changelog || "No changelog found.";
+            const msg = document.getElementById('update-msg');
+            if(remoteVer !== "{{ app_version }}") {
+                msg.className = "alert alert-warning"; msg.innerText = "New update " + remoteVer + " is available.";
+                document.getElementById('btn-apply').disabled = false;
+            } else {
+                msg.className = "alert alert-success"; msg.innerText = "You are up to date.";
+            }
+        });
+    }
+
+    function runSpeedTest() {
+        const res = document.getElementById('speedtest-result'); res.innerHTML = "Testing...";
+        fetch('/api/speedtest', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({network_name: document.getElementById('st-network-name').value, connection_type: document.getElementById('st-conn-type').value})}).then(r=>r.json()).then(d => { res.innerHTML = d.error || "Done: " + d.download; });
+    }
+
+    function exportDevicesCSV() { fetch('/api/devices/export', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({rows:allDevices})}).then(r=>r.blob()).then(b=> { const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download='devices.csv'; a.click(); }); }
+    function exportHistoryCSV() { fetch('/api/history/export', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({rows:allHistory})}).then(r=>r.blob()).then(b=> { const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download='history.csv'; a.click(); }); }
+    function clearHistory() { if(confirm("Clear history?")) fetch('/api/history/clear', {method:'POST'}).then(()=>fetchHistory()); }
+    function scanWifi() { document.getElementById('wifi-list').innerHTML = "Scanning..."; fetch('/api/wifi').then(r=>r.json()).then(d => { document.getElementById('wifi-list').innerHTML = d.map(n=>`<div class="col-md-3 mb-2"><div class="card p-2 small"><strong>${n.ssid}</strong><br>Signal: ${n.signal}</div></div>`).join(''); }); }
+</script>
+</body>
+</html>
