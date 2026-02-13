@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Network Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Diagnostics Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
     <style>
@@ -11,50 +12,126 @@
         .nav-link { cursor: pointer; }
         .status-active { color: #198754; font-weight: bold; }
         .status-inactive { color: #dc3545; }
-        .version-footer { position: fixed; bottom: 0; left: 0; width: 100%; background: #212529; color: #adb5bd; font-size: 0.85em; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #343a40; z-index: 1000; }
+        .metric-card { background: #fff; border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #dee2e6; }
+        .version-footer { position: fixed; bottom: 0; left: 0; width: 100%; background: #212529; color: #adb5bd; font-size: 0.85em; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; z-index: 1000; }
         .ver-tag { cursor: pointer; margin-left: 15px; padding: 3px 8px; border-radius: 4px; border: 1px solid #444; transition: 0.2s; }
         .ver-tag:hover { background: #343a40; color: #fff; }
         .ver-update { color: #ffc107; border-color: #ffc107; font-weight: bold; }
-        .edit-icon { cursor: pointer; color: #6c757d; font-size: 0.9em; }
+        .edit-icon { cursor: pointer; color: #6c757d; font-size: 1.1em; }
         .edit-icon:hover { color: #0d6efd; }
+        #history-table tr { cursor: pointer; }
     </style>
 </head>
 <body class="bg-light">
 
 <div class="container mt-4">
+    <h1 class="text-center mb-4">Network Diagnostics Dashboard</h1>
+
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="alert alert-info shadow-sm text-center">
+                <small class="text-muted d-block">Local LAN IP</small>
+                <strong>{{ local_ip }}</strong>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="alert alert-primary shadow-sm text-center">
+                <small class="text-muted d-block">Public WAN IP</small>
+                <strong id="header-wan-ip">{{ wan_ip }}</strong>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="alert alert-warning shadow-sm text-center">
+                <small class="text-muted d-block">Service Provider</small>
+                <strong id="header-isp">{{ isp_name }}</strong>
+            </div>
+        </div>
+    </div>
+
     <div class="row mb-4 text-center">
-        <div class="col-md-4"><div class="alert alert-info shadow-sm small">LAN: <strong>{{ local_ip }}</strong></div></div>
-        <div class="col-md-4"><div class="alert alert-primary shadow-sm small">WAN: <strong id="header-wan-ip">{{ wan_ip }}</strong></div></div>
-        <div class="col-md-4"><div class="alert alert-warning shadow-sm small">ISP: <strong id="header-isp">{{ isp_name }}</strong></div></div>
+        <div class="col-md-6">
+            <div class="alert alert-secondary shadow-sm py-2 small">
+                Router IP (Gateway): <strong>{{ router_ip }}</strong>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="alert alert-secondary shadow-sm py-2 small">
+                DNS Servers: <strong>{{ dns_servers }}</strong>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="metric-card shadow-sm">
+                <small class="text-muted d-block">Real-time Download</small>
+                <h3 id="live-down" class="text-primary mb-0">0.00 MB/s</h3>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="metric-card shadow-sm">
+                <small class="text-muted d-block">Real-time Upload</small>
+                <h3 id="live-up" class="text-success mb-0">0.00 MB/s</h3>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="metric-card shadow-sm text-start" style="padding: 12px 20px;">
+                <div class="row g-2 align-items-center">
+                    <div class="col-6">
+                        <input type="text" id="st-network-name" class="form-control form-control-sm" placeholder="Location Name (e.g. Home)">
+                    </div>
+                    <div class="col-3">
+                        <select id="st-conn-type" class="form-select form-select-sm">
+                            <option value="Ethernet">Ethernet</option>
+                            <option value="Wi-Fi">Wi-Fi</option>
+                        </select>
+                    </div>
+                    <div class="col-3">
+                        <button class="btn btn-primary btn-sm w-100" id="btn-speedtest" onclick="runSpeedTest()">Speed Test</button>
+                    </div>
+                </div>
+                <div id="speedtest-result" class="mt-2 small fw-bold text-center text-muted">Ready</div>
+            </div>
+        </div>
     </div>
 
     <ul class="nav nav-pills mb-4 justify-content-center">
-        <li class="nav-item"><a class="nav-link active" onclick="showPage('adapters', this)">Adapters</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('devices', this)">Devices</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">History</a></li>
+        <li class="nav-item"><a class="nav-link active" onclick="showPage('adapters', this)">Interfaces</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('devices', this)">Connected Devices</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi Networks</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">Test History</a></li>
     </ul>
 
     <div id="adapters" class="page-section">
-        <div class="card shadow-sm mb-4">
-            <div class="card-body row align-items-center">
-                <div class="col-md-8"><input type="text" id="st-network-name" class="form-control" placeholder="Network Name"></div>
-                <div class="col-md-2"><select id="st-conn-type" class="form-select"><option>Ethernet</option><option>Wi-Fi</option></select></div>
-                <div class="col-md-2"><button class="btn btn-primary w-100" onclick="runSpeedTest()">Speed Test</button></div>
-                <div id="speedtest-result" class="col-12 mt-2 text-center small text-muted"></div>
-            </div>
-        </div>
         <div class="card shadow-sm">
-            <div class="card-header d-flex justify-content-between">
-                <h5 class="mb-0">Interfaces</h5>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Network Adapters</h5>
                 <div class="d-flex gap-3">
-                    <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="fetchAdapters()"><label class="small">Hide No-MAC</label></div>
-                    <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="showHiddenCheck" onchange="fetchAdapters()"><label class="small">Show Hidden</label></div>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="fetchAdapters()">
+                        <label class="form-check-label small" for="hideNoMacCheck">Hide No-MAC</label>
+                    </div>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="showHiddenCheck" onchange="fetchAdapters()">
+                        <label class="form-check-label small" for="showHiddenCheck">Show Hidden</label>
+                    </div>
                 </div>
             </div>
             <div class="card-body p-0">
                 <table class="table table-striped mb-0 small">
-                    <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>MAC</th><th>IPv4</th><th>Gateway</th><th>DNS</th><th>Speed</th><th></th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Custom Name</th>
+                            <th>Adapter ID</th>
+                            <th>Status</th>
+                            <th>MAC Address</th>
+                            <th>IPv4</th>
+                            <th>Gateway</th>
+                            <th>DNS</th>
+                            <th>Link Speed</th>
+                            <th></th>
+                        </tr>
+                    </thead>
                     <tbody id="adapter-table"></tbody>
                 </table>
             </div>
@@ -63,17 +140,24 @@
 
     <div id="devices" class="page-section hidden">
         <div class="card shadow-sm">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Devices</h5>
-                <div class="d-flex gap-2">
+            <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
+                <h5 class="mb-0 text-nowrap me-3">Network Discovery</h5>
+                <div class="d-flex gap-2 flex-nowrap align-items-center">
                     <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
-                    <button class="btn btn-success btn-sm" onclick="scanDevices()">Scan</button>
-                    <button class="btn btn-outline-primary btn-sm" onclick="exportDevicesCSV()">CSV</button>
+                    <button class="btn btn-success btn-sm text-nowrap" onclick="scanDevices()">Scan Network</button>
+                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevicesCSV()">Export CSV</button>
                 </div>
-            </div>
+                    </div>
             <div class="card-body p-0">
                 <table class="table table-striped mb-0 small">
-                    <thead><tr><th>Hostname</th><th>IP Address</th><th>MAC</th><th>Services</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Hostname</th>
+                            <th>IP Address</th>
+                            <th>MAC Address</th>
+                            <th>Open Services</th>
+                        </tr>
+                    </thead>
                     <tbody id="device-list"></tbody>
                 </table>
             </div>
@@ -82,24 +166,40 @@
 
     <div id="wifi" class="page-section hidden">
         <div class="card shadow-sm">
-            <div class="card-header"><button class="btn btn-info btn-sm float-end text-white" onclick="scanWifi()">Refresh</button><h5 class="mb-0 pt-1">Networks</h5></div>
-            <div class="card-body"><div class="row" id="wifi-list"></div></div>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Available Wi-Fi Networks</h5>
+                <button class="btn btn-info btn-sm text-white" onclick="scanWifi()">Refresh Scan</button>
+            </div>
+            <div class="card-body p-3">
+                <div class="row" id="wifi-list"></div>
+            </div>
         </div>
     </div>
 
     <div id="history" class="page-section hidden">
         <div class="card shadow-sm">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">History</h5>
-                <div class="d-flex gap-2">
-                    <input type="text" id="history-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterHistory()">
-                    <button class="btn btn-outline-primary btn-sm" onclick="exportHistoryCSV()">CSV</button>
-                    <button class="btn btn-outline-danger btn-sm" onclick="clearHistory()">Clear</button>
-                </div>
-            </div>
+           <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
+                <h5 class="mb-0 text-nowrap me-3">Speed Test History</h5>
+                    <div class="d-flex gap-2 flex-nowrap align-items-center">
+                        <input type="text" id="history-filter" class="form-control form-control-sm" placeholder="Filter history..." onkeyup="filterHistory()">
+                        <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportHistoryCSV()">Export CSV</button>
+                        <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="clearHistory()">Clear History</button>
+                    </div>
+</div>
             <div class="card-body p-0">
                 <table class="table table-hover mb-0 small">
-                    <thead><tr><th>Date</th><th>Name</th><th>ISP</th><th>Type</th><th>Down</th><th>Up</th><th>Ping</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Date & Time</th>
+                            <th>Network Name</th>
+                            <th>ISP</th>
+                            <th>Type</th>
+                            <th>Download</th>
+                            <th>Upload</th>
+                            <th>Ping</th>
+                            <th>WAN IP</th>
+                        </tr>
+                    </thead>
                     <tbody id="history-table"></tbody>
                 </table>
             </div>
@@ -107,8 +207,56 @@
     </div>
 </div>
 
+<div class="modal fade" id="adapterModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Adapter Configuration</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-mac">
+                <input type="hidden" id="modal-sys-id">
+                <div class="mb-3">
+                    <label class="form-label">Custom Friendly Name</label>
+                    <input type="text" id="modal-custom-name" class="form-control" placeholder="e.g. Primary Ethernet">
+                </div>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="modal-visible" checked>
+                    <label class="form-check-label" for="modal-visible">Display this adapter in the dashboard list</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveAdapterSettings()">Apply Settings</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="updateModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">System Update & Changelog</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="update-msg" class="alert alert-info">Checking repository for updates...</div>
+                <h6>Release Notes (README.md)</h6>
+                <div class="bg-light p-3 border rounded small" style="max-height: 400px; overflow-y: auto;">
+                    <pre id="changelog-text" style="white-space: pre-wrap; font-family: inherit;">Loading...</pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button id="btn-apply" class="btn btn-success" disabled onclick="applyUpdate()">Download & Update</button>
+            </div>
+        </div>
+    </div>
+</div>
 <div class="version-footer">
-    <div>Network Tool Beta</div>
+    <div>Network Diagnostics <span class="badge bg-secondary">BETA</span></div>
     <div>
         <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Global: {{ global_version }}</span>
         <span class="ver-tag" onclick="openUpdateModal()">Setup: {{ setup_version }}</span>
@@ -116,58 +264,127 @@
     </div>
 </div>
 
-<div class="modal fade" id="updateModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Update & Changelog</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div id="update-msg" class="alert alert-info">Checking...</div><pre id="changelog-text" class="bg-light p-3 border rounded small" style="white-space: pre-wrap;"></pre></div><div class="modal-footer"><button id="btn-apply" class="btn btn-success" disabled onclick="applyUpdate()">Update</button></div></div></div></div>
-
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    let updateModal, allDevices = [], allHistory = [], remoteVer = "0.0.0";
+    let updateModal, adapterModal, allDevices = [], allHistory = [], remoteVer = "0.0.0";
 
+    // --- Initialization ---
     document.addEventListener("DOMContentLoaded", () => {
         updateModal = new bootstrap.Modal(document.getElementById('updateModal'));
+        adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
+        
+        // Auto-populate the Speed Test name based on last used for this WAN IP
         fetch('/api/get_last_name').then(r=>r.json()).then(d => { 
             if(d.last_name) document.getElementById('st-network-name').value = d.last_name;
             document.getElementById('header-wan-ip').innerText = d.wan_ip;
             document.getElementById('header-isp').innerText = d.isp;
         });
-        fetchAdapters(); checkUpdates();
+
+        // Start live interface monitoring
+        setInterval(fetchAdapters, 2000); 
+        fetchAdapters(); 
+        checkUpdates();
     });
 
+    // --- Page Navigation ---
     function showPage(id, link) {
         document.querySelectorAll('.page-section').forEach(p => p.classList.add('hidden'));
         document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-        document.getElementById(id).classList.remove('hidden'); link.classList.add('active');
+        document.getElementById(id).classList.remove('hidden'); 
+        link.classList.add('active');
         if(id === 'history') fetchHistory();
     }
 
+    // --- Network Adapters Logic ---
     function fetchAdapters() {
-        const noMac = document.getElementById('hideNoMacCheck').checked, hidden = document.getElementById('showHiddenCheck').checked;
+        const noMac = document.getElementById('hideNoMacCheck').checked, 
+              hidden = document.getElementById('showHiddenCheck').checked;
+              
         fetch('/api/adapters').then(r=>r.json()).then(data => {
-            const tbody = document.getElementById('adapter-table'); tbody.innerHTML = '';
+            // Update live metrics cards
+            document.getElementById('live-down').innerText = data.global_speed.download;
+            document.getElementById('live-up').innerText = data.global_speed.upload;
+            
+            const tbody = document.getElementById('adapter-table'); 
+            tbody.innerHTML = '';
+            
             data.adapters.forEach(a => {
+                // Filter No-MAC adapters (Loopback)
                 if(noMac && (a.mac === '-' || !a.mac)) return;
+                // Filter Hidden adapters
                 if(!a.visible && !hidden) return;
+                
                 const statusCls = a.status === 'Active' ? 'status-active' : 'status-inactive';
                 const opacity = !a.visible ? 'opacity-50' : '';
-                tbody.innerHTML += `<tr class="${opacity}"><td>${a.name}</td><td class="text-muted">${a.id}</td><td class="${statusCls}">${a.status}</td><td>${a.mac}</td><td>${a.ip4}</td><td>${a.gateway}</td><td>${a.dns}</td><td>${a.speed}</td><td><i class="bi bi-gear edit-icon" onclick="editAdapter('${a.mac}','${a.id}','${a.name}',${a.visible})"></i></td></tr>`;
+                
+                tbody.innerHTML += `
+                <tr class="${opacity}">
+                    <td><strong>${a.name}</strong></td>
+                    <td class="text-muted small">${a.id}</td>
+                    <td class="${statusCls}">${a.status}</td>
+                    <td class="font-monospace small">${a.mac}</td>
+                    <td>${a.ip4}</td>
+                    <td>${a.gateway}</td>
+                    <td>${a.dns}</td>
+                    <td>${a.speed}</td>
+                    <td class="text-end">
+                        <i class="bi bi-pencil edit-icon" onclick="openAdapterConfig('${a.mac}','${a.id}','${a.name}',${a.visible})"></i>
+                    </td>
+                </tr>`;
             });
         });
     }
 
-    function editAdapter(mac, id, name, vis) {
-        const newName = prompt("Adapter Name:", name);
-        const hide = confirm("Display this adapter?");
-        fetch('/api/adapters/update', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mac:mac, id:id, name:newName||name, visible:hide})}).then(()=>fetchAdapters());
+    function openAdapterConfig(mac, id, name, vis) {
+        document.getElementById('modal-mac').value = mac; 
+        document.getElementById('modal-sys-id').value = id;
+        document.getElementById('modal-custom-name').value = name; 
+        document.getElementById('modal-visible').checked = vis;
+        adapterModal.show();
     }
 
+    function saveAdapterSettings() {
+        const data = { 
+            mac: document.getElementById('modal-mac').value, 
+            id: document.getElementById('modal-sys-id').value, 
+            name: document.getElementById('modal-custom-name').value, 
+            visible: document.getElementById('modal-visible').checked 
+        };
+        fetch('/api/adapters/update', { 
+            method:'POST', 
+            headers:{'Content-Type':'application/json'}, 
+            body:JSON.stringify(data)
+        }).then(() => { 
+            adapterModal.hide(); 
+            fetchAdapters(); 
+        });
+    }
+
+    // --- Device Discovery Logic ---
     function scanDevices() {
-        const tb = document.getElementById('device-list'); tb.innerHTML = '<tr><td colspan="4" class="text-center">Scanning...</td></tr>';
-        fetch('/api/scan_network').then(r=>r.json()).then(d => {
-            allDevices = d; renderDevices(d);
+        const tb = document.getElementById('device-list'); 
+        tb.innerHTML = '<tr><td colspan="4" class="text-center">Scanning network and identifying services (10-20s)...</td></tr>';
+        fetch('/api/scan_network').then(r=>r.json()).then(d => { 
+            allDevices = d; 
+            renderDevices(d); 
         });
     }
 
     function renderDevices(d) {
-        document.getElementById('device-list').innerHTML = d.map(x => `<tr><td>${x.hostname}</td><td>${x.has_web ? `<a href="http://${x.ip}:${x.web_port}" target="_blank">${x.ip}</a>` : x.ip}</td><td>${x.mac}</td><td><span class="badge bg-info text-dark">${x.services}</span></td></tr>`).join('');
+    const tbody = document.getElementById('device-list');
+    tbody.innerHTML = d.map(x => {
+        let ipDisplay = x.ip;
+        if(x.has_web) {
+            const proto = (x.web_port === 443 || x.web_port === 8443) ? 'https' : 'http';
+            ipDisplay = `<a href="${proto}://${x.ip}:${x.web_port}" target="_blank" class="fw-bold">${x.ip} <i class="bi bi-box-arrow-up-right small"></i></a>`;
+        }
+        return `<tr>
+            <td><strong>${x.hostname}</strong></td>
+            <td>${ipDisplay}</td>
+            <td class="font-monospace small">${x.mac}</td>
+            <td><span class="badge bg-info text-dark text-nowrap">${x.services}</span></td>
+        </tr>`;
+    }).join('');
     }
 
     function filterDevices() {
@@ -175,12 +392,90 @@
         renderDevices(allDevices.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q))));
     }
 
-    function fetchHistory() {
-        fetch('/api/history').then(r=>r.json()).then(d => { allHistory = d; renderHistory(d); });
+    function exportDevicesCSV() {
+        fetch('/api/devices/export', { 
+            method:'POST', 
+            headers:{'Content-Type':'application/json'}, 
+            body:JSON.stringify({rows: allDevices})
+        }).then(r=>r.blob()).then(b=> {
+            const u=URL.createObjectURL(b), a=document.createElement('a');
+            a.href=u; a.download='network_devices.csv'; a.click();
+        });
     }
 
-    function renderHistory(d) {
-        document.getElementById('history-table').innerHTML = d.map(x => `<tr onclick="editHistory(${x.id},'${x.network_name}')"><td><small>${x.timestamp}</small></td><td>${x.network_name}</td><td>${x.isp}</td><td>${x.connection_type}</td><td class="text-primary">${x.download}</td><td class="text-success">${x.upload}</td><td>${x.ping}</td></tr>`).join('');
+    // --- Wi-Fi Scanning Logic ---
+    function scanWifi() {
+        const list = document.getElementById('wifi-list'); 
+        list.innerHTML = '<div class="col-12 text-center">Scanning available networks...</div>';
+        fetch('/api/wifi').then(r=>r.json()).then(d => {
+            list.innerHTML = d.map(n => `
+                <div class="col-md-4 mb-3">
+                    <div class="card shadow-sm p-3 small">
+                        <strong>${n.ssid}</strong><br>
+                        <span class="text-muted">Signal: ${n.signal}</span>
+                        ${n.security ? `<br><small class="text-muted">${n.security}</small>` : ''}
+                    </div>
+                </div>`).join('');
+        });
+    }
+
+    // --- Speed Test Logic ---
+    function runSpeedTest() {
+        const btn = document.getElementById('btn-speedtest'), 
+              res = document.getElementById('speedtest-result');
+        btn.disabled = true; 
+        res.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Performing test...';
+        
+        const testData = {
+            network_name: document.getElementById('st-network-name').value, 
+            connection_type: document.getElementById('st-conn-type').value
+        };
+
+        fetch('/api/speedtest', { 
+            method:'POST', 
+            headers:{'Content-Type':'application/json'}, 
+            body:JSON.stringify(testData)
+        }).then(r=>r.json()).then(d => { 
+            btn.disabled = false; 
+            if(d.error) {
+                res.innerHTML = `<span class="text-danger">${d.error}</span>`;
+            } else {
+                res.innerHTML = `Result: <span class="text-primary">${d.download}</span> Down | <span class="text-success">${d.upload}</span> Up | Ping: <strong>${d.ping}</strong>`;
+            }
+        });
+    }
+
+    // --- History Logic ---
+    function fetchHistory() {
+        fetch('/api/history').then(r=>r.json()).then(d => { 
+            allHistory = d; 
+            renderHistory(d); 
+        });
+    }
+
+        function renderHistory(d) {
+            document.getElementById('history-table').innerHTML = d.map(x => `
+                <tr onclick="editHistory(${x.id},'${x.network_name}')">
+                    <td><small>${x.timestamp}</small></td>
+                    <td><strong>${x.network_name}</strong></td>
+                    <td>${x.isp}</td>
+                    <td><span class="badge bg-light text-dark border text-nowrap">${x.connection_type}</span></td>
+                    <td class="text-primary fw-bold text-nowrap">${x.download}</td>
+                    <td class="text-success fw-bold text-nowrap">${x.upload}</td>
+                    <td class="text-nowrap">${x.ping}</td>
+                    <td class="text-muted small">${x.wan_ip}</td>
+                </tr>`).join('');
+        }
+
+    function editHistory(id, oldName) {
+        const n = prompt("Rename network result label:", oldName);
+        if(n && n !== oldName) {
+            fetch('/api/history/update', {
+                method:'POST', 
+                headers:{'Content-Type':'application/json'}, 
+                body:JSON.stringify({id:id, name:n})
+            }).then(()=>fetchHistory());
+        }
     }
 
     function filterHistory() {
@@ -188,18 +483,32 @@
         renderHistory(allHistory.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q))));
     }
 
-    function editHistory(id, old) {
-        const n = prompt("Rename network for this entry:", old);
-        if(n) fetch('/api/history/update', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:id, name:n})}).then(()=>fetchHistory());
+    function clearHistory() {
+        if(confirm("Permanently delete all speed test history?")) {
+            fetch('/api/history/clear', {method:'POST'}).then(()=>fetchHistory());
+        }
     }
 
+    function exportHistoryCSV() {
+        fetch('/api/history/export', { 
+            method:'POST', 
+            headers:{'Content-Type':'application/json'}, 
+            body:JSON.stringify({rows: allHistory})
+        }).then(r=>r.blob()).then(b=> {
+            const u=URL.createObjectURL(b), a=document.createElement('a');
+            a.href=u; a.download='speed_history.csv'; a.click();
+        });
+    }
+
+    // --- Update Manager Logic ---
     function checkUpdates() {
         fetch('/api/update/check').then(r=>r.json()).then(d => {
             if(d.status==='success') {
                 remoteVer = d.remote_version;
                 if(remoteVer !== "{{ app_version }}") {
                     const tag = document.getElementById('ver-global');
-                    tag.classList.add('ver-update'); tag.innerHTML += ' <i class="bi bi-arrow-up-circle"></i>';
+                    tag.classList.add('ver-update'); 
+                    tag.innerHTML += ' <i class="bi bi-exclamation-circle-fill"></i>';
                 }
             }
         });
@@ -208,26 +517,28 @@
     function openUpdateModal() {
         updateModal.show();
         fetch('/api/update/changelog').then(r=>r.json()).then(d => {
-            document.getElementById('changelog-text').innerText = d.changelog || "No changelog found.";
+            document.getElementById('changelog-text').innerText = d.changelog || "Could not retrieve release notes.";
             const msg = document.getElementById('update-msg');
+            const btn = document.getElementById('btn-apply');
             if(remoteVer !== "{{ app_version }}") {
-                msg.className = "alert alert-warning"; msg.innerText = "New update " + remoteVer + " is available.";
-                document.getElementById('btn-apply').disabled = false;
+                msg.className = "alert alert-warning"; 
+                msg.innerText = `Update Available: v${remoteVer} (Current: {{ app_version }})`;
+                btn.disabled = false;
             } else {
-                msg.className = "alert alert-success"; msg.innerText = "You are up to date.";
+                msg.className = "alert alert-success"; 
+                msg.innerText = "All scripts are up to date.";
+                btn.disabled = true;
             }
         });
     }
 
-    function runSpeedTest() {
-        const res = document.getElementById('speedtest-result'); res.innerHTML = "Testing...";
-        fetch('/api/speedtest', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({network_name: document.getElementById('st-network-name').value, connection_type: document.getElementById('st-conn-type').value})}).then(r=>r.json()).then(d => { res.innerHTML = d.error || "Done: " + d.download; });
+    function applyUpdate() {
+        if(!confirm("Attempt to download and apply the update?")) return;
+        fetch('/api/update/apply', {method:'POST'}).then(r=>r.json()).then(d => {
+            alert(d.message);
+            location.reload();
+        });
     }
-
-    function exportDevicesCSV() { fetch('/api/devices/export', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({rows:allDevices})}).then(r=>r.blob()).then(b=> { const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download='devices.csv'; a.click(); }); }
-    function exportHistoryCSV() { fetch('/api/history/export', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({rows:allHistory})}).then(r=>r.blob()).then(b=> { const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download='history.csv'; a.click(); }); }
-    function clearHistory() { if(confirm("Clear history?")) fetch('/api/history/clear', {method:'POST'}).then(()=>fetchHistory()); }
-    function scanWifi() { document.getElementById('wifi-list').innerHTML = "Scanning..."; fetch('/api/wifi').then(r=>r.json()).then(d => { document.getElementById('wifi-list').innerHTML = d.map(n=>`<div class="col-md-3 mb-2"><div class="card p-2 small"><strong>${n.ssid}</strong><br>Signal: ${n.signal}</div></div>`).join(''); }); }
 </script>
 </body>
 </html>

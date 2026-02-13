@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 # --- Configuration ---
+# This version number is read by app.py for the footer display
 SETUP_VERSION = "0.1.0"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy"]
@@ -18,145 +19,141 @@ def create_venv(base_dir):
     """Creates the virtual environment if it doesn't exist."""
     venv_path = base_dir / VENV_DIR_NAME
     if not venv_path.exists():
-        print(f"[*] Creating virtual environment in {venv_path}...")
+        print(f"[*] Creating virtual environment (Setup v{SETUP_VERSION})...")
         venv.create(venv_path, with_pip=True)
+    else:
+        print(f"[✓] Virtual environment detected.")
     return venv_path
 
 def get_venv_paths(venv_path):
-    """Returns paths for python executable and the bin/scripts folder."""
+    """Returns executable paths based on Operating System."""
     if platform.system() == "Windows":
         return {
             "python": venv_path / "Scripts" / "python.exe",
-            "bin_dir": venv_path / "Scripts",
-            "ext": ".exe"
+            "bin_dir": venv_path / "Scripts"
         }
     else:
         return {
             "python": venv_path / "bin" / "python",
-            "bin_dir": venv_path / "bin",
-            "ext": ""
+            "bin_dir": venv_path / "bin"
         }
 
 def install_requirements(python_path):
-    """Installs Python libraries."""
-    print("[*] Installing Python dependencies (Flask, Scapy, Psutil)...")
-    subprocess.check_call([str(python_path), "-m", "pip", "install"] + REQUIREMENTS)
+    """Installs required Python libraries into the venv."""
+    print("[*] Checking Python dependencies (Flask, Scapy, Psutil)...")
+    try:
+        subprocess.check_call([str(python_path), "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
+        subprocess.check_call([str(python_path), "-m", "pip", "install"] + REQUIREMENTS)
+        print("[✓] Python dependencies are up to date.")
+    except Exception as e:
+        print(f"[X] Error installing dependencies: {e}")
 
-# --- OS Specific Installers for Speedtest ---
+# --- OS Specific Installers for Official Speedtest CLI ---
+
 def install_speedtest_windows(bin_dir):
     """Windows: Downloads and extracts the official Ookla CLI."""
-    WINDOWS_FALLBACK_URL = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
+    url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
     target_path = bin_dir / "speedtest.exe"
-    
     if target_path.exists():
-        print("[✓] Speedtest CLI already installed.")
         return
     
-    print("[*] Installing Speedtest CLI for Windows...")
-    temp_file = bin_dir / "speedtest.zip"
+    print("[*] Downloading Official Speedtest CLI for Windows...")
+    temp_zip = bin_dir / "speedtest.zip"
     try:
-        urllib.request.urlretrieve(WINDOWS_FALLBACK_URL, temp_file)
-        with zipfile.ZipFile(temp_file, 'r') as zip_ref:
+        urllib.request.urlretrieve(url, temp_zip)
+        with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
             zip_ref.extract("speedtest.exe", bin_dir)
-        if temp_file.exists(): os.remove(temp_file)
-        print(f"[✓] Speedtest CLI installed.")
+        os.remove(temp_zip)
+        print(f"[✓] Speedtest CLI installed to venv.")
     except Exception as e:
-        print(f"[X] Installation failed: {e}")
-
-def install_homebrew_if_missing():
-    """Mac: Checks/Installs Homebrew."""
-    if shutil.which("brew"): return True
-    print("\n[!] Homebrew missing. Installing...")
-    try:
-        cmd = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-        subprocess.check_call(cmd, shell=True)
-        return True
-    except:
-        print("[X] Homebrew install failed.")
-        return False
+        print(f"[X] Windows Speedtest install failed: {e}")
 
 def install_speedtest_mac():
     """Mac: Installs Speedtest via Homebrew."""
     print("[*] Checking Speedtest CLI via Homebrew...")
-    if not install_homebrew_if_missing(): return
+    if not shutil.which("brew"):
+        print("[!] Homebrew not found. Speedtest CLI installation skipped.")
+        return
     
-    # We run these commands to ensure it's installed and updated
-    commands = [
-        ["brew", "tap", "teamookla/speedtest"],
-        ["brew", "update"],
-        ["brew", "install", "speedtest", "--force"]
-    ]
     try:
-        for cmd in commands: 
-            # Suppress output for cleaner logs, unless error
-            subprocess.run(cmd, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        print("[✓] Speedtest CLI ready.")
-    except: 
-        print("[X] Install failed.")
+        # Tap and Install
+        subprocess.run(["brew", "tap", "teamookla/speedtest"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["brew", "install", "speedtest", "--force"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("[✓] Speedtest CLI is ready via Homebrew.")
+    except Exception as e:
+        print(f"[X] Mac Speedtest install failed: {e}")
 
 def install_speedtest_linux():
-    """Linux: Installs Speedtest via apt-get (Debian/Ubuntu)."""
-    print("[*] Checking Speedtest CLI via apt-get...")
-    if shutil.which("apt-get") is None:
-        print("[X] Error: 'apt-get' not found. Ensure you are on a Debian-based system."); return
+    """Linux: Installs Speedtest via official Apt repository."""
+    if not shutil.which("apt-get"):
+        return
+
+    print("[*] Checking Speedtest CLI via Apt...")
+    if shutil.which("speedtest"):
+        print("[✓] Speedtest CLI detected.")
+        return
 
     try:
-        # We assume if the command exists, we are good, to save time on startup
-        if shutil.which("speedtest"):
-            print("[✓] Speedtest CLI ready.")
-            return
-
-        print("    Configuring Ookla repository...")
+        print("    Adding Ookla repository...")
         subprocess.run(["sudo", "apt-get", "remove", "speedtest-cli", "-y"], stderr=subprocess.DEVNULL)
         subprocess.check_call(["sudo", "apt-get", "install", "curl", "-y"], stdout=subprocess.DEVNULL)
-        subprocess.check_call("curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash", shell=True, stdout=subprocess.DEVNULL)
+        subprocess.check_call("curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash", shell=True)
         subprocess.check_call(["sudo", "apt-get", "install", "speedtest", "-y"], stdout=subprocess.DEVNULL)
         print("[✓] Speedtest CLI installed.")
-    except: 
-        print("[X] Install failed.")
+    except Exception as e:
+        print(f"[X] Linux Speedtest install failed: {e}")
 
 def install_speedtest_cli(bin_dir):
-    """Router to pick the correct OS installer."""
+    """Routes to the correct Speedtest installer based on OS."""
     system = platform.system()
-    if system == "Windows": install_speedtest_windows(bin_dir)
-    elif system == "Darwin": install_speedtest_mac()
-    elif system == "Linux": install_speedtest_linux()
+    if system == "Windows":
+        install_speedtest_windows(bin_dir)
+    elif system == "Darwin":
+        install_speedtest_mac()
+    elif system == "Linux":
+        install_speedtest_linux()
 
 def run_application(base_dir, venv_python):
-    """Runs the main application."""
+    """Launches the main app with sudo/admin privileges."""
     app_path = base_dir / APP_FILENAME
     
     if not app_path.exists():
-        print(f"\n[!] Critical Error: '{APP_FILENAME}' not found in {base_dir}")
+        print(f"\n[!] ERROR: '{APP_FILENAME}' not found in {base_dir}")
+        print("Please ensure your main python file is named 'app.py' and is in this folder.")
         return
 
-    print("\n" + "="*50)
-    print(f"   SETUP v{SETUP_VERSION} COMPLETE - LAUNCHING APP")
-    print("="*50)
+    print("\n" + "="*60)
+    print(f"   SYSTEM READY - LAUNCHING NETWORK DASHBOARD (Setup v{SETUP_VERSION})")
+    print("="*60)
+    print("[*] Elevated privileges required for network scanning.")
     
-    # Run with sudo/admin privileges
+    # Run with sudo
     cmd = ["sudo", str(venv_python), str(app_path)]
     
     try:
         subprocess.run(cmd)
     except KeyboardInterrupt:
-        print("\n[!] Stopped.")
+        print("\n[!] Dashboard stopped by user.")
+    except Exception as e:
+        print(f"[X] Failed to launch application: {e}")
 
 def main():
+    # Detect the script's directory
     base_dir = Path(__file__).parent.resolve()
-    print(f"--- Network Dashboard Setup (v{SETUP_VERSION}) ---")
     
-    # 1. Create/Check Virtual Environment
+    print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
+    
+    # 1. Setup Venv
     venv_path = create_venv(base_dir)
     paths = get_venv_paths(venv_path)
     
-    # 2. Install Python Dependencies
+    # 2. Install Python dependencies
     install_requirements(paths["python"])
     
-    # 3. Install Speedtest Binary
+    # 3. Install/Update Speedtest CLI binary
     install_speedtest_cli(paths["bin_dir"])
     
-    # 4. Run the Application
+    # 4. Launch the App
     run_application(base_dir, paths["python"])
 
 if __name__ == "__main__":
