@@ -684,16 +684,16 @@ function renderDevices(d) {
             .then(r => r.json())
             .then(d => {
                 if (d.status === 'success') {
-                    // Compare Remote Version vs Current App Version
-                    const isNewer = isVersionHigher(d.remote_version, '{{ app_version }}');
+                    // Compare Remote Version vs Current GLOBAL Version
+                    const isNewer = isVersionHigher(d.remote_version, '{{ global_version }}');
                     
                     if (isNewer) {
                         const t = document.getElementById('ver-global');
                         if (t) {
                             t.classList.add('ver-update');
-                            // Add a tooltip or text indicating an update is ready
-                            t.title = `Update available: v${d.remote_version}`;
-                            t.innerHTML += ' <i class="bi bi-exclamation-circle-fill"></i>';
+                            t.title = `Global Update available: v${d.remote_version}`;
+                            // Add the alert icon to the Global Version tag
+                            t.innerHTML = `Global: {{ global_version }} <i class="bi bi-exclamation-circle-fill"></i>`;
                         }
                     }
                 }
@@ -763,19 +763,18 @@ function renderDevices(d) {
         fetch('/api/update/check')
             .then(r => r.json())
             .then(d => {
-                const isNewer = isVersionHigher(d.remote_version, '{{ app_version }}');
+                const isNewer = isVersionHigher(d.remote_version, '{{ global_version }}');
                 
                 if (isNewer) {
                     msg.className = "alert alert-warning";
-                    msg.innerText = `New version available: v${d.remote_version} (Current: v{{ app_version }})`;
+                    msg.innerText = `New Global Version available: v${d.remote_version} (Current Global: v{{ global_version }})`;
                     btn.disabled = false;
                 } else {
                     msg.className = "alert alert-success";
-                    msg.innerText = `System up to date (v{{ app_version }})`;
+                    msg.innerText = `Global System is up to date (v{{ global_version }})`;
                     btn.disabled = true;
                 }
                 
-                // Fetch changelog separately
                 return fetch('/api/update/changelog');
             })
             .then(r => r.json())
