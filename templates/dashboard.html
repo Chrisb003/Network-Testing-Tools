@@ -75,7 +75,7 @@
         <li class="nav-item"><a class="nav-link" onclick="showPage('dns-tool', this)">DNS Lookup</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('ping-tool', this)">Ping Tool</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">History</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">Speed Test History</a></li>
     </ul>
 
     <div id="adapters" class="page-section">
@@ -192,7 +192,7 @@
     <div id="history" class="page-section hidden">
         <div class="card shadow-sm">
            <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-                <h5 class="mb-0 text-nowrap me-3">Test History</h5>
+                <h5 class="mb-0 text-nowrap me-3">Speed Test History</h5>
                 <div class="d-flex gap-2 align-items-center">
                     <input type="text" id="history-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterHistory()">
                     <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportHistoryCSV()">Export</button>
@@ -255,6 +255,7 @@
             if(d.last_name) document.getElementById('st-network-name').value = d.last_name;
             document.getElementById('header-wan-ip').innerText = d.wan_ip;
             document.getElementById('header-isp').innerText = d.isp;
+            document.getElementById('st-network-name').value = d.last_name;
         });
 
         setInterval(fetchAdapters, 2000); 
@@ -402,29 +403,41 @@
     }
 
     // --- Device Management Logic ---
-    function loadNetworkDevices(id, name) {
-        currentNetworkId = id; 
-        showPage('devices', document.querySelectorAll('.nav-link')[1]);
-        if(name) document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
-        
-        fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
-            allDevices = d; 
-            renderDevices(d);
-        });
+function loadNetworkDevices(id, name) {
+    currentNetworkId = id; 
+    showPage('devices', document.querySelectorAll('.nav-link')[1]);
+    
+    // Update the Tab Title
+    if(name) document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
+    
+    // --- AUTO-POPULATE LOCATION NAME ---
+    // This fills the Speed Test box with the network name automatically
+    if(name) {
+        const locationInput = document.getElementById('st-network-name');
+        if(locationInput) locationInput.value = name;
     }
+    
+    fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
+        allDevices = d; 
+        renderDevices(d);
+    });
+}
 
-    function scanDevices() {
-        const b = document.getElementById('btn-scan-devices'); 
-        b.disabled = true; 
-        b.innerText = "Scanning...";
+function scanDevices() {
+    const b = document.getElementById('btn-scan-devices'); 
+    b.disabled = true; 
+    b.innerText = "Scanning...";
+    
+    fetch('/api/scan_network').then(r=>r.json()).then(d => {
+        b.disabled = false; 
+        b.innerText = "Scan"; 
+        if(d.error) { alert(d.error); return; }
         
-        fetch('/api/scan_network').then(r=>r.json()).then(d => {
-            b.disabled = false; 
-            b.innerText = "Scan"; 
-            if(d.error) { alert(d.error); return; }
-            loadNetworkDevices(d.network_id, d.network_name);
-        });
-    }
+        // This triggers the loadNetworkDevices function which now 
+        // includes the auto-populate logic we added above.
+        loadNetworkDevices(d.network_id, d.network_name);
+    });
+}
 
 function renderDevices(d) {
     const tb = document.getElementById('device-list');
@@ -774,6 +787,86 @@ function renderDevices(d) {
                 msg.innerText = "Error checking updates.";
             });
     }
+
+    function runSpeedTest() { 
+        const btn = document.getElementById('btn-speedtest');
+        const resultDiv = document.getElementById('speedtest-result'); 
+        
+        // 1. UI State: Loading
+        btn.disabled = true; 
+        resultDiv.innerHTML = `
+            <div class="spinner-border spinner-border-sm text-primary" role="status"></div> 
+            <span class="ms-2">Running Speed Test (this may take 30s)...</span>
+        `;
+        
+        const testData = {
+            network_name: document.getElementById('st-network-name').value,
+            connection_type: document.getElementById('st-conn-type').value
+        };
+
+        fetch('/api/speedtest', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify(testData)
+        })
+        .then(response => response.json())
+        .then(data => {
+            btn.disabled = false;
+            if (data.error) {
+                resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle"></i> ${data.error}</span>`;
+            } else {
+                // 2. Success Output
+                resultDiv.innerHTML = `
+                    <span class="text-primary fw-bold">↓ ${data.download}</span> 
+                    <span class="mx-2">|</span> 
+                    <span class="text-success fw-bold">↑ ${data.upload}</span>
+                    <span class="ms-2 text-muted small">(${data.ping})</span>
+                `;
+                // Refresh the history table if it exists
+                if (typeof fetchHistory === "function") fetchHistory();
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            resultDiv.innerHTML = `<span class="text-danger">Request failed. Check if server is running.</span>`;
+            console.error(err);
+        }); 
+    }
+
+    function fetchHistory() { 
+        fetch('/api/history')
+            .then(r => r.json())
+            .then(d => { 
+                allHistory = d; // Store for filtering
+                renderHistory(d); 
+            })
+            .catch(err => console.error("Could not load history:", err));
+    }
+
+    function renderHistory(d) { 
+        const tbody = document.getElementById('history-table');
+        if (!tbody) return;
+
+        if (d.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center p-4">No test history found.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = d.map(x => `
+            <tr>
+                <td><small>${x.timestamp}</small></td>
+                <td onclick="editHistory(${x.id},'${x.network_name}')" style="cursor:pointer">
+                    <strong>${x.network_name}</strong> <i class="bi bi-pencil small text-muted"></i>
+                </td>
+                <td>${x.isp || '-'}</td>
+                <td><span class="badge bg-light text-dark border">${x.connection_type}</span></td>
+                <td class="text-primary fw-bold">${x.download}</td>
+                <td class="text-success fw-bold">${x.upload}</td>
+                <td>${x.ping}</td>
+                <td class="text-muted small">${x.wan_ip || '-'}</td>
+            </tr>`).join(''); 
+    }
+
 </script>
 </body>
 </html>

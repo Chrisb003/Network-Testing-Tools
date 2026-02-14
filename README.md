@@ -3,6 +3,8 @@ Not all features will work with all OS's.
 
 On my list to add/get working. Wifi scanning (with listing network channel numbers if possible), Possibly adding graphs.
 
+0.3.1 Fixes for missing code relating to speedtest
+
 0.3.0 - Setup script version 0.1.0 nothing has changed with this. Main app script 0.3.0 various changes adding in ability to save network scans and give names to devices, doo dns lookup and ping tool. Dashboard has been updated to acomidate these extra features.
 
 0.2.0 few fixes to existing functions and adding darkmode/lightmode toggle

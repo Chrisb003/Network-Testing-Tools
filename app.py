@@ -788,28 +788,39 @@ def get_wifi_networks():
 
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
-    """Runs the Speedtest CLI and logs to history."""
     d = request.json
     try:
+        # Run Speedtest
         cmd = ["speedtest", "--format=json", "--accept-license", "--accept-gdpr"]
         res = json.loads(subprocess.check_output(cmd, text=True))
         
-        down = f"{res['download']['bandwidth'] * 8 / 1_000_000:.2f} Mbps"
-        up = f"{res['upload']['bandwidth'] * 8 / 1_000_000:.2f} Mbps"
+        # Format Data
+        down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
+        up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
         isp = res.get('isp', 'Unknown')
-        wan = res.get('interface', {}).get('externalIp', 'Unknown')
+        wan = res.get('interface', {}).get('externalIp', '-')
         
-        name = d.get('network_name') if d.get('network_name') else "Unknown"
+        name = d.get('network_name') or "Unnamed Network"
+        conn_type = d.get('connection_type') or "Ethernet"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        with sqlite3.connect(DB_NAME) as conn:
-            conn.execute("INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, isp) VALUES (?,?,?,?,?,?,?,?)",
-                         (ts, name, d.get('connection_type'), down, up, ping, wan, isp))
-            conn.commit()
+        # SAVE TO DB
+        try:
+            with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                conn.execute("""
+                    INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, isp) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ts, name, conn_type, down, up, ping, wan, isp))
+                conn.commit()
+        except sqlite3.Error as db_err:
+            print(f"DATABASE ERROR: {db_err}")
+            return jsonify({"error": f"Failed to save to database: {db_err}"})
             
-        return jsonify({"download": down, "upload": up, "ping": ping, "network": name, "isp": isp, "wan_ip": wan})
-    except Exception as e: 
+        return jsonify({"download": down, "upload": up, "ping": ping})
+
+    except Exception as e:
+        print(f"SPEEDTEST ERROR: {e}")
         return jsonify({"error": str(e)})
 
 @app.route('/api/get_last_name')
@@ -822,10 +833,12 @@ def get_last_name():
 
 @app.route('/api/history')
 def get_history():
-    """Returns speed test history."""
     with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-        return jsonify([dict(r) for r in conn.execute("SELECT * FROM history ORDER BY id DESC").fetchall()])
+        conn.row_factory = sqlite3.Row  # THIS IS KEY
+        cursor = conn.execute("SELECT * FROM history ORDER BY timestamp DESC")
+        rows = cursor.fetchall()
+        # Convert sqlite objects to a list of dictionaries for JSON
+        return jsonify([dict(ix) for ix in rows])
 
 @app.route('/api/history/update', methods=['POST'])
 def update_history():
