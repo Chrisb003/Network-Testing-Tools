@@ -19,7 +19,7 @@ from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp, conf
 
 # --- Configuration ---
-APP_VERSION = "0.5.0" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.0" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -31,14 +31,14 @@ GITHUB_SETTINGS = {
 }
 
 app = Flask(__name__)
-DB_NAME = "speedtest.db"
+DB_NAME = "network_data.db"
 
 # --- Database & Migrations ---
 def init_db():
     """Initializes the database with WAL mode for concurrency and creates all tables."""
     with sqlite3.connect(DB_NAME) as conn:
         c = conn.cursor()
-        # Enable Write-Ahead Logging (Fixes 'database is locked' errors during scans)
+        # Enable Write-Ahead Logging (Fixes 'database is locked' errors)
         c.execute("PRAGMA journal_mode=WAL;") 
         
         # 1. History Table (Speed Tests)
@@ -58,7 +58,8 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS adapter_settings (
                         mac_address TEXT PRIMARY KEY, 
                         custom_name TEXT, 
-                        is_visible INTEGER DEFAULT 1
+                        is_visible INTEGER DEFAULT 1,
+                        is_primary INTEGER DEFAULT 0
                     )''')
 
         # 3. Networks Table
@@ -90,7 +91,7 @@ def init_db():
                         custom_name TEXT
                     )''')
         
-        # 6. DNS Logs (With NEW columns included for fresh installs)
+        # 6. DNS Logs
         c.execute('''CREATE TABLE IF NOT EXISTS dns_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         timestamp TEXT, 
@@ -103,7 +104,7 @@ def init_db():
                         lan_ip TEXT
                     )''')
         
-        # 7. Ping Logs (With NEW columns included for fresh installs)
+        # 7. Ping Logs
         c.execute('''CREATE TABLE IF NOT EXISTS ping_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         timestamp TEXT, 
@@ -116,30 +117,40 @@ def init_db():
                         network_name TEXT, 
                         lan_ip TEXT
                     )''')
+
+        # --- 8. NEW: Wi-Fi Scan History Table ---
+        c.execute('''CREATE TABLE IF NOT EXISTS wifi_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        scan_name TEXT,
+                        comments TEXT,
+                        results_json TEXT
+                    )''')
         
         # --- MIGRATIONS (Updates existing databases safely) ---
         
-        # History Table Migrations
+        # Existing Migrations
         try: c.execute("ALTER TABLE history ADD COLUMN isp TEXT"); 
         except sqlite3.OperationalError: pass
         try: c.execute("ALTER TABLE history ADD COLUMN connection_type TEXT"); 
         except sqlite3.OperationalError: pass
         
-        # Adapter Settings Migration
         try: c.execute("ALTER TABLE adapter_settings ADD COLUMN is_visible INTEGER DEFAULT 1"); 
         except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE adapter_settings ADD COLUMN is_primary INTEGER DEFAULT 0"); 
+        except sqlite3.OperationalError: pass
 
-        # DNS & Ping Logs Migrations (The critical part for your request)
-        # This loop adds the 3 new columns to both log tables if they are missing
         for table in ['dns_logs', 'ping_logs']:
             for col in ['router_ip', 'network_name', 'lan_ip']:
-                try: 
-                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
-                except sqlite3.OperationalError: 
-                    pass # Column exists, skip
+                try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError: pass 
+
+        # --- Migration for Wi-Fi History (In case table exists but missing columns) ---
+        # Note: Since this is a new table, the 'CREATE TABLE IF NOT EXISTS' handles most cases,
+        # but if you add columns later, place them here.
 
         conn.commit()
-
+        
 # Ensure this runs on startup
 init_db()
 
@@ -187,157 +198,160 @@ def get_local_ip():
         s.close()
 
 def get_extended_iface_info():
-    """Gathers Gateway and DNS details strictly per-interface (Win/Mac/Linux)."""
-    info_map = {}
+    """
+    Fetches Gateway and DNS information across Windows, macOS, and Linux.
+    Prioritizes stable text-parsing (ipconfig/netstat) to prevent data flickering.
+    Strictly filters for IPv4 (no colons).
+    """
+    info = {}
     system = platform.system()
     
     try:
-        # --- WINDOWS LOGIC ---
         if system == "Windows":
-            output = subprocess.check_output(["ipconfig", "/all"], text=True, encoding='latin-1', errors='ignore')
-            current_adapter = None
-            for line in output.split('\n'):
-                line = line.strip()
-                if not line: continue
-                if "adapter" in line and line.endswith(":"):
-                    current_adapter = line.split("adapter")[-1].replace(":", "").strip()
-                    info_map[current_adapter] = {"gateway": "-", "dns": "-"}
-                if current_adapter:
-                    if "Default Gateway" in line:
-                        parts = line.split(":")
-                        if len(parts) > 1:
-                            val = parts[1].strip()
-                            if val and "::" not in val: info_map[current_adapter]["gateway"] = val
-                    elif "DNS Servers" in line:
-                        parts = line.split(":")
-                        if len(parts) > 1:
-                            val = parts[1].strip()
-                            if val and "::" not in val: info_map[current_adapter]["dns"] = val
-                    elif line[0].isdigit() and "." in line and "::" not in line:
-                        prev_dns = info_map[current_adapter].get("dns", "-")
-                        if prev_dns != "-" and line not in prev_dns:
-                             info_map[current_adapter]["dns"] += f", {line}"
-
-        # --- MACOS LOGIC (FIXED) ---
-        elif system == "Darwin":
-            # Map friendly names if needed, but primarily we need the ID (en0)
-            service_map = {} # Maps 'en0' -> 'Wi-Fi'
+            # --- PRIMARY: ipconfig /all (Most stable for static info) ---
             try:
-                ports = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
-                for line in ports.split('\n'):
-                    if "Hardware Port" in line: port_name = line.split(": ")[1]
-                    elif "Device" in line: service_map[line.split(": ")[1]] = port_name
-            except: pass
-            
-            # DNS via scutil
-            try:
-                raw_dns = subprocess.check_output("scutil --dns", shell=True, text=True)
-                current_resolver = None
-                for line in raw_dns.split('\n'):
-                    if "resolver #" in line: current_resolver = {}
-                    if "nameserver[0]" in line and current_resolver is not None:
-                        current_resolver['dns'] = line.split(":")[1].strip()
-                    if "if_index" in line and current_resolver is not None:
-                        # Extract the interface index number (e.g., 6)
-                        idx_num = line.split("(")[-1].replace(")", "")
-                        # scutil output doesn't explicitly say "en0", so we might need 
-                        # to match it if we want 100% precision, but usually 
-                        # we rely on the Primary/Active resolver.
-                        
-                        # BETTER STRATEGY FOR MAC:
-                        # scutil --dns usually groups by resolver. 
-                        # Instead, let's parse `networksetup -getdnsservers` for known services
-                        pass
-            except: pass
-
-            # ALTERNATIVE RELIABLE MAC DNS/GATEWAY:
-            # Loop through known interfaces (en0, en1) and ask specific questions
-            for dev_id, friendly_name in service_map.items():
-                # 1. Get DNS
-                try:
-                    dns_out = subprocess.check_output(["networksetup", "-getdnsservers", friendly_name], text=True)
-                    if "There aren't any DNS Servers" not in dns_out:
-                        # Output is just lines of IPs
-                        dns_list = [x.strip() for x in dns_out.strip().split('\n') if x.strip()]
-                        if dns_list:
-                            if dev_id not in info_map: info_map[dev_id] = {}
-                            info_map[dev_id]['dns'] = ", ".join(dns_list)
-                except: pass
-
-                # 2. Get Gateway (via route get)
-                try:
-                    # 'route get default' usually gives the active one, but we want per-interface.
-                    # netstat -nr is better for scanning.
-                    pass
-                except: pass
-
-            # Gateway via netstat -nr (Fast & Accurate)
-            try:
-                routes = subprocess.check_output(["netstat", "-nr"], text=True)
-                for line in routes.split('\n'):
-                    if "default" in line and "UGSc" in line:
-                        parts = line.split()
-                        # default  192.168.1.1  UGSc  en0
-                        if len(parts) >= 4:
-                            gw = parts[1]
-                            iface = parts[3] # en0
-                            # SAVE DIRECTLY TO 'en0' KEY
-                            if iface not in info_map: info_map[iface] = {}
-                            info_map[iface]['gateway'] = gw
-                            
-                            # Fallback: If networksetup didn't find DNS (e.g. DHCP provided), 
-                            # we might not have it yet. Scutil is complex to parse per-iface.
-                            # On Mac, often the "Active" DNS is all that matters.
-            except: pass
-
-        # --- LINUX LOGIC ---
-        elif system == "Linux":
-            # 1. Get Gateways
-            try:
-                routes = subprocess.check_output(["ip", "route", "show", "default"], text=True)
-                for line in routes.split('\n'):
-                    if "default via" in line:
-                        parts = line.split()
-                        if len(parts) > 4:
-                            gw = parts[2]
-                            dev = parts[4]
-                            if dev not in info_map: info_map[dev] = {}
-                            info_map[dev]['gateway'] = gw
-            except: pass
-
-            # 2. Get DNS
-            try:
-                # Try resolvectl (systemd)
-                dns_out = subprocess.check_output(["resolvectl", "status"], text=True)
+                # Using latin-1 encoding to handle special characters in adapter names
+                raw_ip = subprocess.check_output("ipconfig /all", shell=True, text=True, encoding='latin-1')
                 current_iface = None
-                for line in dns_out.split('\n'):
-                    if "Link" in line and "(" in line:
-                        current_iface = line.split("(")[1].split(")")[0] # 'eth0'
-                        if current_iface not in info_map: info_map[current_iface] = {}
-                    if "DNS Servers:" in line and current_iface:
-                        dns = line.split(":")[1].strip().split()[0]
-                        info_map[current_iface]['dns'] = dns
-            except:
-                # Fallback to /etc/resolv.conf
+                
+                for line in raw_ip.split('\n'):
+                    line = line.strip()
+                    
+                    # Identify the start of an adapter section (e.g., "Ethernet adapter Ethernet:")
+                    if "adapter" in line and ":" in line:
+                        # Extract name between 'adapter' and the trailing colon
+                        parts = line.split("adapter")
+                        if len(parts) > 1:
+                            current_iface = parts[-1].split(":")[0].strip()
+                            if current_iface not in info:
+                                info[current_iface] = {"gateway": "-", "dns": "-"}
+                    
+                    if current_iface:
+                        # Extract Default Gateway
+                        if "Default Gateway" in line and ":" in line:
+                            gw = line.split(":")[-1].strip()
+                            # Ensure it's not empty and is IPv4 (no colons)
+                            if gw and "." in gw and ":" not in gw:
+                                info[current_iface]["gateway"] = gw
+                        
+                        # Extract DNS Servers
+                        if "DNS Servers" in line and ":" in line:
+                            dns = line.split(":")[-1].strip()
+                            if dns and "." in dns and ":" not in dns:
+                                info[current_iface]["dns"] = dns
+            except Exception as e:
+                print(f"ipconfig failed: {e}")
+
+            # --- FALLBACK: PowerShell (Only if ipconfig failed to find an interface) ---
+            if not info:
                 try:
-                    with open("/etc/resolv.conf", "r") as f:
-                        for line in f:
-                            if line.startswith("nameserver"):
-                                dns = line.split()[1]
-                                for iface in info_map:
-                                    if 'dns' not in info_map[iface]: info_map[iface]['dns'] = dns
-                except: pass
+                    cmd = "Get-NetIPConfiguration | Select-Object InterfaceAlias, " \
+                          "@{Name='G';Expression={$_.IPv4DefaultGateway.NextHop}}, " \
+                          "@{Name='D';Expression={$_.DNSServer.ServerAddresses}} | ConvertTo-Json"
+                    out = subprocess.check_output(["powershell", "-Command", cmd], text=True, timeout=5)
+                    data = json.loads(out)
+                    adapters = [data] if isinstance(data, dict) else data
+                    for item in adapters:
+                        name = item.get('InterfaceAlias')
+                        if not name: continue
+                        
+                        gw_raw = item.get('G', "-")
+                        gw = str(gw_raw[0]) if isinstance(gw_raw, list) and len(gw_raw) > 0 else str(gw_raw)
+                        
+                        dns_raw = item.get('D', [])
+                        dns_list = [str(d) for d in (dns_raw if isinstance(dns_raw, list) else [dns_raw]) 
+                                    if d and ":" not in str(d) and "MSFT_" not in str(d)]
+                        
+                        info[name] = {
+                            "gateway": gw if (gw != "None" and ":" not in gw) else "-",
+                            "dns": ", ".join(dns_list) if dns_list else "-"
+                        }
+                except:
+                    pass
+
+        elif system == "Darwin": # macOS
+            try:
+                # Gateway via netstat
+                gw_out = subprocess.check_output("netstat -rn -f inet | grep 'default'", shell=True, text=True)
+                default_gw = "-"
+                for line in gw_out.split('\n'):
+                    parts = line.split()
+                    if len(parts) >= 2 and ":" not in parts[1]:
+                        default_gw = parts[1]
+                        break
+                
+                # DNS and Interface Mapping via networksetup
+                port_out = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
+                lines = port_out.split('\n')
+                for i, line in enumerate(lines):
+                    if "Hardware Port" in line:
+                        port_name = line.split(":")[1].strip()
+                        dev_name = lines[i+1].split(":")[1].strip()
+                        try:
+                            dns_out = subprocess.check_output(["networksetup", "-getdnsservers", port_name], text=True)
+                            dns_list = [d.strip() for d in dns_out.split('\n') if d.strip() and ":" not in d]
+                            dns_val = ", ".join(dns_list) if dns_list and "Any" not in dns_list[0] else "-"
+                        except: dns_val = "-"
+                        info[dev_name] = {"gateway": default_gw, "dns": dns_val}
+            except: pass
+
+        elif system == "Linux": # Linux
+            try:
+                # Gateway via ip route
+                gw_out = subprocess.check_output("ip route show default | awk '/default/ {print $3}'", shell=True, text=True)
+                default_gw = gw_out.strip() if ":" not in gw_out else "-"
+            except: default_gw = "-"
+
+            try:
+                # DNS via resolv.conf
+                with open("/etc/resolv.conf", "r") as f:
+                    dns_list = [l.split()[1] for l in f if l.startswith("nameserver") and ":" not in l]
+                dns_val = ", ".join(dns_list) if dns_list else "-"
+            except: dns_val = "-"
+
+            # Map results to all active interfaces known to psutil
+            import psutil
+            for iface in psutil.net_if_addrs().keys():
+                info[iface] = {"gateway": default_gw, "dns": dns_val}
 
     except Exception as e:
-        print(f"Error getting extended info: {e}")
+        print(f"Error in get_extended_iface_info: {e}")
         
-    return info_map
+    return info
 
 # --- Bandwidth Tracking ---
 last_received = psutil.net_io_counters().bytes_recv
 last_sent = psutil.net_io_counters().bytes_sent
 last_time = time.time()
 
+def get_html_version():
+    """
+    Finds 'Version number ' on the first line of dashboard.html
+    and extracts the numeric version following it.
+    """
+    try:
+        # Locate the template folder relative to this script
+        template_path = os.path.join(app.root_path, "templates", "dashboard.html")
+        
+        if os.path.exists(template_path):
+            with open(template_path, "r", encoding='utf-8') as f:
+                # Read only the first line of the document
+                first_line = f.readline()
+                
+                # Search specifically for 'Version number ' followed by digits and dots
+                match = re.search(r'Version number\s+([\d.]+)', first_line)
+                
+                if match:
+                    return match.group(1)
+                else:
+                    print(f"[!] 'Version number' not found on first line: {first_line.strip()}")
+                    return "Unknown"
+        
+        return "Not Found"
+    except Exception as e:
+        print(f"[X] HTML Version Error: {e}")
+        return "Error"
+    
 def get_bandwidth():
     """Calculates real-time network throughput."""
     global last_received, last_sent, last_time
@@ -448,16 +462,18 @@ def process_device_info(received):
     }
 
 def get_current_network_context():
-    """Returns (lan_ip, gateway_ip, network_name) for logging."""
+    """Returns (lan_ip, gateway_ip, network_name) strictly using IPv4."""
     lan_ip = get_local_ip()
     
     # 1. Get Gateway
     ext_info = get_extended_iface_info()
     gateway_ip = "-"
-    # Try to find gateway from the extended info
+    
     for iface_details in ext_info.values():
-        if iface_details.get("gateway") and iface_details.get("gateway") != "-":
-            gateway_ip = iface_details.get("gateway")
+        gw = iface_details.get("gateway", "-")
+        # STRICT FILTER: Only accept if not "-" and NO colons present
+        if gw != "-" and ":" not in gw:
+            gateway_ip = gw
             break
             
     # 2. Get Network Name
@@ -536,107 +552,174 @@ def index():
                            dns_servers=active_dns,
                            global_version=get_global_version(), 
                            setup_version=get_setup_version(), 
-                           app_version=APP_VERSION)
+                           app_version=APP_VERSION,
+                           html_version=get_html_version())
 
 @app.route('/api/adapters')
 def get_adapters():
     """
-    Fetches all network adapters with detailed negotiation speeds 
-    and real-time Wi-Fi Tx/Rx rates.
+    Fetches all network adapters with:
+    1. Stable IPv4 data from ipconfig.
+    2. Pinned Adapter logic (Header locks to user choice).
+    3. Hardware link speeds with a fallback to 'Not Available' if idle.
+    4. Real-time Wi-Fi rates only when active traffic exists.
     """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
-    ext_info = get_extended_iface_info()
-    wifi_rates = get_wifi_rates() # New helper for Tx/Rx rates
     
-    # 1. Identify the ACTUAL Active Interface for the header
+    # Fetch stable system info (Gateway/DNS) and Wi-Fi rates
+    ext_info = get_extended_iface_info()
+    wifi_rates = get_wifi_rates()
+    
+    # Identify the primary active interface or the user-pinned interface
     active_iface_name = get_active_interface_name()
     primary_gw = "Unknown"
     primary_dns = "Unknown"
-    
-    # 2. Load saved visibility and name settings from DB
+    pinned_mac = None
+
+    # Load user settings (Names, Visibility, and Pinned status)
     settings = {}
-    with sqlite3.connect(DB_NAME) as conn:
-        for row in conn.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings"):
-            settings[row[0]] = {"name": row[1], "visible": row[2]}
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            for row in conn.execute("SELECT mac_address, custom_name, is_visible, is_primary FROM adapter_settings"):
+                settings[row[0]] = {
+                    "name": row[1], 
+                    "visible": row[2], 
+                    "is_primary": bool(row[3])
+                }
+                if row[3] == 1:
+                    pinned_mac = row[0]
+    except: 
+        pass
 
     for name, addrs in interfaces.items():
         st = stats.get(name)
         
-        # SKIP Loopback/Virtual interfaces to reduce clutter
-        if "Loopback" in name or "vEthernet" in name: continue
+        # Filter out virtual/loopback clutter
+        if "Loopback" in name or "vEthernet" in name: 
+            continue
         
-        ip4, ip6, mac = "-", "-", "-"
+        ip4, mac = "-", "-"
         for a in addrs:
-            if a.family == socket.AF_INET: ip4 = a.address
-            elif a.family == socket.AF_INET6: ip6 = a.address.split('%')[0]
-            elif a.family == psutil.AF_LINK: mac = a.address
+            if a.family == socket.AF_INET: 
+                ip4 = a.address
+            elif a.family == psutil.AF_LINK: 
+                mac = a.address
 
-        # 3. Network Configuration Lookup (Gateway/DNS)
+        # Get stable Gateway and DNS from the ipconfig parser
         spec_info = ext_info.get(name, {})
+        
+        # Windows Cross-reference (Handle alias vs full name)
         if not spec_info and platform.system() == "Windows":
              for k, v in ext_info.items():
                  if k in name or name in k:
                      spec_info = v
                      break
 
+        # Extract values and filter for IPv4
         gw = spec_info.get("gateway", "-")
+        if ":" in gw: gw = "-"
+        
         dns = spec_info.get("dns", "-")
+        if ":" in dns: dns = "-"
 
-        # 4. Determine Header Stats (Active Interface)
-        if active_iface_name and (name == active_iface_name or name in active_iface_name):
+        # --- HEADER PINNING LOGIC ---
+        is_pinned = (mac == pinned_mac) if pinned_mac else False
+        is_active_default = (name == active_iface_name or name in active_iface_name) if not pinned_mac else False
+
+        if is_pinned or is_active_default:
             if gw != "-": primary_gw = gw
             if dns != "-": primary_dns = dns
 
-        # 5. NEGOTIATED SPEED LOGIC
-        # Default to the hardware negotiated speed (e.g., 1000 for 1Gbps)
+        # --- SPEED LOGIC (Corrected for 'Not Available') ---
+        # 1. Start with the hardware negotiated speed
         raw_speed = st.speed if st else 0
-        display_speed = "N/A"
+        display_speed = "Not Available"
         
         if raw_speed > 0:
             if raw_speed >= 1000:
-                # Format as Gbps (e.g., 1 Gbps, 2.5 Gbps)
                 display_speed = f"{raw_speed/1000:g} Gbps"
             else:
                 display_speed = f"{raw_speed} Mbps"
         
-        # 6. WI-FI REAL-TIME RATE OVERRIDE
-        # If this is a Wi-Fi adapter and we have Tx/Rx data, prioritize that
+        # 2. Override with Real-time Wi-Fi rates (only if get_wifi_rates detected traffic)
         for wifi_name, rate_str in wifi_rates.items():
             if wifi_name.lower() in name.lower() or name.lower() in wifi_name.lower():
+                # If rate_str is valid, it overrides the link speed
                 display_speed = rate_str
 
-        # 7. User Customization (Custom Names/Visibility)
+        # Final sanity check to avoid '0 Mbps' strings
+        if "0 Mbps" in display_speed:
+            display_speed = "Not Available"
+
+        # Apply custom naming and visibility
         user_name = name
         is_vis = True
         key = mac if (mac and mac != "-") else name
+        
         if key in settings:
             if settings[key]["name"]: user_name = settings[key]["name"]
             is_vis = bool(settings[key]["visible"])
             
         adapters_data.append({
-            "id": name, "name": user_name, "mac": mac, 
+            "id": name, 
+            "name": user_name, 
+            "mac": mac, 
             "status": "Active" if (st and st.isup) else "Inactive",
-            "ip4": ip4, "gateway": gw, "dns": dns,
+            "ip4": ip4, 
+            "gateway": gw, 
+            "dns": dns,
             "speed": display_speed, 
-            "visible": is_vis
+            "visible": is_vis,
+            "is_primary": is_pinned
         })
 
-    # Failsafe for the Global Header
-    if primary_gw == "Unknown":
+    # Global Failsafe for the Header
+    if primary_gw == "Unknown" or ":" in primary_gw:
+        primary_gw = "-"
         for v in ext_info.values():
-            if v.get("gateway") and v.get("gateway") != "-":
-                primary_gw = v.get("gateway")
-                primary_dns = v.get("dns")
+            curr_gw = v.get("gateway")
+            if curr_gw and curr_gw != "-" and ":" not in curr_gw:
+                primary_gw = curr_gw
+                primary_dns = v.get("dns", "-")
                 break
         
     return jsonify({
         "adapters": adapters_data, 
-        "global_speed": get_bandwidth(),
         "primary_router": primary_gw, 
         "primary_dns": primary_dns
     })
+
+@app.route('/api/adapter_settings', methods=['POST'])
+def save_adapter_settings():
+    """Updates custom name, visibility, and primary (pinned) status."""
+    data = request.json
+    mac = data.get('mac')
+    name = data.get('name', '').strip()
+    visible = data.get('visible', 1)
+    primary = data.get('is_primary', 0)
+    
+    if not mac or mac == '-':
+        return jsonify({"status": "error", "message": "Cannot configure adapter without MAC address"}), 400
+
+    with sqlite3.connect(DB_NAME) as conn:
+        # If this new adapter is being set as primary, un-pin all others first
+        if primary == 1:
+            conn.execute("UPDATE adapter_settings SET is_primary = 0")
+            
+        # Update or Insert the new settings
+        conn.execute("""
+            INSERT INTO adapter_settings (mac_address, custom_name, is_visible, is_primary)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(mac_address) DO UPDATE SET
+                custom_name=excluded.custom_name,
+                is_visible=excluded.is_visible,
+                is_primary=excluded.is_primary
+        """, (mac, name, visible, primary))
+        conn.commit()
+        
+    return jsonify({"status": "success"})
 
 @app.route('/api/adapters/update', methods=['POST'])
 def update_adapter_settings():
@@ -664,50 +747,73 @@ def update_adapter_settings():
     return jsonify({"status": "success"})
     
 def get_wifi_rates():
-    """Fetches real-time Tx/Rx rates for Wi-Fi adapters across platforms."""
+    """
+    Safety-first Wi-Fi rate fetching. Handles Windows JSON/NoneType,
+    macOS ipconfig, and Linux sysfs speed attributes.
+    """
     rates = {}
     system = platform.system()
     try:
         if system == "Windows":
-            # Using PowerShell to get live Transmit and Receive rates
             cmd = "Get-NetAdapterStatistics | Select-Object Name, TransmitBitRate, ReceiveBitRate | ConvertTo-Json"
-            out = subprocess.check_output(["powershell", "-Command", cmd], text=True)
-            if not out.strip(): return rates
-            
-            data = json.loads(out)
-            # PowerShell might return a single dict or a list of dicts
-            if isinstance(data, dict): data = [data]
-            
-            for item in data:
-                # Convert bits per second to Mbps for readability
-                tx = round(item.get('TransmitBitRate', 0) / 1_000_000, 1)
-                rx = round(item.get('ReceiveBitRate', 0) / 1_000_000, 1)
-                rates[item['Name']] = f"Tx: {tx} / Rx: {rx} Mbps"
-        
-        elif system == "Darwin": # macOS
-            # Use 'ipconfig' or 'wdutil' to pull specific link summaries
-            # We target 'en0' as it is the standard Wi-Fi ID for Macs
             try:
+                out = subprocess.check_output(["powershell", "-Command", cmd], text=True, timeout=5)
+            except: return rates
+
+            if not out.strip(): return rates
+            try:
+                data = json.loads(out)
+            except: return rates
+
+            adapter_stats = [data] if isinstance(data, dict) else data
+            if isinstance(adapter_stats, list):
+                for item in adapter_stats:
+                    if not isinstance(item, dict): continue
+                    name = item.get('Name')
+                    if not name: continue
+
+                    try:
+                        raw_tx = item.get('TransmitBitRate')
+                        raw_rx = item.get('ReceiveBitRate')
+                        
+                        tx_val = int(raw_tx) if raw_tx is not None else 0
+                        rx_val = int(raw_rx) if raw_rx is not None else 0
+                        
+                        # Only report if there is actual traffic, otherwise skip
+                        # so the main loop uses the hardware link speed instead.
+                        if tx_val > 0 or rx_val > 0:
+                            tx_mbps = round(tx_val / 1_000_000, 1)
+                            rx_mbps = round(rx_val / 1_000_000, 1)
+                            rates[name] = f"Tx: {tx_mbps} / Rx: {rx_mbps} Mbps"
+                    except: continue
+                    
+        elif system == "Darwin": # macOS
+            try:
+                # Target en0 which is usually the default Wi-Fi interface
                 out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
                 tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
-                if tx_match:
-                    rates["en0"] = f"{tx_match.group(1)} Mbps"
+                if tx_match: rates["en0"] = f"{tx_match.group(1)} Mbps"
             except: pass
 
         elif system == "Linux": # Linux
-            # Linux typically reports link speed in /sys/class/net/
-            # We can try reading the 'speed' file if it exists
-            for iface in os.listdir('/sys/class/net/'):
-                if iface.startswith('w'): # Likely Wi-Fi
-                    try:
-                        with open(f'/sys/class/net/{iface}/speed', 'r') as f:
-                            speed = f.read().strip()
-                            if speed != "-1":
-                                rates[iface] = f"{speed} Mbps"
-                    except: pass
+            try:
+                # Iterate through interfaces in /sys/class/net
+                for iface in os.listdir('/sys/class/net/'):
+                    # Check for common Wi-Fi interface prefixes
+                    if iface.startswith(('wlan', 'wlp', 'wlo')):
+                        try:
+                            speed_path = f'/sys/class/net/{iface}/speed'
+                            if os.path.exists(speed_path):
+                                with open(speed_path, 'r') as f:
+                                    speed = f.read().strip()
+                                    # -1 often indicates the link is down or speed is unknown
+                                    if speed != "-1":
+                                        rates[iface] = f"{speed} Mbps"
+                        except: continue
+            except: pass
+
     except Exception as e:
-        print(f"Error fetching Wi-Fi rates: {e}")
-        
+        print(f"Error in get_wifi_rates: {e}")
     return rates
 
 # --- Network & Device Management Routes ---
@@ -1053,62 +1159,163 @@ def export_tool_logs():
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={log_type}_logs.csv"})
 
 # --- Misc (WiFi, Speedtest, History, Update) ---
+import re
+import platform
+import subprocess
+import time
+from flask import jsonify
+
+import re
+import platform
+import subprocess
+import time
+from flask import jsonify
 
 @app.route('/api/wifi')
 def get_wifi_networks():
-    """Returns Wi-Fi data for Win/Linux or an incompatibility notice for macOS."""
-    networks = []
+    """
+    Returns detailed Wi-Fi data grouped by SSID and automatically
+    logs every successful scan to the database history.
+    """
+    networks_dict = {}
     sys_plat = platform.system()
     
     try:
-        # --- MACOS: EXPLICIT INCOMPATIBILITY ---
         if sys_plat == "Darwin":
-            return jsonify({
-                "error": "Incompatible",
-                "message": "Wi-Fi Scanning is currently restricted on macOS due to OS-level privacy locks on location services."
-            })
+            return jsonify({"error": "Incompatible", "message": "macOS location privacy locks Wi-Fi scanning."})
 
-        # --- WINDOWS LOGIC ---
         elif sys_plat == "Windows":
-            try:
-                output = subprocess.check_output(["netsh", "wlan", "show", "network", "mode=bssid"], 
-                                                 text=True, encoding='latin-1', errors='ignore')
-                ssid = ""
-                for line in output.split('\n'):
-                    line = line.strip()
-                    if line.startswith("SSID"): 
-                        ssid = line.split(":")[1].strip()
-                    elif line.startswith("Signal") and ssid:
-                        networks.append({"ssid": ssid, "signal": line.split(":")[1].strip()})
-                        ssid = ""
-            except: 
-                return jsonify({"error": "Failed", "message": "Windows WLAN service not responding."})
+            # Force hardware refresh (Requires Admin)
+            subprocess.run(["powershell", "-Command", "Get-NetAdapter | Where-Object {$_.MediaType -eq 'Native 802.11'} | Restart-NetAdapter"], capture_output=True)
+            time.sleep(4) 
 
-        # --- LINUX LOGIC ---
+            process = subprocess.Popen(
+                "netsh wlan show networks mode=bssid", 
+                shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
+                text=True, encoding='cp437', errors='ignore'
+            )
+            stdout, _ = process.communicate(timeout=15)
+
+            current_ssid = None
+            current_ch = None 
+            
+            for line in stdout.split('\n'):
+                line = line.strip()
+                if not line: continue
+
+                if line.lower().startswith("ssid"):
+                    parts = line.split(":", 1)
+                    current_ssid = parts[1].strip() if len(parts) > 1 else "Hidden Network"
+                    if current_ssid not in networks_dict:
+                        networks_dict[current_ssid] = {"ssid": current_ssid, "signal": [], "channel": [], "auth": "Unknown", "band": []}
+
+                elif current_ssid:
+                    if "authentication" in line.lower():
+                        networks_dict[current_ssid]["auth"] = line.split(":", 1)[1].strip()
+                    
+                    elif "signal" in line.lower():
+                        sig = line.split(":", 1)[1].strip()
+                        if sig not in networks_dict[current_ssid]["signal"]:
+                            networks_dict[current_ssid]["signal"].append(sig)
+                    
+                    elif "channel" in line.lower():
+                        ch = line.split(":", 1)[1].strip()
+                        if re.match(r"^\d{1,3}$", ch):
+                            current_ch = int(ch)
+                            if ch not in networks_dict[current_ssid]["channel"]:
+                                networks_dict[current_ssid]["channel"].append(ch)
+                            
+                            band_label = ""
+                            if 1 <= current_ch <= 14: band_label = "2.4GHz"
+                            elif 32 <= current_ch <= 177: band_label = "5GHz"
+                            elif current_ch >= 190: band_label = "6GHz"
+                            
+                            if band_label and band_label not in networks_dict[current_ssid]["band"]:
+                                networks_dict[current_ssid]["band"].append(band_label)
+
         elif sys_plat == "Linux":
-            try:
-                output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,SIGNAL", "dev", "wifi"], text=True)
-                for line in output.strip().split('\n'):
-                    parts = line.split(":")
-                    if len(parts) >= 2 and parts[0]:
-                        networks.append({"ssid": parts[0], "signal": f"{parts[1]}%"})
-            except:
-                return jsonify({"error": "Failed", "message": "Linux 'nmcli' tool not found or permission denied."})
+            output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,SIGNAL,CHAN,SECURITY", "dev", "wifi"], text=True)
+            for line in output.strip().split('\n'):
+                parts = line.split(":")
+                if len(parts) >= 4:
+                    ssid = parts[0] or "Hidden Network"
+                    ch = int(parts[2]) if parts[2].isdigit() else 0
+                    if ssid not in networks_dict:
+                        networks_dict[ssid] = {"ssid": ssid, "signal": [], "channel": [], "auth": parts[3], "band": []}
+                    
+                    if f"{parts[1]}%" not in networks_dict[ssid]["signal"]: networks_dict[ssid]["signal"].append(f"{parts[1]}%")
+                    if str(ch) not in networks_dict[ssid]["channel"]: networks_dict[ssid]["channel"].append(str(ch))
+                    
+                    b = "2.4GHz" if ch <= 14 else "5GHz" if ch <= 177 else "6GHz"
+                    if b not in networks_dict[ssid]["band"]: networks_dict[ssid]["band"].append(b)
 
     except Exception as e: 
-        return jsonify({"error": "Error", "message": str(e)})
+        return jsonify({"error": "Critical Error", "message": str(e)})
+
+    # Final result processing
+    final_networks = []
+    for net in networks_dict.values():
+        net["channel"].sort(key=int)
+        net["band"].sort()
         
-    return jsonify(networks)
+        final_networks.append({
+            "ssid": net["ssid"],
+            "signal": ", ".join(net["signal"]),
+            "channel": ", ".join(net["channel"]),
+            "auth": net["auth"],
+            "band": ", ".join(net["band"])
+        })
+
+    # --- AUTOMATIC HISTORY LOGGING ---
+    if final_networks:
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            auto_name = f"Auto-Scan {timestamp}"
+            
+            # Inside @app.route('/api/wifi') ...
+            with sqlite3.connect(DB_NAME) as conn:
+                conn.execute("PRAGMA busy_timeout = 3000")
+                c = conn.cursor()
+                # Ensure the column names match your init_db (scan_name, comments, results_json)
+                c.execute(
+                    "INSERT INTO wifi_history (scan_name, comments, results_json) VALUES (?, ?, ?)",
+                    (auto_name, "Automatically logged", json.dumps(final_networks))
+                )
+                conn.commit()
+            print(f"[✓] Wi-Fi scan auto-logged: {auto_name}")
+        except Exception as db_err:
+            print(f"[!] Database Auto-log Error: {db_err}")
+
+    return jsonify(final_networks)
 
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
+    """
+    Executes an Ookla Speedtest using the CLI binary located in the virtual environment.
+    Automatically handles path resolution for Windows, macOS, and Linux.
+    """
     d = request.json
     try:
-        # Run Speedtest
-        cmd = ["speedtest", "--format=json", "--accept-license", "--accept-gdpr"]
+        # 1. Determine Absolute Path to the CLI Binary
+        # app.root_path provides the directory where app.py is located
+        base_dir = app.root_path 
+        
+        if platform.system() == "Windows":
+            # Windows venv structure uses 'Scripts'
+            st_path = os.path.join(base_dir, "venv", "Scripts", "speedtest.exe")
+        else:
+            # macOS and Linux venv structure uses 'bin'
+            st_path = os.path.join(base_dir, "venv", "bin", "speedtest")
+
+        # 2. Check if the binary exists; if not, fall back to global 'speedtest' command
+        cmd_path = st_path if os.path.exists(st_path) else "speedtest"
+        
+        # 3. Execute the Speedtest
+        # --accept-license and --accept-gdpr are required for non-interactive execution
+        cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
         res = json.loads(subprocess.check_output(cmd, text=True))
         
-        # Format Data
+        # 4. Format the Resulting Data
         down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
@@ -1119,22 +1326,29 @@ def run_speedtest():
         conn_type = d.get('connection_type') or "Ethernet"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # SAVE TO DB
+        # 5. Log to the Database
         try:
             with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                # Ensure PRAGMA journal_mode=WAL is active for concurrency
+                conn.execute("PRAGMA journal_mode=WAL;") 
                 conn.execute("""
                     INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, isp) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (ts, name, conn_type, down, up, ping, wan, isp))
                 conn.commit()
         except sqlite3.Error as db_err:
-            print(f"DATABASE ERROR: {db_err}")
-            return jsonify({"error": f"Failed to save to database: {db_err}"})
+            print(f"[X] Database Logging Error: {db_err}")
+            # We still return the results even if the database logging fails
             
         return jsonify({"download": down, "upload": up, "ping": ping})
 
+    except subprocess.CalledProcessError as e:
+        print(f"[X] Speedtest Execution Error: {e}")
+        return jsonify({"error": "Speedtest CLI failed to execute. Ensure it is installed correctly."})
+    except FileNotFoundError:
+        return jsonify({"error": "Speedtest binary not found. Please run setup.py again."})
     except Exception as e:
-        print(f"SPEEDTEST ERROR: {e}")
+        print(f"[X] Unexpected Speedtest Error: {e}")
         return jsonify({"error": str(e)})
 
 @app.route('/api/get_last_name')
@@ -1249,6 +1463,161 @@ def get_changelog():
 def apply_update():
     """Placeholder for applying updates."""
     return jsonify({"status": "success", "message": "Update initiated. Please restart manually."})
+
+@app.route('/api/wifi/save', methods=['POST'])
+def save_wifi_scan():
+    data = request.json
+    try:
+        conn = sqlite3.connect('network_data.db')
+        c = conn.cursor()
+        
+        # Determine the name: Use provided name, or fallback to current timestamp
+        raw_name = data.get('name', '').strip()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        scan_name = raw_name if raw_name else f"Scan {timestamp}"
+        
+        # Comments can be empty (None or empty string)
+        comments = data.get('comments', '').strip()
+
+        c.execute("INSERT INTO wifi_history (scan_name, comments, results_json) VALUES (?, ?, ?)",
+                  (scan_name, comments, json.dumps(data.get('results', []))))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success", "saved_as": scan_name})
+    except Exception as e:
+        print(f"[X] Database Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/wifi/history', methods=['GET'])
+def get_wifi_history():
+    conn = sqlite3.connect('network_data.db')
+    c = conn.cursor()
+    c.execute("SELECT id, timestamp, scan_name, comments FROM wifi_history ORDER BY timestamp DESC")
+    rows = c.fetchall()
+    history = [{"id": r[0], "timestamp": r[1], "name": r[2], "comments": r[3]} for r in rows]
+    conn.close()
+    return jsonify(history)
+
+@app.route('/api/wifi/history/<int:scan_id>', methods=['GET'])
+def load_wifi_scan(scan_id):
+    conn = sqlite3.connect('network_data.db')
+    c = conn.cursor()
+    c.execute("SELECT results_json, scan_name FROM wifi_history WHERE id = ?", (scan_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return jsonify({"results": json.loads(row[0]), "name": row[1]})
+    return jsonify({"error": "Not found"}), 404
+
+@app.route('/api/wifi/delete', methods=['POST'])
+def delete_wifi_scan():
+    scan_id = request.json.get('id')
+    conn = sqlite3.connect('network_data.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM wifi_history WHERE id = ?", (scan_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "deleted"})
+
+@app.route('/api/wifi/export/<int:scan_id>')
+def export_wifi_csv(scan_id):
+    try:
+        conn = sqlite3.connect('network_data.db')
+        c = conn.cursor()
+        c.execute("SELECT scan_name, results_json FROM wifi_history WHERE id = ?", (scan_id,))
+        row = c.fetchone()
+        conn.close()
+
+        if not row:
+            return "Scan not found", 404
+
+        scan_name = row[0].replace(" ", "_")
+        results = json.loads(row[1])
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header Row
+        writer.writerow(["SSID", "Signal", "Channel(s)", "Band(s)", "Authentication"])
+        
+        # Data Rows
+        for net in results:
+            writer.writerow([
+                net.get('ssid', 'Unknown'),
+                net.get('signal', '-'),
+                net.get('channel', '-'),
+                net.get('band', '-'),
+                net.get('auth', '-')
+            ])
+
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-disposition": f"attachment; filename=wifi_scan_{scan_name}.csv"}
+        )
+    except Exception as e:
+        return str(e), 500
+
+@app.route('/api/wifi/history/clear_all', methods=['POST'])
+def clear_all_wifi_history():
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("DELETE FROM wifi_history")
+        conn.commit()
+    return jsonify({"status": "success"})
+
+@app.route('/api/wifi/export_active', methods=['POST'])
+def export_active_wifi_csv():
+    """Exports the current active scan results to CSV."""
+    try:
+        data = request.json
+        results = data.get('results', [])
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["SSID", "Signal", "Channel(s)", "Band(s)", "Authentication"])
+        
+        for net in results:
+            writer.writerow([
+                net.get('ssid', 'Unknown'),
+                net.get('signal', '-'),
+                net.get('channel', '-'),
+                net.get('band', '-'),
+                net.get('auth', '-')
+            ])
+
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-disposition": "attachment; filename=active_wifi_scan.csv"}
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+@app.route('/api/wifi/history/update', methods=['POST'])
+def update_wifi_history():
+    """Updates the scan name and comment of a specific Wi-Fi history entry."""
+    data = request.json
+    scan_id = data.get('id')
+    new_name = data.get('name', '').strip()
+    new_comment = data.get('comment', '').strip()
+    
+    # Fallback for name if left empty
+    if not new_name:
+        new_name = f"Scan {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+    try:
+        # Use 'network_data.db' to match your other wifi_history functions
+        with sqlite3.connect('network_data.db') as conn:
+            conn.execute(
+                "UPDATE wifi_history SET scan_name = ?, comments = ? WHERE id = ?",
+                (new_name, new_comment, scan_id)
+            )
+            conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     # Set to port 81 per your configuration

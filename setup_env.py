@@ -7,10 +7,11 @@ import shutil
 import urllib.request
 import zipfile
 import io
+import ctypes
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.4.0"
+SETUP_VERSION = "0.5.0"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy"]
 APP_FILENAME = "app.py"
@@ -23,6 +24,39 @@ GITHUB_SETTINGS = {
     "token": "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",
     "branch": "main"
 }
+
+def install_git():
+    """Checks for Git and installs it if missing based on the OS."""
+    if shutil.which("git"):
+        return True
+
+    system = platform.system()
+    print(f"[*] Git not detected. Attempting automated installation for {system}...")
+
+    try:
+        if system == "Windows":
+            if shutil.which("choco"):
+                subprocess.run(["choco", "install", "git", "-y"], check=True)
+            else:
+                print("[!] Chocolatey not found. Please install Git manually from https://git-scm.com/")
+                return False
+
+        elif system == "Darwin": # macOS
+            if install_homebrew():
+                subprocess.run(["brew", "install", "git"], check=True)
+            else:
+                return False
+
+        elif system == "Linux":
+            # Triggers sudo prompt for apt
+            subprocess.run(["sudo", "apt-get", "update"], check=True)
+            subprocess.run(["sudo", "apt-get", "install", "git", "-y"], check=True)
+
+        print("[✓] Git successfully installed.")
+        return True
+    except Exception as e:
+        print(f"[X] Failed to install Git: {e}")
+        return False
 
 def fetch_latest_from_github(base_dir):
     """Downloads and extracts the private project if app.py is missing."""
@@ -176,26 +210,100 @@ def run_application(base_dir, venv_python):
     except KeyboardInterrupt:
         print("\n[!] Dashboard stopped by user.")
 
+def install_npcap_windows():
+    """Windows: Checks for Npcap and attempts installation via Chocolatey if missing."""
+    if platform.system() != "Windows":
+        return
+
+    # Check if Npcap driver exists in System32
+    npcap_exists = os.path.exists(os.environ.get('SystemRoot', 'C:\\Windows') + "\\System32\\Npcap")
+    
+    if not npcap_exists:
+        print("[*] Npcap not detected. This is required for Network Scanning on Windows.")
+        if shutil.which("choco"):
+            print("[*] Installing Npcap via Chocolatey...")
+            try:
+                subprocess.run(["choco", "install", "npcap", "-y"], check=True)
+                print("[✓] Npcap installed. You may need to restart your terminal.")
+            except Exception as e:
+                print(f"[!] Automated Npcap install failed: {e}")
+        else:
+            print("[!] Please manually install Npcap from https://npcap.com/ to enable scanning.")
+
+def is_admin():
+    """Checks if the script is running with administrative privileges."""
+    try:
+        if platform.system() == "Windows":
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        else:
+            return os.getuid() == 0
+    except AttributeError:
+        return False
+
+def run_application(base_dir, venv_python):
+    """Launches the main app."""
+    app_path = base_dir / APP_FILENAME
+    print("\n" + "="*60)
+    print(f"   LAUNCHING DASHBOARD (Setup v{SETUP_VERSION})")
+    print("="*60)
+    
+    # Prerequisite check: is_admin should have been handled by main()
+    # but we keep a check here for robustness.
+    cmd = [str(venv_python), str(app_path)]
+    
+    try:
+        # On Linux/Mac, if we aren't root, prepend sudo
+        if platform.system() != "Windows" and not is_admin():
+            print("[*] Re-launching with sudo for network scanning permissions...")
+            subprocess.run(["sudo"] + cmd)
+        else:
+            subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print("\n[!] Dashboard stopped by user.")
+
 def main():
     # Detect the script's directory
     base_dir = Path(__file__).parent.resolve()
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
-    
-    # 1. Bootstrap: Fetch project files if app.py is missing
+
+    # --- 1. ADMIN PRIVILEGE ELEVATION ---
+    if platform.system() == "Windows":
+        if not is_admin():
+            print("[*] Requesting Administrative privileges...")
+            # Relaunch the script with admin rights
+            script = os.path.abspath(__file__)
+            params = ' '.join([script] + sys.argv[1:])
+            try:
+                # 'runas' triggers the UAC prompt
+                ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+                sys.exit(0)
+            except Exception as e:
+                print(f"[X] Failed to elevate: {e}")
+                sys.exit(1)
+    else:
+        # For Linux/Mac, we handle elevation during the run_application phase via sudo
+        pass
+
+    install_git()
+
+    # --- 2. BOOTSTRAP: Fetch project files if app.py is missing ---
     if not (base_dir / APP_FILENAME).exists():
         fetch_latest_from_github(base_dir)
     
-    # 2. Setup Venv
+    # --- 3. SETUP VENV ---
     venv_path = create_venv(base_dir)
     paths = get_venv_paths(venv_path)
     
-    # 3. Install Python dependencies
+    # --- 4. INSTALL DEPENDENCIES ---
     install_requirements(paths["python"])
     
-    # 4. Install Speedtest binary
+    if platform.system() == "Windows":
+        install_npcap_windows()
+
+    # --- 5. INSTALL SPEEDTEST BINARY ---
     install_speedtest_cli(paths["bin_dir"])
     
-    # 5. Launch Application
+    # --- 6. LAUNCH APPLICATION ---
     run_application(base_dir, paths["python"])
 
 if __name__ == "__main__":

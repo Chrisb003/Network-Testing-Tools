@@ -3,7 +3,10 @@ This is an app I created for basic network testing. I put it together mainly so 
 It lists local IP, router IP and wan IP, ISP name. It can also be used to run speed tests with using speedtest cli, it lists network adaptors and what IP address and dns each have. It can do a network scan and list network devices IP address and mac addresses. Store a history of speed tests completed which can be exported as a csv. Do ping test, DNS lookups.
 Not all features will work with all OS's.
 
-On my list to add/get working. Wifi scanning (with listing network channel numbers if possible), So far in testing it does not work on mac os at all. Still to be tested on windows and linux
+On my list to add/get working. Wifi scanning (with listing network channel numbers if possible), So far in testing it does not work on mac os at all. Mostly completed windows testing. To be tested with linux to ensure it functions.
+
+0.6.0 Various small fixes to functions. As well as huge amount of work done on the wifi scanning. Wifi scanning doesnt work on Mac. It has now been tested on windows and seems functional. To get it to scan properly when doing this it will disable and reenable the wifi adaptor. There has also been various updates to the dashboard to support the changes. With the setup script most of the changes are to get it to install the prerequirments when first ran. 
+In this version the code is at 0.6.0, the setup is at 0.5.0. Added version number for html dashboard currently 0.6.0
 
 0.5.0 Various fixes and changes. Setup scipt also downloads the latest version from github the first time it runs. The main app script there has been various changes to make sure everything is working as it should be. The dashboard page updated visuals to fix a few things, csv export now working correctly, Wifi scanning tool still to be worked on remove various duplicate functions.
 

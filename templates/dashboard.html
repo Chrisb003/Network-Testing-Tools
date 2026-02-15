@@ -1,3 +1,4 @@
+<!-- Version number 0.6.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -31,6 +32,26 @@
         
         .log-container { max-height: 400px; overflow-y: auto; }
         #history-table tr, #network-list tr { cursor: pointer; }
+        /* Wi-Fi History Table Styling */
+.wifi-res-preview { 
+    max-width: 250px; 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+    white-space: nowrap; 
+    display: inline-block; 
+}
+
+#wifi-history-table tr td {
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
+.badge-wifi-count {
+    background-color: var(--bs-primary-bg-subtle);
+    color: var(--bs-primary);
+    border: 1px solid var(--bs-primary-border-subtle);
+    font-size: 0.75rem;
+}
     </style>
 </head>
 <body>
@@ -42,7 +63,6 @@
             <i class="bi bi-sun-fill"></i>
         </button>
     </div>
-
     <div class="row mb-2 text-center">
         <div class="col-md-4"><div class="alert alert-info shadow-sm py-2 small">LAN: <strong>{{ local_ip }}</strong></div></div>
         <div class="col-md-4"><div class="alert alert-primary shadow-sm py-2 small">WAN: <strong id="header-wan-ip">{{ wan_ip }}</strong></div></div>
@@ -67,7 +87,12 @@
             </div>
         </div>
     </div>
-
+    <div class="d-flex align-items-center">
+    <button id="refresh-btn" class="btn btn-sm btn-outline-info me-3" onclick="refreshNetworkInfo()">
+        <i class="bi bi-arrow-clockwise"></i> Refresh Network Info
+    </button>
+    <div id="status-dot" class="badge bg-success">Live</div>
+</div>
     <ul class="nav nav-pills mb-4 justify-content-center">
         <li class="nav-item"><a class="nav-link active" onclick="showPage('adapters', this)">Interfaces</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('devices', this)">Devices</a></li>
@@ -75,6 +100,7 @@
         <li class="nav-item"><a class="nav-link" onclick="showPage('dns-tool', this)">DNS Lookup</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('ping-tool', this)">Ping Tool</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi-history', this)">Wi-Fi History</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">Speed Test History</a></li>
     </ul>
 
@@ -103,7 +129,6 @@
                 <div class="d-flex gap-2 align-items-center">
                     <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
                     <button class="btn btn-success btn-sm text-nowrap" id="btn-scan-devices" onclick="scanDevices()">Scan</button>
-                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevicesCSV()">Export</button>
                 </div>
             </div>
             <div class="card-body p-0">
@@ -179,13 +204,23 @@
             </div>
         </div>
     </div>
-<div id="wifi" class="page-section hidden">
+    <div id="wifi" class="page-section hidden">
         <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Wi-Fi Networks</h5>
-                <button class="btn btn-info btn-sm text-white" onclick="scanWifi()">Refresh</button>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-info btn-sm text-white" id="wifi-scan-btn" onclick="scanWifi()">
+                        <i class="bi bi-search"></i> Scan Wi-Fi
+                    </button>
+                    <button class="btn btn-outline-primary btn-sm" onclick="exportActiveWifiCSV()" id="btn-wifi-export" disabled>
+                        <i class="bi bi-download"></i> Export CSV
+                    </button>
+                </div>
             </div>
-            <div class="card-body p-3"><div class="row" id="wifi-list"></div></div>
+            <div class="card-body p-3">
+                <div id="active-scan-meta" class="mb-3 small text-info fw-bold"></div>
+                <div class="row" id="wifi-list"></div>
+            </div>
         </div>
     </div>
 
@@ -207,16 +242,35 @@
             </div>
         </div>
     </div>
-</div> <div class="modal fade" id="adapterModal" tabindex="-1">
+<div class="modal fade" id="adapterModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
-            <div class="modal-header"><h5 class="modal-title">Config</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-            <div class="modal-body">
-                <input type="hidden" id="modal-mac"><input type="hidden" id="modal-sys-id">
-                <div class="mb-3"><label>Name</label><input type="text" id="modal-custom-name" class="form-control"></div>
-                <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="modal-visible"><label>Visible</label></div>
+            <div class="modal-header">
+                <h5 class="modal-title">Adapter Settings</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-footer"><button type="button" class="btn btn-primary" onclick="saveAdapterSettings()">Save</button></div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-mac">
+                <input type="hidden" id="modal-sys-id">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Custom Display Name</label>
+                    <input type="text" id="modal-custom-name" class="form-control" placeholder="e.g. Office Ethernet">
+                </div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="modal-visible">
+                    <label class="form-check-label">Visible in Dashboard</label>
+                </div>
+                <div class="form-check mt-3 pt-3 border-top">
+                    <input class="form-check-input" type="checkbox" id="modal-pin-primary">
+                    <label class="form-check-label fw-bold" for="modal-pin-primary">
+                        Pin as Primary Adapter
+                    </label>
+                    <small class="text-muted d-block">The main dashboard header will always use this adapter's IP/Gateway/DNS info.</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveAdapterSettings()">Save Changes</button>
+            </div>
         </div>
     </div>
 </div>
@@ -232,19 +286,43 @@
         </div>
     </div>
 </div>
-
+<div id="wifi-history" class="page-section hidden">
+    <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Past Wi-Fi Scans</h5>
+            <input type="text" id="wifi-history-filter" class="form-control form-control-sm w-25" placeholder="Filter scans..." onkeyup="filterWifiHistory()">
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0 small align-middle">
+                <thead>
+                    <tr>
+                        <th>Date/Time</th>
+                        <th>Scan Name</th>
+                        <th>Comments</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="wifi-history-table"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
 <div class="version-footer">
     <div>Network Diagnostics <span class="badge bg-secondary">BETA</span></div>
     <div>
         <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Global: {{ global_version }}</span>
         <span class="ver-tag" onclick="openUpdateModal()">Setup: {{ setup_version }}</span>
         <span class="ver-tag" onclick="openUpdateModal()">App: {{ app_version }}</span>
+        <span class="ver-tag" onclick="openUpdateModal()">HTML: {{ html_version }}</span>
     </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     let updateModal, adapterModal, allDevices = [], allHistory = [], currentNetworkId = null;
+    let currentScanResults = [];
+    let allWifiHistory = [];
+    let activeScanComment = "";
 
     document.addEventListener("DOMContentLoaded", () => {
         setTheme(localStorage.getItem('theme') || 'dark');
@@ -259,10 +337,11 @@
         });
 
         // Start Loops
-        setInterval(fetchAdapters, 2000); 
+        setInterval(updateLiveRatesOnly, 3000); 
         fetchAdapters(); 
         checkUpdates(); 
         loadNetworks();
+        
     });
 
     // --- Core UI Helpers ---
@@ -270,7 +349,46 @@
         const next = document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark';
         setTheme(next); localStorage.setItem('theme', next);
     }
+
+    let isManualRefreshing = false;
+
+    async function updateLiveRatesOnly() {
+    if (isManualRefreshing) return; // Don't interrupt if we are doing a full refresh
+
+    try {
+        const response = await fetch('/api/adapters');
+        const data = await response.json();
+        
+        // Only update the "Speed" column in the table to avoid flickering the whole UI
+        data.adapters.forEach(adapter => {
+            const speedCell = document.querySelector(`tr[data-id="${adapter.id}"] .speed-cell`);
+            if (speedCell) {
+                speedCell.innerText = adapter.speed;
+            }
+        });
+    } catch (err) {
+        console.warn("Fast poll failed, skipping update.");
+    }
+    }
+
+async function refreshNetworkInfo() {
+    isManualRefreshing = true;
+    const btn = document.getElementById('refresh-btn');
+    const originalText = btn.innerHTML;
     
+    // UI Feedback
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Updating...';
+    
+    try {
+        await fetchAdapters(); // Re-run the full data fetch
+    } finally {
+        isManualRefreshing = false;
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
     function setTheme(theme) {
         document.documentElement.setAttribute('data-bs-theme', theme);
         const btn = document.getElementById('theme-toggle');
@@ -288,83 +406,124 @@
         if(id === 'networks') loadNetworks();
         if(id === 'dns-tool') fetchToolLogs('dns');
         if(id === 'ping-tool') fetchToolLogs('ping');
+        if(id === 'wifi-history') loadWifiHistory();
     }
 
     // --- Adapters Logic ---
-    function fetchAdapters() {
-        const noMac = document.getElementById('hideNoMacCheck').checked;
-        const showHidden = document.getElementById('showHiddenCheck').checked;
+    // --- Consolidated Adapter Logic ---
+
+async function fetchAdapters() {
+    /**
+     * Performs a full data fetch to update:
+     * 1. The Global Header (WAN, Router IP, DNS).
+     * 2. The Adapter Table (IPs, Status, MACs).
+     * 3. Handles "Pinned" status for the primary interface.
+     */
+    const noMac = document.getElementById('hideNoMacCheck').checked;
+    const showHidden = document.getElementById('showHiddenCheck').checked;
+
+    try {
+        const response = await fetch('/api/adapters');
+        const data = await response.json();
         
-        fetch('/api/adapters').then(r => r.json()).then(data => {
-            if (!data || !data.adapters) return;
-            
-            // 1. Update Global Header Stats
-            if(data.global_speed) { 
-                document.getElementById('live-down').innerText = data.global_speed.download; 
-                document.getElementById('live-up').innerText = data.global_speed.upload; 
-            }
-            if(data.primary_router) document.getElementById('header-router-ip').innerText = data.primary_router;
-            if(data.primary_dns) document.getElementById('header-dns').innerText = data.primary_dns;
-            
-            const tbody = document.getElementById('adapter-table'); 
-            if(!tbody) return;
-            
-            tbody.innerHTML = data.adapters.map(a => {
-                // 2. Filter Logic
-                if(noMac && (!a.mac || a.mac === '-')) return '';
-                if(!a.visible && !showHidden) return '';
-                
-                // 3. SAFE DATA PREP (Fixes broken buttons)
-                // We sanitize the name and ID to prevent quotes from breaking the onclick event
-                const safeName = (a.name || '').replace(/'/g, "\\'"); 
-                const safeId = (a.id || '').replace(/'/g, "\\'");
-                const safeMac = a.mac || '-';
-                
-                // Force visibility to a simple true/false boolean for the function
-                const isVisible = a.visible ? true : false; 
+        if (!data || !data.adapters) return;
 
-                // 4. Render Row
-                // Note the 'onclick' now uses the safe variables we created above
-                return `
-                    <tr class="${!a.visible ? 'opacity-50' : ''}">
-                        <td><strong>${a.name}</strong></td>
-                        <td class="text-muted small">${a.id}</td>
-                        <td class="${a.status==='Active'?'status-active':'status-inactive'}">${a.status}</td>
-                        <td class="font-monospace small">${a.mac}</td>
-                        <td>${a.ip4}</td>
-                        <td class="text-primary fw-bold">${a.gateway}</td> 
-                        <td class="text-info fw-bold">${a.dns}</td>
-                        <td class="text-nowrap small fw-bold">${a.speed}</td>
-                        <td class="text-end">
-                            <i class="bi bi-gear edit-icon" style="cursor: pointer;"
-                            onclick="openAdapterConfig('${safeMac}', '${safeId}', '${safeName}', ${isVisible})">
-                            </i>
-                        </td>
-                    </tr>`;
-            }).join('');
-        });
-    }
+        // 1. Update Global Header Stats (Syncing IDs with your HTML)
+        const routerEl = document.getElementById('header-router-ip');
+        const dnsEl = document.getElementById('header-dns');
+        const downEl = document.getElementById('live-down');
+        const upEl = document.getElementById('live-up');
 
-    function openAdapterConfig(mac, id, name, vis) {
-        document.getElementById('modal-mac').value = mac; 
-        document.getElementById('modal-sys-id').value = id;
-        document.getElementById('modal-custom-name').value = name; 
-        document.getElementById('modal-visible').checked = vis;
-        adapterModal.show();
+        if (routerEl) routerEl.innerText = data.primary_router || "-";
+        if (dnsEl) dnsEl.innerText = data.primary_dns || "-";
+        
+        if (data.global_speed) { 
+            if (downEl) downEl.innerText = data.global_speed.download; 
+            if (upEl) upEl.innerText = data.global_speed.upload; 
+        }
+
+        const tbody = document.getElementById('adapter-table'); 
+        if (!tbody) return;
+
+        // 2. Render the Adapter Table
+        tbody.innerHTML = data.adapters.map(a => {
+            // Filter Logic based on UI toggles
+            if (noMac && (!a.mac || a.mac === '-')) return '';
+            if (!a.visible && !showHidden) return '';
+
+            // Sanitize strings for the onclick event to prevent JS errors
+            const safeName = (a.name || '').replace(/'/g, "\\'"); 
+            const safeId = (a.id || '').replace(/'/g, "\\'");
+            const safeMac = a.mac || '-';
+            const isVisible = !!a.visible;
+            const isPrimary = !!a.is_primary;
+
+            return `
+                <tr data-id="${a.id}" class="${!a.visible ? 'opacity-50' : ''}">
+                    <td>
+                        <strong>${a.name}</strong> 
+                        ${isPrimary ? '<span class="badge bg-primary ms-1" style="font-size: 0.6rem;">PINNED</span>' : ''}
+                    </td>
+                    <td class="text-muted small">${a.id}</td>
+                    <td class="${a.status === 'Active' ? 'status-active' : 'status-inactive'}">
+                        ${a.status}
+                    </td>
+                    <td class="font-monospace small">${a.mac}</td>
+                    <td>${a.ip4}</td>
+                    <td class="text-primary fw-bold">${a.gateway}</td> 
+                    <td class="text-info fw-bold">${a.dns}</td>
+                    <td class="text-nowrap small fw-bold speed-cell">${a.speed}</td>
+                    <td class="text-end">
+                        <i class="bi bi-gear" style="cursor: pointer;" 
+                           onclick="openAdapterConfig('${safeMac}', '${safeId}', '${safeName}', ${isVisible}, ${isPrimary})">
+                        </i>
+                    </td>
+                </tr>`;
+        }).join('');
+
+    } catch (err) {
+        console.error("Failed to fetch adapter data:", err);
     }
-    
-    function saveAdapterSettings() {
-        fetch('/api/adapters/update', {
-            method:'POST', 
-            headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({
-                mac:document.getElementById('modal-mac').value, 
-                id:document.getElementById('modal-sys-id').value, 
-                name:document.getElementById('modal-custom-name').value, 
-                visible:document.getElementById('modal-visible').checked
-            })
-        }).then(() => { adapterModal.hide(); fetchAdapters(); });
+}
+
+function openAdapterConfig(mac, id, name, vis, primary) {
+    document.getElementById('modal-mac').value = mac; 
+    document.getElementById('modal-sys-id').value = id;
+    document.getElementById('modal-custom-name').value = name; 
+    document.getElementById('modal-visible').checked = vis;
+    document.getElementById('modal-pin-primary').checked = primary; // Set pinning state
+    adapterModal.show();
+}
+
+async function saveAdapterSettings() {
+    const mac = document.getElementById('modal-mac').value;
+    const id = document.getElementById('modal-sys-id').value;
+    const name = document.getElementById('modal-custom-name').value;
+    const visible = document.getElementById('modal-visible').checked ? 1 : 0;
+    const primary = document.getElementById('modal-pin-primary').checked ? 1 : 0;
+
+    // Use /api/adapter_settings to match your app.py route exactly
+    const response = await fetch('/api/adapter_settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            mac: mac,
+            id: id,
+            name: name,
+            visible: visible,
+            is_primary: primary
+        })
+    });
+
+    if (response.ok) {
+        adapterModal.hide();
+        // Trigger a full refresh so the Header (WAN/Router) updates if pinned
+        refreshNetworkInfo(); 
+    } else {
+        const err = await response.json();
+        alert("Failed to save: " + (err.message || "Unknown error"));
     }
+}
 
     // --- Saved Networks & Device Logic ---
     function loadNetworks() {
@@ -589,49 +748,115 @@
     }
     
     // --- MISSING WIFI LOGIC ADDED HERE ---
-function scanWifi() { 
-        const container = document.getElementById('wifi-list'); 
-        container.innerHTML = '<div class="col-12 text-center p-5"><div class="spinner-border text-info"></div><br>Scanning...</div>';
+    function scanWifi() { 
+    const container = document.getElementById('wifi-list'); 
+    const btn = document.getElementById('wifi-scan-btn');
+    const exportBtn = document.getElementById('btn-wifi-export');
+    const commentBtn = document.getElementById('btn-wifi-comment');
+    
+    // 1. Reset UI State
+    if(btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+    }
+    
+    // Disable action buttons until new data arrives
+    if(exportBtn) exportBtn.disabled = true;
+    if(commentBtn) commentBtn.disabled = true;
+    
+    // Reset active scan metadata
+    activeScanComment = "";
+    const metaDiv = document.getElementById('active-scan-meta');
+    if(metaDiv) metaDiv.innerText = "";
 
-        fetch('/api/wifi')
-            .then(r => r.json())
-            .then(data => {
-                // If the backend returns our custom error/incompatibility object
-                if (data.error) {
-                    const isMac = data.error === "Incompatible";
-                    container.innerHTML = `
-                        <div class="col-12">
-                            <div class="alert ${isMac ? 'alert-info' : 'alert-warning'} shadow-sm p-4" role="alert">
-                                <div class="d-flex align-items-center">
-                                    <i class="bi ${isMac ? 'bi-apple' : 'bi-exclamation-triangle'} fs-2 me-3"></i>
-                                    <div>
-                                        <h5 class="alert-heading mb-1">${isMac ? 'macOS Limitation' : 'Scan Failed'}</h5>
-                                        <p class="mb-0">${data.message}</p>
-                                    </div>
+    container.innerHTML = `
+        <div class="col-12 text-center p-5">
+            <div class="spinner-border text-info mb-3"></div>
+            <h5 class="text-muted">Deep Scanning Airwaves...</h5>
+            <p class="small text-secondary">Hardware reset initiated to detect all bands (2.4/5/6GHz).</p>
+        </div>`;
+
+    // 2. Perform Request to Python Backend
+    fetch('/api/wifi')
+        .then(r => {
+            if (!r.ok) throw new Error(`HTTP Error! Status: ${r.status}`);
+            return r.json();
+        })
+        .then(data => {
+            // Handle Backend-specific Errors (e.g., macOS Incompatibility)
+            if (data.error) {
+                container.innerHTML = `
+                    <div class="col-12">
+                        <div class="alert alert-warning shadow-sm p-4">
+                            <h5 class="alert-heading"><i class="bi bi-exclamation-triangle"></i> ${data.error}</h5>
+                            <p class="mb-0">${data.message}</p>
+                        </div>
+                    </div>`;
+                return;
+            }
+
+            // Handle Empty Results
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="col-12 text-center p-5 text-muted">No networks detected in range.</div>';
+                return;
+            }
+
+            // 3. Update Global State for History & Exporting
+            currentScanResults = data; // Populates the global variable for saving/exporting
+            
+            // Enable action buttons now that we have data
+            if(exportBtn) exportBtn.disabled = false;
+            if(commentBtn) commentBtn.disabled = false;
+
+            // 4. Render Results with Multi-Band Support
+            container.innerHTML = data.map(n => `
+                <div class="col-md-4 mb-3">
+                    <div class="card shadow-sm h-100 border-0 bg-body-tertiary">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <strong class="text-truncate" title="${n.ssid}" style="max-width: 60%;">${n.ssid}</strong>
+                                <span class="badge bg-primary">Ch: ${n.channel}</span>
+                            </div>
+                            
+                            <div class="row g-0 mt-3 border-top pt-2">
+                                <div class="col-12 mb-2">
+                                    <small class="text-muted d-block">Detected Bands</small>
+                                    <span class="fw-bold text-info">${n.band}</span>
+                                </div>
+                                <div class="col-6 mb-2">
+                                    <small class="text-muted d-block">Signal Strength(s)</small>
+                                    <span class="small">${n.signal}</span>
+                                </div>
+                                <div class="col-6 mb-2 text-end">
+                                    <small class="text-muted d-block">Security</small>
+                                    <span class="small">${n.auth}</span>
                                 </div>
                             </div>
-                        </div>`;
-                    return;
-                }
-
-                // Render results for Windows/Linux
-                if (data.length === 0) {
-                    container.innerHTML = '<div class="col-12 text-center p-5 text-muted">No networks detected.</div>';
-                    return;
-                }
-
-                container.innerHTML = data.map(n => `
-                    <div class="col-md-4 mb-3">
-                        <div class="card shadow-sm p-3 small h-100">
-                            <strong>${n.ssid}</strong><br>
-                            <span class="text-muted">Signal: ${n.signal}</span>
                         </div>
-                    </div>`).join('');
-            })
-            .catch(err => {
-                container.innerHTML = `<div class="alert alert-danger m-3">Critical Error: ${err.message}</div>`;
-            }); 
-    }
+                    </div>
+                </div>`).join('');
+        })
+        // 5. Critical Error Handling
+        .catch(err => {
+            console.error("Scan Failed:", err);
+            container.innerHTML = `
+                <div class="col-12">
+                    <div class="alert alert-danger shadow-sm p-4">
+                        <h5 class="alert-heading"><i class="bi bi-bug"></i> Critical Dashboard Error</h5>
+                        <p class="mb-0">The application failed to communicate with the scanner.</p>
+                        <hr>
+                        <small class="d-block">Error Details: ${err.message}</small>
+                        <button class="btn btn-sm btn-outline-danger mt-3" onclick="location.reload()">Reload Dashboard</button>
+                    </div>
+                </div>`;
+        })
+        .finally(() => {
+            if(btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-search"></i> Scan Wi-Fi';
+            }
+        });
+}
 
     function runSpeedTest() { 
         const btn = document.getElementById('btn-speedtest');
@@ -737,6 +962,212 @@ function scanWifi() {
     function applyUpdate() { 
         if(confirm("Update system?")) fetch('/api/update/apply', {method: 'POST'}).then(r => r.json()).then(d => { alert(d.message); location.reload(); }); 
     }
+    function renderWifiResults(data, isHistory = false) {
+    const container = document.getElementById('wifi-list');
+    currentScanResults = data;
+    
+    let html = isHistory ? '' : `
+        <div class="col-12 mb-3 d-flex gap-2">
+            <button class="btn btn-success btn-sm" onclick="promptSaveWifi()">Save this Scan</button>
+        </div>`;
+
+    html += data.map(n => `
+        <div class="col-md-4 mb-3">
+            <div class="card shadow-sm h-100 border-0 bg-body-tertiary">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <strong>${n.ssid}</strong>
+                        <span class="badge bg-primary">Ch: ${n.channel}</span>
+                    </div>
+                    <div class="mt-2 small">
+                        <div class="text-info fw-bold">${n.band}</div>
+                        <div class="text-muted">Signal: ${n.signal} | Auth: ${n.auth}</div>
+                    </div>
+                </div>
+            </div>
+        </div>`).join('');
+    container.innerHTML = html;
+}
+
+function exportWifiCSV(id) {
+    // Directly point to the download endpoint
+    window.location.href = `/api/wifi/export/${id}`;
+}
+
+async function promptSaveWifi() {
+    // 1. Ask for Name - If they click 'Cancel', n will be null.
+    let n = prompt("Enter a name for this scan (Leave blank for Date/Time):");
+    if (n === null) return; // User clicked Cancel, abort saving.
+
+    // 2. Ask for Comments - Users can hit OK without typing.
+    let c = prompt("Add comments (Optional):", "");
+    if (c === null) c = ""; // Treat Cancel on comments as empty string.
+
+    try {
+        const response = await fetch('/api/wifi/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ 
+                name: n, 
+                comments: c, 
+                results: currentScanResults 
+            })
+        });
+        
+        const result = await response.json();
+        if (result.status === "success") {
+            alert(`Scan saved successfully as: ${result.saved_as}`);
+            // If the user is on the history page, refresh the list
+            if (!document.getElementById('wifi-history').classList.contains('hidden')) {
+                loadWifiHistory();
+            }
+        }
+    } catch (err) {
+        alert("Failed to save scan: " + err.message);
+    }
+}
+
+
+function viewPastWifi(id) {
+    fetch(`/api/wifi/history/${id}`).then(r => r.json()).then(d => {
+        showPage('wifi', document.querySelector('[onclick*="showPage(\'wifi\'"]'));
+        renderWifiResults(d.results, true);
+        document.querySelector('#wifi h5').innerText = `Viewing: ${d.name}`;
+    });
+}
+
+function deleteWifiScan(id) {
+    if(confirm("Delete this scan record?")) {
+        fetch('/api/wifi/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ id })
+        }).then(loadWifiHistory);
+    }
+}
+
+function filterWifiHistory() {
+    const q = document.getElementById('wifi-history-filter').value.toLowerCase();
+    const filtered = allWifiHistory.filter(h => 
+        h.name.toLowerCase().includes(q) || (h.comments && h.comments.toLowerCase().includes(q))
+    );
+    renderWifiHistoryTable(filtered);
+}
+
+function loadWifiHistory() {
+    fetch('/api/wifi/history')
+        .then(r => r.json())
+        .then(data => {
+            allWifiHistory = data; // Store in global variable for filtering
+            renderWifiHistoryTable(data);
+        })
+        .catch(err => console.error("History Load Error:", err));
+}
+
+function renderWifiHistoryTable(data) {
+    const tbody = document.getElementById('wifi-history-table');
+    if (!tbody) return;
+
+    tbody.innerHTML = data.length ? data.map(h => {
+        const safeName = h.name.replace(/'/g, "\\'");
+        const safeComment = (h.comments || "").replace(/'/g, "\\'");
+        return `
+        <tr>
+            <td><small class="text-muted">${h.timestamp}</small></td>
+            <td>
+                <div class="fw-bold text-primary">${h.name}</div>
+            </td>
+            <td>
+                <small class="text-muted">${h.comments || 'No comments'}</small>
+            </td>
+            <td class="text-end">
+                <div class="btn-group">
+                    <button class="btn btn-sm btn-outline-primary" onclick="viewPastWifi(${h.id})" title="View Results">
+                        <i class="bi bi-eye"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="editWifiHistory(${h.id}, '${safeName}', '${safeComment}')" title="Edit Name/Comment">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="exportWifiCSV(${h.id})" title="Export CSV">
+                        <i class="bi bi-download"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteWifiScan(${h.id})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+            </td>
+        </tr>`}).join('') : '<tr><td colspan="4" class="text-center p-4 text-muted">No past scans found.</td></tr>';
+}
+
+function clearAllWifiHistory() {
+    if(confirm("Are you sure you want to permanently delete ALL Wi-Fi scan history?")) {
+        fetch('/api/wifi/history/clear_all', { method: 'POST' })
+            .then(() => loadWifiHistory());
+    }
+}
+
+function addCommentToActiveScan() {
+    const comment = prompt("Add a comment to this current scan:", activeScanComment);
+    if (comment !== null) {
+        activeScanComment = comment;
+        document.getElementById('active-scan-meta').innerText = comment ? `Comment: ${comment}` : "";
+        
+        // Optional: You can update the backend log entry if you want to 
+        // associate this comment with the last auto-logged scan.
+    }
+}
+
+// Export Active Scan Function
+function exportActiveWifiCSV() {
+    if (!currentScanResults.length) return;
+
+    fetch('/api/wifi/export_active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ results: currentScanResults })
+    })
+    .then(r => r.blob())
+    .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `wifi_scan_${new Date().getTime()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    });
+}
+
+function editWifiHistory(id, oldName, oldComment) {
+    // 1. Prompt for new Name
+    const newName = prompt("Edit Scan Name:", oldName);
+    if (newName === null) return; // Cancelled
+    
+    // 2. Prompt for new Comment
+    const newComment = prompt("Edit Comment:", oldComment);
+    if (newComment === null) return; // Cancelled
+
+    // 3. Send update to server
+    fetch('/api/wifi/history/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+            id: id, 
+            name: newName, 
+            comment: newComment 
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === "success") {
+            loadWifiHistory(); // Refresh the list to show changes
+        } else {
+            alert("Error: " + data.error);
+        }
+    })
+    .catch(err => alert("Communication error: " + err.message));
+}
+
 </script>
 </body>
 </html>

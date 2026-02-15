@@ -3,3 +3,6 @@ speedtest.db
 speedtest.db-shm
 speedtest.db-wal
 venv/
+network_data.db-shm
+network_data.db-wal
+network_data.db
