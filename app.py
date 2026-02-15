@@ -540,17 +540,22 @@ def index():
 
 @app.route('/api/adapters')
 def get_adapters():
+    """
+    Fetches all network adapters with detailed negotiation speeds 
+    and real-time Wi-Fi Tx/Rx rates.
+    """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     ext_info = get_extended_iface_info()
+    wifi_rates = get_wifi_rates() # New helper for Tx/Rx rates
     
-    # 1. Identify the ACTUAL Active Interface
+    # 1. Identify the ACTUAL Active Interface for the header
     active_iface_name = get_active_interface_name()
     primary_gw = "Unknown"
     primary_dns = "Unknown"
     
-    # Load saved settings
+    # 2. Load saved visibility and name settings from DB
     settings = {}
     with sqlite3.connect(DB_NAME) as conn:
         for row in conn.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings"):
@@ -559,7 +564,7 @@ def get_adapters():
     for name, addrs in interfaces.items():
         st = stats.get(name)
         
-        # SKIP Loopback/Virtual
+        # SKIP Loopback/Virtual interfaces to reduce clutter
         if "Loopback" in name or "vEthernet" in name: continue
         
         ip4, ip6, mac = "-", "-", "-"
@@ -568,7 +573,7 @@ def get_adapters():
             elif a.family == socket.AF_INET6: ip6 = a.address.split('%')[0]
             elif a.family == psutil.AF_LINK: mac = a.address
 
-        # Strict Info Lookup
+        # 3. Network Configuration Lookup (Gateway/DNS)
         spec_info = ext_info.get(name, {})
         if not spec_info and platform.system() == "Windows":
              for k, v in ext_info.items():
@@ -579,17 +584,30 @@ def get_adapters():
         gw = spec_info.get("gateway", "-")
         dns = spec_info.get("dns", "-")
 
-        # 2. Check if THIS is the active interface to set the Header
+        # 4. Determine Header Stats (Active Interface)
         if active_iface_name and (name == active_iface_name or name in active_iface_name):
             if gw != "-": primary_gw = gw
             if dns != "-": primary_dns = dns
 
-        # Fallback 1: If active detection failed, grab the first working one we encounter
-        if primary_gw == "Unknown" and st and st.isup and gw != "-":
-            primary_gw = gw
-            primary_dns = dns
+        # 5. NEGOTIATED SPEED LOGIC
+        # Default to the hardware negotiated speed (e.g., 1000 for 1Gbps)
+        raw_speed = st.speed if st else 0
+        display_speed = "N/A"
+        
+        if raw_speed > 0:
+            if raw_speed >= 1000:
+                # Format as Gbps (e.g., 1 Gbps, 2.5 Gbps)
+                display_speed = f"{raw_speed/1000:g} Gbps"
+            else:
+                display_speed = f"{raw_speed} Mbps"
+        
+        # 6. WI-FI REAL-TIME RATE OVERRIDE
+        # If this is a Wi-Fi adapter and we have Tx/Rx data, prioritize that
+        for wifi_name, rate_str in wifi_rates.items():
+            if wifi_name.lower() in name.lower() or name.lower() in wifi_name.lower():
+                display_speed = rate_str
 
-        # Name / Visibility logic
+        # 7. User Customization (Custom Names/Visibility)
         user_name = name
         is_vis = True
         key = mac if (mac and mac != "-") else name
@@ -601,13 +619,11 @@ def get_adapters():
             "id": name, "name": user_name, "mac": mac, 
             "status": "Active" if (st and st.isup) else "Inactive",
             "ip4": ip4, "gateway": gw, "dns": dns,
-            "speed": f"{st.speed} Mbps" if (st and st.speed > 0) else "N/A",
+            "speed": display_speed, 
             "visible": is_vis
         })
 
-    # --- FAILSAFE FOR HEADER FLICKER ---
-    # If we finished the loop and STILL don't have a header IP, 
-    # just grab the first valid gateway from the extended info map.
+    # Failsafe for the Global Header
     if primary_gw == "Unknown":
         for v in ext_info.values():
             if v.get("gateway") and v.get("gateway") != "-":
@@ -646,6 +662,53 @@ def update_adapter_settings():
         conn.commit()
         
     return jsonify({"status": "success"})
+    
+def get_wifi_rates():
+    """Fetches real-time Tx/Rx rates for Wi-Fi adapters across platforms."""
+    rates = {}
+    system = platform.system()
+    try:
+        if system == "Windows":
+            # Using PowerShell to get live Transmit and Receive rates
+            cmd = "Get-NetAdapterStatistics | Select-Object Name, TransmitBitRate, ReceiveBitRate | ConvertTo-Json"
+            out = subprocess.check_output(["powershell", "-Command", cmd], text=True)
+            if not out.strip(): return rates
+            
+            data = json.loads(out)
+            # PowerShell might return a single dict or a list of dicts
+            if isinstance(data, dict): data = [data]
+            
+            for item in data:
+                # Convert bits per second to Mbps for readability
+                tx = round(item.get('TransmitBitRate', 0) / 1_000_000, 1)
+                rx = round(item.get('ReceiveBitRate', 0) / 1_000_000, 1)
+                rates[item['Name']] = f"Tx: {tx} / Rx: {rx} Mbps"
+        
+        elif system == "Darwin": # macOS
+            # Use 'ipconfig' or 'wdutil' to pull specific link summaries
+            # We target 'en0' as it is the standard Wi-Fi ID for Macs
+            try:
+                out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
+                tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
+                if tx_match:
+                    rates["en0"] = f"{tx_match.group(1)} Mbps"
+            except: pass
+
+        elif system == "Linux": # Linux
+            # Linux typically reports link speed in /sys/class/net/
+            # We can try reading the 'speed' file if it exists
+            for iface in os.listdir('/sys/class/net/'):
+                if iface.startswith('w'): # Likely Wi-Fi
+                    try:
+                        with open(f'/sys/class/net/{iface}/speed', 'r') as f:
+                            speed = f.read().strip()
+                            if speed != "-1":
+                                rates[iface] = f"{speed} Mbps"
+                    except: pass
+    except Exception as e:
+        print(f"Error fetching Wi-Fi rates: {e}")
+        
+    return rates
 
 # --- Network & Device Management Routes ---
 

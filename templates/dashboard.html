@@ -326,22 +326,21 @@
                 // 4. Render Row
                 // Note the 'onclick' now uses the safe variables we created above
                 return `
-                <tr class="${!a.visible ? 'opacity-50' : ''}">
-                    <td><strong>${a.name}</strong></td>
-                    <td class="text-muted small">${a.id}</td>
-                    <td class="${a.status==='Active'?'status-active':'status-inactive'}">${a.status}</td>
-                    <td class="font-monospace small">${a.mac}</td>
-                    <td>${a.ip4}</td>
-                    <td class="text-primary fw-bold">${a.gateway}</td> 
-                    <td class="text-info fw-bold">${a.dns}</td>
-                    <td>${a.speed}</td>
-                    <td class="text-end">
-                        <i class="bi bi-gear edit-icon" 
-                           style="cursor: pointer;"
-                           onclick="openAdapterConfig('${safeMac}', '${safeId}', '${safeName}', ${isVisible})">
-                        </i>
-                    </td>
-                </tr>`;
+                    <tr class="${!a.visible ? 'opacity-50' : ''}">
+                        <td><strong>${a.name}</strong></td>
+                        <td class="text-muted small">${a.id}</td>
+                        <td class="${a.status==='Active'?'status-active':'status-inactive'}">${a.status}</td>
+                        <td class="font-monospace small">${a.mac}</td>
+                        <td>${a.ip4}</td>
+                        <td class="text-primary fw-bold">${a.gateway}</td> 
+                        <td class="text-info fw-bold">${a.dns}</td>
+                        <td class="text-nowrap small fw-bold">${a.speed}</td>
+                        <td class="text-end">
+                            <i class="bi bi-gear edit-icon" style="cursor: pointer;"
+                            onclick="openAdapterConfig('${safeMac}', '${safeId}', '${safeName}', ${isVisible})">
+                            </i>
+                        </td>
+                    </tr>`;
             }).join('');
         });
     }
