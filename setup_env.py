@@ -6,14 +6,62 @@ import platform
 import shutil
 import urllib.request
 import zipfile
+import io
 from pathlib import Path
 
 # --- Configuration ---
-# This version number is read by app.py for the footer display
-SETUP_VERSION = "0.1.0"
+SETUP_VERSION = "0.4.0"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy"]
 APP_FILENAME = "app.py"
+
+# GITHUB PRIVATE REPO CONFIGURATION
+# Token is derived from provided application source
+GITHUB_SETTINGS = {
+    "owner": "Pancool",
+    "repo": "Network-Testing-Tools",
+    "token": "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",
+    "branch": "main"
+}
+
+def fetch_latest_from_github(base_dir):
+    """Downloads and extracts the private project if app.py is missing."""
+    print(f"[*] '{APP_FILENAME}' not found. Initializing private download from GitHub...")
+    
+    # API endpoint for private repository ZIP archives
+    zip_url = f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}"
+    
+    req = urllib.request.Request(zip_url)
+    # Add Authorization Header for Private Access
+    req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
+    req.add_header("Accept", "application/vnd.github.v3+json")
+    
+    try:
+        print(f"[*] Authorizing and fetching: {GITHUB_SETTINGS['repo']}...")
+        with urllib.request.urlopen(req) as response:
+            with zipfile.ZipFile(io.BytesIO(response.read())) as zip_ref:
+                # GitHub zips include a dynamic top-level folder
+                top_folder = zip_ref.namelist()[0]
+                
+                for member in zip_ref.infolist():
+                    if member.filename == top_folder:
+                        continue
+                    
+                    # Strip the top-level folder name from the path
+                    filename = Path(member.filename).relative_to(top_folder)
+                    target_path = base_dir / filename
+                    
+                    if member.is_dir():
+                        target_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        with zip_ref.open(member) as source, open(target_path, "wb") as target:
+                            shutil.copyfileobj(source, target)
+                            
+        print("[✓] Private repository successfully synchronized.")
+    except Exception as e:
+        print(f"[X] Failed to download from Private GitHub: {e}")
+        sys.exit(1)
 
 def create_venv(base_dir):
     """Creates the virtual environment if it doesn't exist."""
@@ -40,120 +88,114 @@ def get_venv_paths(venv_path):
 
 def install_requirements(python_path):
     """Installs required Python libraries into the venv."""
-    print("[*] Checking Python dependencies (Flask, Scapy, Psutil)...")
+    print("[*] Checking Python dependencies...")
     try:
+        # Upgrade pip first to avoid installation issues
         subprocess.check_call([str(python_path), "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
+        # Install the defined REQUIREMENTS list
         subprocess.check_call([str(python_path), "-m", "pip", "install"] + REQUIREMENTS)
-        print("[✓] Python dependencies are up to date.")
+        print("[✓] Dependencies are up to date.")
     except Exception as e:
         print(f"[X] Error installing dependencies: {e}")
 
-# --- OS Specific Installers for Official Speedtest CLI ---
-
-def install_speedtest_windows(bin_dir):
-    """Windows: Downloads and extracts the official Ookla CLI."""
-    url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
-    target_path = bin_dir / "speedtest.exe"
-    if target_path.exists():
-        return
+def install_homebrew():
+    """Installs Homebrew on macOS if not already present."""
+    if shutil.which("brew"):
+        return True
     
-    print("[*] Downloading Official Speedtest CLI for Windows...")
-    temp_zip = bin_dir / "speedtest.zip"
+    print("[*] Homebrew not found. Installing Homebrew (this may take a while)...")
     try:
-        urllib.request.urlretrieve(url, temp_zip)
-        with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
-            zip_ref.extract("speedtest.exe", bin_dir)
-        os.remove(temp_zip)
-        print(f"[✓] Speedtest CLI installed to venv.")
+        # Official Homebrew installation command
+        install_cmd = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+        # This will trigger a macOS password prompt for sudo access
+        subprocess.run(install_cmd, shell=True, check=True)
+        
+        # Add brew to path for the current session based on processor architecture
+        if platform.machine() == "arm64": # Apple Silicon
+            os.environ["PATH"] += ":/opt/homebrew/bin"
+        else: # Intel
+            os.environ["PATH"] += ":/usr/local/bin"
+            
+        return True
     except Exception as e:
-        print(f"[X] Windows Speedtest install failed: {e}")
-
-def install_speedtest_mac():
-    """Mac: Installs Speedtest via Homebrew."""
-    print("[*] Checking Speedtest CLI via Homebrew...")
-    if not shutil.which("brew"):
-        print("[!] Homebrew not found. Speedtest CLI installation skipped.")
-        return
+        print(f"[X] Homebrew installation failed: {e}")
+        return False
     
-    try:
-        # Tap and Install
-        subprocess.run(["brew", "tap", "teamookla/speedtest"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["brew", "install", "speedtest", "--force"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("[✓] Speedtest CLI is ready via Homebrew.")
-    except Exception as e:
-        print(f"[X] Mac Speedtest install failed: {e}")
-
-def install_speedtest_linux():
-    """Linux: Installs Speedtest via official Apt repository."""
-    if not shutil.which("apt-get"):
-        return
-
-    print("[*] Checking Speedtest CLI via Apt...")
-    if shutil.which("speedtest"):
-        print("[✓] Speedtest CLI detected.")
-        return
-
-    try:
-        print("    Adding Ookla repository...")
-        subprocess.run(["sudo", "apt-get", "remove", "speedtest-cli", "-y"], stderr=subprocess.DEVNULL)
-        subprocess.check_call(["sudo", "apt-get", "install", "curl", "-y"], stdout=subprocess.DEVNULL)
-        subprocess.check_call("curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash", shell=True)
-        subprocess.check_call(["sudo", "apt-get", "install", "speedtest", "-y"], stdout=subprocess.DEVNULL)
-        print("[✓] Speedtest CLI installed.")
-    except Exception as e:
-        print(f"[X] Linux Speedtest install failed: {e}")
-
 def install_speedtest_cli(bin_dir):
-    """Routes to the correct Speedtest installer based on OS."""
+    """Automated installation of Speedtest CLI for all platforms without manual steps."""
     system = platform.system()
+    
     if system == "Windows":
-        install_speedtest_windows(bin_dir)
+        url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
+        target = bin_dir / "speedtest.exe"
+        if not target.exists():
+            print("[*] Installing Speedtest CLI for Windows...")
+            try:
+                urllib.request.urlretrieve(url, bin_dir / "st.zip")
+                with zipfile.ZipFile(bin_dir / "st.zip", 'r') as z: 
+                    z.extract("speedtest.exe", bin_dir)
+                os.remove(bin_dir / "st.zip")
+            except: pass
+
     elif system == "Darwin":
-        install_speedtest_mac()
+        if not shutil.which("speedtest"):
+            print("[*] Installing Speedtest CLI via Homebrew...")
+            # First ensure Brew is installed, then tap and install Ookla
+            if install_homebrew():
+                try:
+                    subprocess.run(["brew", "tap", "teamookla/speedtest"], check=True)
+                    subprocess.run(["brew", "install", "speedtest"], check=True)
+                except Exception as e:
+                    print(f"[X] macOS Speedtest install failed: {e}")
+
     elif system == "Linux":
-        install_speedtest_linux()
+        if not shutil.which("speedtest"):
+            print("[*] Installing Speedtest CLI via official Apt repository...")
+            try:
+                # Automates repo addition and installation; triggers sudo prompt
+                subprocess.run("curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash", shell=True, check=True)
+                subprocess.run(["sudo", "apt-get", "install", "speedtest"], check=True)
+            except Exception as e:
+                print(f"[X] Linux Speedtest install failed: {e}")
 
 def run_application(base_dir, venv_python):
-    """Launches the main app with sudo/admin privileges."""
+    """Launches the main app with required privileges."""
     app_path = base_dir / APP_FILENAME
-    
-    if not app_path.exists():
-        print(f"\n[!] ERROR: '{APP_FILENAME}' not found in {base_dir}")
-        print("Please ensure your main python file is named 'app.py' and is in this folder.")
-        return
-
     print("\n" + "="*60)
-    print(f"   SYSTEM READY - LAUNCHING NETWORK DASHBOARD (Setup v{SETUP_VERSION})")
+    print(f"   LAUNCHING DASHBOARD (Setup v{SETUP_VERSION})")
     print("="*60)
-    print("[*] Elevated privileges required for network scanning.")
     
-    # Run with sudo
-    cmd = ["sudo", str(venv_python), str(app_path)]
-    
+    # Use 'sudo' on Mac/Linux for network scanning (ARP) permissions
+    cmd = [str(venv_python), str(app_path)]
+    if platform.system() != "Windows":
+        print("[*] Elevated privileges required for network scanning.")
+        cmd = ["sudo"] + cmd
+        
     try:
         subprocess.run(cmd)
     except KeyboardInterrupt:
         print("\n[!] Dashboard stopped by user.")
-    except Exception as e:
-        print(f"[X] Failed to launch application: {e}")
 
 def main():
     # Detect the script's directory
     base_dir = Path(__file__).parent.resolve()
-    
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
     
-    # 1. Setup Venv
+    # 1. Bootstrap: Fetch project files if app.py is missing
+    if not (base_dir / APP_FILENAME).exists():
+        fetch_latest_from_github(base_dir)
+    
+    # 2. Setup Venv
     venv_path = create_venv(base_dir)
     paths = get_venv_paths(venv_path)
     
-    # 2. Install Python dependencies
+    # 3. Install Python dependencies
     install_requirements(paths["python"])
     
-    # 3. Install/Update Speedtest CLI binary
+    # 4. Install Speedtest binary
     install_speedtest_cli(paths["bin_dir"])
     
-    # 4. Launch the App
+    # 5. Launch Application
     run_application(base_dir, paths["python"])
 
 if __name__ == "__main__":

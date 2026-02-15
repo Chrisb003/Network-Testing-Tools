@@ -145,10 +145,10 @@
                 </div>
             </div>
             <div class="card-body p-0 log-container">
-                <table class="table table-sm table-hover mb-0 small">
-                    <thead><tr><th>Time</th><th>Domain</th><th>Result IP</th><th>Status</th></tr></thead>
-                    <tbody id="dns-log-list"></tbody>
-                </table>
+            <table class="table table-sm table-hover mb-0 small">
+                <thead><tr><th>Time</th><th>Domain</th><th>Result IP</th><th>Status</th><th>Router</th><th>Network</th><th>LAN IP</th></tr></thead>
+                <tbody id="dns-log-list"></tbody>
+            </table>
             </div>
         </div>
     </div>
@@ -173,7 +173,7 @@
             </div>
             <div class="card-body p-0 log-container">
                 <table class="table table-sm table-hover mb-0 small">
-                    <thead><tr><th>Time</th><th>Target</th><th>Status</th><th>Latency</th><th>Loss</th><th>Network</th></tr></thead>
+                    <thead><tr><th>Time</th><th>Target</th><th>Status</th><th>Latency</th><th>Loss</th><th>Router</th><th>Network</th><th>LAN IP</th></tr></thead>
                     <tbody id="ping-log-list"></tbody>
                 </table>
             </div>
@@ -251,24 +251,30 @@
         updateModal = new bootstrap.Modal(document.getElementById('updateModal'));
         adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
         
+        // Initial Header Data Load
         fetch('/api/get_last_name').then(r=>r.json()).then(d => { 
             if(d.last_name) document.getElementById('st-network-name').value = d.last_name;
             document.getElementById('header-wan-ip').innerText = d.wan_ip;
             document.getElementById('header-isp').innerText = d.isp;
-            document.getElementById('st-network-name').value = d.last_name;
         });
 
+        // Start Loops
         setInterval(fetchAdapters, 2000); 
-        fetchAdapters(); checkUpdates(); loadNetworks();
+        fetchAdapters(); 
+        checkUpdates(); 
+        loadNetworks();
     });
 
+    // --- Core UI Helpers ---
     function toggleTheme() {
         const next = document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark';
         setTheme(next); localStorage.setItem('theme', next);
     }
+    
     function setTheme(theme) {
         document.documentElement.setAttribute('data-bs-theme', theme);
         const btn = document.getElementById('theme-toggle');
+        if (!btn) return;
         btn.innerHTML = theme === 'dark' ? '<i class="bi bi-moon-fill"></i>' : '<i class="bi bi-sun-fill"></i>';
         btn.className = theme === 'dark' ? 'btn btn-outline-light' : 'btn btn-outline-dark';
     }
@@ -284,36 +290,239 @@
         if(id === 'ping-tool') fetchToolLogs('ping');
     }
 
-    // --- Adapters ---
+    // --- Adapters Logic ---
     function fetchAdapters() {
-        const noMac = document.getElementById('hideNoMacCheck').checked, hidden = document.getElementById('showHiddenCheck').checked;
+        const noMac = document.getElementById('hideNoMacCheck').checked;
+        const showHidden = document.getElementById('showHiddenCheck').checked;
+        
         fetch('/api/adapters').then(r => r.json()).then(data => {
             if (!data || !data.adapters) return;
-            if(data.global_speed) { document.getElementById('live-down').innerText = data.global_speed.download; document.getElementById('live-up').innerText = data.global_speed.upload; }
+            
+            // 1. Update Global Header Stats
+            if(data.global_speed) { 
+                document.getElementById('live-down').innerText = data.global_speed.download; 
+                document.getElementById('live-up').innerText = data.global_speed.upload; 
+            }
             if(data.primary_router) document.getElementById('header-router-ip').innerText = data.primary_router;
             if(data.primary_dns) document.getElementById('header-dns').innerText = data.primary_dns;
             
-            const tbody = document.getElementById('adapter-table'); if(!tbody) return;
+            const tbody = document.getElementById('adapter-table'); 
+            if(!tbody) return;
+            
             tbody.innerHTML = data.adapters.map(a => {
+                // 2. Filter Logic
                 if(noMac && (!a.mac || a.mac === '-')) return '';
-                if(!a.visible && !hidden) return '';
-                return `<tr class="${!a.visible?'opacity-50':''}"><td><strong>${a.name}</strong></td><td class="text-muted small">${a.id}</td><td class="${a.status==='Active'?'status-active':'status-inactive'}">${a.status}</td><td class="font-monospace small">${a.mac}</td><td>${a.ip4}</td><td>${a.gateway}</td><td>${a.dns}</td><td>${a.speed}</td><td class="text-end"><i class="bi bi-gear edit-icon" onclick="openAdapterConfig('${a.mac}','${a.id}','${a.name}',${a.visible})"></i></td></tr>`;
+                if(!a.visible && !showHidden) return '';
+                
+                // 3. SAFE DATA PREP (Fixes broken buttons)
+                // We sanitize the name and ID to prevent quotes from breaking the onclick event
+                const safeName = (a.name || '').replace(/'/g, "\\'"); 
+                const safeId = (a.id || '').replace(/'/g, "\\'");
+                const safeMac = a.mac || '-';
+                
+                // Force visibility to a simple true/false boolean for the function
+                const isVisible = a.visible ? true : false; 
+
+                // 4. Render Row
+                // Note the 'onclick' now uses the safe variables we created above
+                return `
+                <tr class="${!a.visible ? 'opacity-50' : ''}">
+                    <td><strong>${a.name}</strong></td>
+                    <td class="text-muted small">${a.id}</td>
+                    <td class="${a.status==='Active'?'status-active':'status-inactive'}">${a.status}</td>
+                    <td class="font-monospace small">${a.mac}</td>
+                    <td>${a.ip4}</td>
+                    <td class="text-primary fw-bold">${a.gateway}</td> 
+                    <td class="text-info fw-bold">${a.dns}</td>
+                    <td>${a.speed}</td>
+                    <td class="text-end">
+                        <i class="bi bi-gear edit-icon" 
+                           style="cursor: pointer;"
+                           onclick="openAdapterConfig('${safeMac}', '${safeId}', '${safeName}', ${isVisible})">
+                        </i>
+                    </td>
+                </tr>`;
             }).join('');
         });
     }
 
     function openAdapterConfig(mac, id, name, vis) {
-        document.getElementById('modal-mac').value = mac; document.getElementById('modal-sys-id').value = id;
-        document.getElementById('modal-custom-name').value = name; document.getElementById('modal-visible').checked = vis;
+        document.getElementById('modal-mac').value = mac; 
+        document.getElementById('modal-sys-id').value = id;
+        document.getElementById('modal-custom-name').value = name; 
+        document.getElementById('modal-visible').checked = vis;
         adapterModal.show();
     }
+    
     function saveAdapterSettings() {
-        fetch('/api/adapters/update', {method:'POST', headers:{'Content-Type':'application/json'}, 
-            body:JSON.stringify({mac:document.getElementById('modal-mac').value, id:document.getElementById('modal-sys-id').value, name:document.getElementById('modal-custom-name').value, visible:document.getElementById('modal-visible').checked})
+        fetch('/api/adapters/update', {
+            method:'POST', 
+            headers:{'Content-Type':'application/json'}, 
+            body:JSON.stringify({
+                mac:document.getElementById('modal-mac').value, 
+                id:document.getElementById('modal-sys-id').value, 
+                name:document.getElementById('modal-custom-name').value, 
+                visible:document.getElementById('modal-visible').checked
+            })
         }).then(() => { adapterModal.hide(); fetchAdapters(); });
     }
 
-    // --- DNS & Ping Tools ---
+    // --- Saved Networks & Device Logic ---
+    function loadNetworks() {
+        fetch('/api/networks').then(r=>r.json()).then(d => {
+            const tb = document.getElementById('network-list');
+            if(!tb) return;
+            tb.innerHTML = d.length ? d.map(n => `
+                <tr>
+                    <td><strong>${n.name}</strong></td>
+                    <td class="font-monospace small">${n.gateway_mac}</td>
+                    <td>${n.gateway_ip}</td>
+                    <td><span class="badge bg-secondary">${n.device_count}</span></td>
+                    <td><small>${n.last_scan}</small></td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${n.name}')">Load</button> 
+                        <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${n.name}')"><i class="bi bi-pencil"></i></button> 
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})"><i class="bi bi-trash"></i></button>
+                    </td>
+                </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted p-4">No saved networks found.</td></tr>';
+        });
+    }
+
+    function loadNetworkDevices(id, name) {
+        currentNetworkId = id; 
+        showPage('devices', document.querySelectorAll('.nav-link')[1]);
+        
+        if(name) {
+            document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
+            // Auto-Populate Speed Test Location
+            const locationInput = document.getElementById('st-network-name');
+            if(locationInput) locationInput.value = name;
+        }
+        
+        fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
+            allDevices = d; 
+            renderDevices(d);
+        });
+    }
+
+    function scanDevices() {
+        const b = document.getElementById('btn-scan-devices'); 
+        b.disabled = true; 
+        b.innerText = "Scanning...";
+        
+        fetch('/api/scan_network').then(r=>r.json()).then(d => {
+            b.disabled = false; 
+            b.innerText = "Scan"; 
+            if(d.error) { alert(d.error); return; }
+            loadNetworkDevices(d.network_id, d.network_name);
+        });
+    }
+
+    function renderDevices(d) {
+        const tb = document.getElementById('device-list');
+        if (!tb) return;
+
+        tb.innerHTML = d.length ? d.map(x => {
+            // Force Link Logic
+            const ip = x.ip_address || "0.0.0.0";
+            const services = String(x.services || "").toUpperCase();
+            const hasWeb = services.includes("HTTP");
+            
+            let ipColumnHtml;
+            if (hasWeb) {
+                const protocol = services.includes("HTTPS") ? "https" : "http";
+                const url = `${protocol}://${ip}`;
+                ipColumnHtml = `<a href="${url}" target="_blank" style="color: #0d6efd !important; text-decoration: underline !important; font-weight: bold;">${ip}</a>`;
+            } else {
+                ipColumnHtml = ip;
+            }
+
+            // Badges
+            let serviceBadges = `<span class="badge bg-secondary opacity-50">None</span>`;
+            if (services && services !== "NONE") {
+                serviceBadges = services.split(',').map(s => {
+                    const sTrim = s.trim();
+                    const badgeClass = sTrim.includes("HTTP") ? "bg-primary" : "bg-info text-dark";
+                    return `<span class="badge ${badgeClass} me-1">${sTrim}</span>`;
+                }).join('');
+            }
+
+            return `
+                <tr>
+                    <td><strong>${x.hostname || 'Unknown'}</strong></td>
+                    <td onclick="updateDeviceName('${x.mac_address}', '${x.custom_name}')" style="cursor:pointer">
+                        ${x.custom_name || '<i class="text-muted">Set Name</i>'} <i class="bi bi-pencil small"></i>
+                    </td>
+                    <td>${ipColumnHtml}</td>
+                    <td class="font-monospace small text-muted">${x.mac_address}</td>
+                    <td class="${x.is_online ? 'text-success' : 'text-muted'}">${x.is_online ? 'Online' : 'Offline'}</td>
+                    <td>${serviceBadges}</td>
+                </tr>`;
+        }).join('') : '<tr><td colspan="6" class="text-center p-4">No devices found.</td></tr>';
+    }
+    
+    function updateDeviceName(mac, old) { 
+        const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
+        if(n !== null) {
+            fetch('/api/devices/update_name', {
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'}, 
+                body: JSON.stringify({mac: mac, network_id: currentNetworkId, name: n})
+            }).then(() => loadNetworkDevices(currentNetworkId, "")); 
+        }
+    }
+
+    function filterDevices() { 
+        const q = document.getElementById('device-filter').value.toLowerCase(); 
+        renderDevices(allDevices.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)))); 
+    }
+    
+    function exportDevicesCSV() { 
+        // We define the specific columns and headers we want in the CSV here
+        const rows = allDevices.map(d => ({
+            "Hostname": d.hostname || "Unknown",
+            "Custom Name": d.custom_name || "",  // Added Name
+            "IP Address": d.ip_address || "0.0.0.0",
+            "MAC Address": d.mac_address || "Unknown",
+            "Status": d.is_online ? "Online" : "Offline", // Added Status
+            "Services": d.services || "None"
+        }));
+
+        fetch('/api/devices/export', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({rows: rows})
+        })
+        .then(r => r.blob())
+        .then(b => {
+            const u = URL.createObjectURL(b);
+            const a = document.createElement('a');
+            a.href = u; 
+            a.download = 'devices_list.csv'; 
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }); 
+    }
+    
+    function renameNetwork(id, old) { 
+        const n = prompt("Rename Network:", old); 
+        if(n && n !== old) {
+            fetch('/api/networks/rename', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id, name: n})
+            }).then(loadNetworks); 
+        }
+    }
+
+    function deleteNetwork(id) { 
+        if(confirm("Delete network and all devices?")) {
+            fetch('/api/networks/delete', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id})
+            }).then(loadNetworks); 
+        }
+    }
+
+    // --- Tools (DNS/Ping/WiFi/History) ---
     function runDNS() {
         const d = document.getElementById('dns-input').value;
         if(!d) return;
@@ -337,20 +546,39 @@
     }
 
     function fetchToolLogs(type) {
-        fetch(`/api/${type}/logs`).then(r=>r.json()).then(d => {
-            const tbody = document.getElementById(`${type}-log-list`);
-            if(type === 'dns') {
-                tbody.innerHTML = d.map(x => `<tr><td><small>${x.timestamp}</small></td><td>${x.domain}</td><td class="font-monospace">${x.result_ip}</td><td class="${x.status==='Resolved'?'text-success':'text-danger'}">${x.status}</td></tr>`).join('');
-            } else {
-                tbody.innerHTML = d.map(x => `<tr><td><small>${x.timestamp}</small></td><td>${x.target}</td><td class="${x.status==='Success'?'text-success':'text-danger'}">${x.status}</td><td>${x.latency}</td><td>${x.packet_loss}</td><td class="small text-muted">${x.network_context}</td></tr>`).join('');
-            }
-        });
-    }
+            fetch(`/api/${type}/logs`).then(r => r.json()).then(d => {
+                const tbody = document.getElementById(`${type}-log-list`);
+                if (!tbody) return;
+                
+                if (type === 'dns') {
+                    tbody.innerHTML = d.map(x => `
+                        <tr>
+                            <td><small class="text-muted">${x.timestamp}</small></td>
+                            <td><strong>${x.domain}</strong></td>
+                            <td class="font-monospace">${x.result_ip}</td>
+                            <td><span class="badge ${x.status==='Resolved'?'bg-success-subtle text-success':'bg-danger-subtle text-danger'}">${x.status}</span></td>
+                            <td><small>${x.router_ip || '-'}</small></td>
+                            <td><small>${x.network_name || '-'}</small></td>
+                            <td><small>${x.lan_ip || '-'}</small></td>
+                        </tr>`).join('');
+                } else {
+                    tbody.innerHTML = d.map(x => `
+                        <tr>
+                            <td><small class="text-muted">${x.timestamp}</small></td>
+                            <td><strong>${x.target}</strong></td>
+                            <td><span class="badge ${x.status==='Success'?'bg-success':'bg-warning'}">${x.status}</span></td>
+                            <td>${x.latency}</td>
+                            <td>${x.packet_loss}</td>
+                            <td><small>${x.router_ip || '-'}</small></td>
+                            <td><small>${x.network_name || '-'}</small></td>
+                            <td><small>${x.lan_ip || '-'}</small></td>
+                        </tr>`).join('');
+                }
+            });
+        }
 
     function clearToolLogs(type) {
-        if(confirm(`Clear all ${type.toUpperCase()} history?`)) {
-            fetch(`/api/${type}/clear`, {method:'POST'}).then(() => fetchToolLogs(type));
-        }
+        if(confirm(`Clear all ${type.toUpperCase()} history?`)) fetch(`/api/${type}/clear`, {method:'POST'}).then(() => fetchToolLogs(type));
     }
     
     function exportToolLogs(type) {
@@ -360,512 +588,156 @@
             a.href=u; a.download=`${type}_logs.csv`; a.click();
         });
     }
-
-// --- Saved Networks Logic (New) ---
-    function loadNetworks() {
-        fetch('/api/networks').then(r=>r.json()).then(d => {
-            const tb = document.getElementById('network-list');
-            tb.innerHTML = d.length ? d.map(n => `
-                <tr>
-                    <td><strong>${n.name}</strong></td>
-                    <td class="font-monospace small">${n.gateway_mac}</td>
-                    <td>${n.gateway_ip}</td>
-                    <td><span class="badge bg-secondary">${n.device_count}</span></td>
-                    <td><small>${n.last_scan}</small></td>
-                    <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${n.name}')">Load</button> 
-                        <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${n.name}')"><i class="bi bi-pencil"></i></button> 
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})"><i class="bi bi-trash"></i></button>
-                    </td>
-                </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted p-4">No saved networks found.</td></tr>';
-        });
-    }
-
-    function renameNetwork(id, old) { 
-        const n = prompt("Rename Network:", old); 
-        if(n && n !== old) {
-            fetch('/api/networks/rename', {
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify({id: id, name: n})
-            }).then(loadNetworks); 
-        }
-    }
-
-    function deleteNetwork(id) { 
-        if(confirm("Are you sure you want to delete this network and all associated devices?")) {
-            fetch('/api/networks/delete', {
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify({id: id})
-            }).then(loadNetworks); 
-        }
-    }
-
-    // --- Device Management Logic ---
-function loadNetworkDevices(id, name) {
-    currentNetworkId = id; 
-    showPage('devices', document.querySelectorAll('.nav-link')[1]);
     
-    // Update the Tab Title
-    if(name) document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
-    
-    // --- AUTO-POPULATE LOCATION NAME ---
-    // This fills the Speed Test box with the network name automatically
-    if(name) {
-        const locationInput = document.getElementById('st-network-name');
-        if(locationInput) locationInput.value = name;
-    }
-    
-    fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
-        allDevices = d; 
-        renderDevices(d);
-    });
-}
+    // --- MISSING WIFI LOGIC ADDED HERE ---
+function scanWifi() { 
+        const container = document.getElementById('wifi-list'); 
+        container.innerHTML = '<div class="col-12 text-center p-5"><div class="spinner-border text-info"></div><br>Scanning...</div>';
 
-function scanDevices() {
-    const b = document.getElementById('btn-scan-devices'); 
-    b.disabled = true; 
-    b.innerText = "Scanning...";
-    
-    fetch('/api/scan_network').then(r=>r.json()).then(d => {
-        b.disabled = false; 
-        b.innerText = "Scan"; 
-        if(d.error) { alert(d.error); return; }
-        
-        // This triggers the loadNetworkDevices function which now 
-        // includes the auto-populate logic we added above.
-        loadNetworkDevices(d.network_id, d.network_name);
-    });
-}
-
-function renderDevices(d) {
-    const tb = document.getElementById('device-list');
-    if (!tb) return;
-
-    tb.innerHTML = d.length ? d.map(x => {
-        // --- 1. DATA PREP ---
-        const ip = x.ip_address || "0.0.0.0";
-        const services = String(x.services || "").toUpperCase();
-        
-        // --- 2. LINK LOGIC ---
-        // Check if the service string contains "HTTP" anywhere
-        const hasWeb = services.includes("HTTP");
-        
-        let ipColumnHtml;
-        if (hasWeb) {
-            // If it has HTTP or HTTPS, we FORCE the protocol
-            const protocol = services.includes("HTTPS") ? "https" : "http";
-            const url = `${protocol}://${ip}`;
-            
-            // We use an inline style to ensure the link is visible and blue
-            ipColumnHtml = `<a href="${url}" target="_blank" style="color: #0d6efd !important; text-decoration: underline !important; font-weight: bold;">${ip}</a>`;
-        } else {
-            ipColumnHtml = ip;
-        }
-
-        // --- 3. SERVICE BADGE LOGIC ---
-        let serviceBadges = `<span class="badge bg-secondary opacity-50">None</span>`;
-        if (services && services !== "NONE") {
-            serviceBadges = services.split(',').map(s => {
-                const sTrim = s.trim();
-                const badgeClass = sTrim.includes("HTTP") ? "bg-primary" : "bg-info text-dark";
-                return `<span class="badge ${badgeClass} me-1">${sTrim}</span>`;
-            }).join('');
-        }
-
-        // --- 4. RETURN THE ROW ---
-        return `
-            <tr>
-                <td><strong>${x.hostname || 'Unknown'}</strong></td>
-                <td onclick="updateDeviceName('${x.mac_address}', '${x.custom_name}')" style="cursor:pointer">
-                    ${x.custom_name || '<i class="text-muted">Set Name</i>'}
-                </td>
-                <td>${ipColumnHtml}</td>
-                <td class="font-monospace small text-muted">${x.mac_address}</td>
-                <td class="${x.is_online ? 'text-success' : 'text-muted'}">${x.is_online ? 'Online' : 'Offline'}</td>
-                <td>${serviceBadges}</td>
-            </tr>`;
-    }).join('') : '<tr><td colspan="6" class="text-center p-4">No devices found.</td></tr>';
-}
-
-    function updateDeviceName(mac, old) { 
-        const currentName = (old === 'null' || old === 'undefined') ? '' : old;
-        const n = prompt("Set Custom Name for this Device:", currentName); 
-        if(n !== null) {
-            fetch('/api/devices/update_name', {
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify({mac: mac, network_id: currentNetworkId, name: n})
-            }).then(() => loadNetworkDevices(currentNetworkId, "")); 
-        }
-    }
-
-    function filterDevices() { 
-        const q = document.getElementById('device-filter').value.toLowerCase(); 
-        renderDevices(allDevices.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)))); 
-    }
-
-    function exportDevicesCSV() { 
-        fetch('/api/devices/export', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify({rows: allDevices})
-        }).then(r => r.blob())
-        .then(b => {
-            const u = URL.createObjectURL(b), a = document.createElement('a');
-            a.href = u; a.download = 'devices_list.csv'; a.click();
-        }); 
-    }
-    // --- Saved Networks Logic (New) ---
-    function loadNetworks() {
-        fetch('/api/networks').then(r=>r.json()).then(d => {
-            const tb = document.getElementById('network-list');
-            tb.innerHTML = d.length ? d.map(n => `
-                <tr>
-                    <td><strong>${n.name}</strong></td>
-                    <td class="font-monospace small">${n.gateway_mac}</td>
-                    <td>${n.gateway_ip}</td>
-                    <td><span class="badge bg-secondary">${n.device_count}</span></td>
-                    <td><small>${n.last_scan}</small></td>
-                    <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${n.name}')">Load</button> 
-                        <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${n.name}')"><i class="bi bi-pencil"></i></button> 
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})"><i class="bi bi-trash"></i></button>
-                    </td>
-                </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted p-4">No saved networks found.</td></tr>';
-        });
-    }
-
-    function renameNetwork(id, old) { 
-        const n = prompt("Rename Network:", old); 
-        if(n && n !== old) {
-            fetch('/api/networks/rename', {
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify({id: id, name: n})
-            }).then(loadNetworks); 
-        }
-    }
-
-    function deleteNetwork(id) { 
-        if(confirm("Are you sure you want to delete this network and all associated devices?")) {
-            fetch('/api/networks/delete', {
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify({id: id})
-            }).then(loadNetworks); 
-        }
-    }
-
-    // --- Device Management Logic ---
-    function loadNetworkDevices(id, name) {
-        currentNetworkId = id; 
-        showPage('devices', document.querySelectorAll('.nav-link')[1]);
-        if(name) document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
-        
-        fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
-            allDevices = d; 
-            renderDevices(d);
-        });
-    }
-
-    function scanDevices() {
-        const b = document.getElementById('btn-scan-devices'); 
-        b.disabled = true; 
-        b.innerText = "Scanning...";
-        
-        fetch('/api/scan_network').then(r=>r.json()).then(d => {
-            b.disabled = false; 
-            b.innerText = "Scan"; 
-            if(d.error) { alert(d.error); return; }
-            loadNetworkDevices(d.network_id, d.network_name);
-        });
-    }
-
-    function updateDeviceName(mac, old) { 
-        const currentName = (old === 'null' || old === 'undefined') ? '' : old;
-        const n = prompt("Set Custom Name for this Device:", currentName); 
-        if(n !== null) {
-            fetch('/api/devices/update_name', {
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify({mac: mac, network_id: currentNetworkId, name: n})
-            }).then(() => loadNetworkDevices(currentNetworkId, "")); 
-        }
-    }
-
-    function filterDevices() { 
-        const q = document.getElementById('device-filter').value.toLowerCase(); 
-        renderDevices(allDevices.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)))); 
-    }
-
-    function exportDevicesCSV() { 
-        fetch('/api/devices/export', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify({rows: allDevices})
-        }).then(r => r.blob())
-        .then(b => {
-            const u = URL.createObjectURL(b), a = document.createElement('a');
-            a.href = u; a.download = 'devices_list.csv'; a.click();
-        }); 
-    }
-
-    // --- Missing Tool Log Fetching & UI Logic ---
-    function fetchToolLogs(type) {
-        fetch(`/api/${type}/logs`).then(r => r.json()).then(d => {
-            const tbody = document.getElementById(`${type}-log-list`);
-            if (!tbody) return;
-            
-            if (type === 'dns') {
-                tbody.innerHTML = d.length ? d.map(x => `
-                    <tr>
-                        <td><small class="text-muted">${x.timestamp}</small></td>
-                        <td><strong>${x.domain}</strong></td>
-                        <td class="font-monospace">${x.result_ip}</td>
-                        <td><span class="badge ${x.status==='Resolved'?'bg-success-subtle text-success':'bg-danger-subtle text-danger'}">${x.status}</span></td>
-                    </tr>`).join('') : '<tr><td colspan="4" class="text-center p-3 text-muted">No DNS lookups recorded.</td></tr>';
-            } else {
-                tbody.innerHTML = d.length ? d.map(x => `
-                    <tr>
-                        <td><small class="text-muted">${x.timestamp}</small></td>
-                        <td><strong>${x.target}</strong></td>
-                        <td><span class="badge ${x.status==='Success'?'bg-success':'bg-warning'}">${x.status}</span></td>
-                        <td>${x.latency}</td>
-                        <td>${x.packet_loss}</td>
-                        <td class="small text-muted">${x.network_context}</td>
-                    </tr>`).join('') : '<tr><td colspan="6" class="text-center p-3 text-muted">No ping tests recorded.</td></tr>';
-            }
-        });
-    }
-
-    // --- Missing Export Logic for DNS/Ping ---
-    function exportToolLogs(type) {
-        fetch('/api/export/tool_logs', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ type: type })
-        })
-        .then(r => r.blob())
-        .then(blob => {
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${type}_history_export.csv`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-        });
-    }
-
-    // --- Missing Clear Logic for DNS/Ping ---
-    function clearToolLogs(type) {
-        if (confirm(`Are you sure you want to permanently clear the ${type.toUpperCase()} history?`)) {
-            fetch(`/api/${type}/clear`, { method: 'POST' })
-                .then(r => r.json())
-                .then(() => fetchToolLogs(type));
-        }
-    }
-
-    // --- Missing Global Theme Persistence ---
-    // (Ensures the theme stays consistent even if the page reloads during a scan)
-    function setTheme(theme) {
-        document.documentElement.setAttribute('data-bs-theme', theme);
-        const btn = document.getElementById('theme-toggle');
-        if (!btn) return;
-        btn.innerHTML = theme === 'dark' ? '<i class="bi bi-moon-fill"></i>' : '<i class="bi bi-sun-fill"></i>';
-        btn.className = theme === 'dark' ? 'btn btn-outline-light' : 'btn btn-outline-dark';
-    }
-
-// --- The missing checkUpdates function ---
-    function checkUpdates() {
-        fetch('/api/update/check')
+        fetch('/api/wifi')
             .then(r => r.json())
-            .then(d => {
-                if (d.status === 'success') {
-                    // Compare Remote Version vs Current GLOBAL Version
-                    const isNewer = isVersionHigher(d.remote_version, '{{ global_version }}');
-                    
-                    if (isNewer) {
-                        const t = document.getElementById('ver-global');
-                        if (t) {
-                            t.classList.add('ver-update');
-                            t.title = `Global Update available: v${d.remote_version}`;
-                            // Add the alert icon to the Global Version tag
-                            t.innerHTML = `Global: {{ global_version }} <i class="bi bi-exclamation-circle-fill"></i>`;
-                        }
-                    }
+            .then(data => {
+                // If the backend returns our custom error/incompatibility object
+                if (data.error) {
+                    const isMac = data.error === "Incompatible";
+                    container.innerHTML = `
+                        <div class="col-12">
+                            <div class="alert ${isMac ? 'alert-info' : 'alert-warning'} shadow-sm p-4" role="alert">
+                                <div class="d-flex align-items-center">
+                                    <i class="bi ${isMac ? 'bi-apple' : 'bi-exclamation-triangle'} fs-2 me-3"></i>
+                                    <div>
+                                        <h5 class="alert-heading mb-1">${isMac ? 'macOS Limitation' : 'Scan Failed'}</h5>
+                                        <p class="mb-0">${data.message}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>`;
+                    return;
                 }
-            })
-            .catch(err => console.error("Update check failed:", err));
-    }
 
-    /**
-     * Helper to compare semantic versions (e.g., "0.3.0" vs "0.2.11")
-     * Returns true if v1 is higher than v2
-     */
-    function isVersionHigher(v1, v2) {
-        const v1Parts = v1.split('.').map(Number);
-        const v2Parts = v2.split('.').map(Number);
-
-        for (let i = 0; i < Math.max(v1Parts.length, v2Parts.length); i++) {
-            const part1 = v1Parts[i] || 0;
-            const part2 = v2Parts[i] || 0;
-
-            if (part1 > part2) return true;
-            if (part1 < part2) return false;
-        }
-        return false;
-    }
-
-    // --- The missing loadNetworks function ---
-    function loadNetworks() {
-        fetch('/api/networks')
-            .then(r => r.json())
-            .then(d => {
-                const tb = document.getElementById('network-list');
-                if(!tb) return;
-                tb.innerHTML = d.length ? d.map(n => `
-                    <tr>
-                        <td><strong>${n.name}</strong></td>
-                        <td class="font-monospace small">${n.gateway_mac}</td>
-                        <td>${n.gateway_ip}</td>
-                        <td><span class="badge bg-secondary">${n.device_count}</span></td>
-                        <td><small>${n.last_scan}</small></td>
-                        <td>
-                            <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${n.name}')">Load</button> 
-                            <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${n.name}')"><i class="bi bi-pencil"></i></button> 
-                            <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})"><i class="bi bi-trash"></i></button>
-                        </td>
-                    </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted p-4">No saved networks.</td></tr>';
-            });
-    }
-
-    function applyUpdate() { 
-        if(confirm("Confirm update? The application may need a manual restart.")) {
-            fetch('/api/update/apply', {method: 'POST'}).then(r => r.json()).then(d => {
-                alert(d.message); 
-                location.reload();
-            }); 
-        }
-    }
-
-    function openUpdateModal() {
-        updateModal.show();
-        const msg = document.getElementById('update-msg');
-        const btn = document.getElementById('btn-apply');
-        const changelog = document.getElementById('changelog-text');
-
-        msg.innerText = "Checking for updates...";
-        changelog.innerText = "Loading release notes...";
-
-        fetch('/api/update/check')
-            .then(r => r.json())
-            .then(d => {
-                const isNewer = isVersionHigher(d.remote_version, '{{ global_version }}');
-                
-                if (isNewer) {
-                    msg.className = "alert alert-warning";
-                    msg.innerText = `New Global Version available: v${d.remote_version} (Current Global: v{{ global_version }})`;
-                    btn.disabled = false;
-                } else {
-                    msg.className = "alert alert-success";
-                    msg.innerText = `Global System is up to date (v{{ global_version }})`;
-                    btn.disabled = true;
+                // Render results for Windows/Linux
+                if (data.length === 0) {
+                    container.innerHTML = '<div class="col-12 text-center p-5 text-muted">No networks detected.</div>';
+                    return;
                 }
-                
-                return fetch('/api/update/changelog');
-            })
-            .then(r => r.json())
-            .then(d => {
-                changelog.innerText = d.changelog || "No release notes found.";
+
+                container.innerHTML = data.map(n => `
+                    <div class="col-md-4 mb-3">
+                        <div class="card shadow-sm p-3 small h-100">
+                            <strong>${n.ssid}</strong><br>
+                            <span class="text-muted">Signal: ${n.signal}</span>
+                        </div>
+                    </div>`).join('');
             })
             .catch(err => {
-                msg.className = "alert alert-danger";
-                msg.innerText = "Error checking updates.";
-            });
+                container.innerHTML = `<div class="alert alert-danger m-3">Critical Error: ${err.message}</div>`;
+            }); 
     }
 
     function runSpeedTest() { 
         const btn = document.getElementById('btn-speedtest');
         const resultDiv = document.getElementById('speedtest-result'); 
-        
-        // 1. UI State: Loading
         btn.disabled = true; 
-        resultDiv.innerHTML = `
-            <div class="spinner-border spinner-border-sm text-primary" role="status"></div> 
-            <span class="ms-2">Running Speed Test (this may take 30s)...</span>
-        `;
+        resultDiv.innerHTML = `<div class="spinner-border spinner-border-sm text-primary"></div> <span class="ms-2">Testing...</span>`;
         
-        const testData = {
-            network_name: document.getElementById('st-network-name').value,
-            connection_type: document.getElementById('st-conn-type').value
-        };
-
         fetch('/api/speedtest', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify(testData)
-        })
-        .then(response => response.json())
-        .then(data => {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({
+                network_name: document.getElementById('st-network-name').value,
+                connection_type: document.getElementById('st-conn-type').value
+            })
+        }).then(r => r.json()).then(d => {
             btn.disabled = false;
-            if (data.error) {
-                resultDiv.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle"></i> ${data.error}</span>`;
-            } else {
-                // 2. Success Output
-                resultDiv.innerHTML = `
-                    <span class="text-primary fw-bold">↓ ${data.download}</span> 
-                    <span class="mx-2">|</span> 
-                    <span class="text-success fw-bold">↑ ${data.upload}</span>
-                    <span class="ms-2 text-muted small">(${data.ping})</span>
-                `;
-                // Refresh the history table if it exists
+            if (d.error) { resultDiv.innerHTML = `<span class="text-danger">${d.error}</span>`; } 
+            else {
+                resultDiv.innerHTML = `<span class="text-primary fw-bold">↓ ${d.download}</span> | <span class="text-success fw-bold">↑ ${d.upload}</span> <span class="ms-2 text-muted small">(${d.ping})</span>`;
                 if (typeof fetchHistory === "function") fetchHistory();
             }
-        })
-        .catch(err => {
-            btn.disabled = false;
-            resultDiv.innerHTML = `<span class="text-danger">Request failed. Check if server is running.</span>`;
-            console.error(err);
-        }); 
+        }).catch(err => { btn.disabled = false; resultDiv.innerHTML = "Error."; }); 
     }
-
+    
     function fetchHistory() { 
-        fetch('/api/history')
-            .then(r => r.json())
-            .then(d => { 
-                allHistory = d; // Store for filtering
-                renderHistory(d); 
-            })
-            .catch(err => console.error("Could not load history:", err));
+        fetch('/api/history').then(r => r.json()).then(d => { 
+            allHistory = d; renderHistory(d); 
+        });
     }
 
     function renderHistory(d) { 
         const tbody = document.getElementById('history-table');
         if (!tbody) return;
-
-        if (d.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="text-center p-4">No test history found.</td></tr>';
-            return;
-        }
-
-        tbody.innerHTML = d.map(x => `
+        tbody.innerHTML = d.length ? d.map(x => `
             <tr>
                 <td><small>${x.timestamp}</small></td>
-                <td onclick="editHistory(${x.id},'${x.network_name}')" style="cursor:pointer">
-                    <strong>${x.network_name}</strong> <i class="bi bi-pencil small text-muted"></i>
-                </td>
+                <td onclick="editHistory(${x.id},'${x.network_name}')" style="cursor:pointer"><strong>${x.network_name}</strong> <i class="bi bi-pencil small text-muted"></i></td>
                 <td>${x.isp || '-'}</td>
                 <td><span class="badge bg-light text-dark border">${x.connection_type}</span></td>
                 <td class="text-primary fw-bold">${x.download}</td>
                 <td class="text-success fw-bold">${x.upload}</td>
                 <td>${x.ping}</td>
                 <td class="text-muted small">${x.wan_ip || '-'}</td>
-            </tr>`).join(''); 
+            </tr>`).join('') : '<tr><td colspan="8" class="text-center p-4">No history.</td></tr>';
+    }
+    
+    // --- MISSING HISTORY ACTIONS ADDED HERE ---
+    function editHistory(id, old) { 
+        const n = prompt("Rename:", old); 
+        if(n && n !== old) fetch('/api/history/update', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id, name: n})}).then(fetchHistory); 
+    }
+    
+    function filterHistory() { 
+        const q = document.getElementById('history-filter').value.toLowerCase(); 
+        renderHistory(allHistory.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)))); 
+    }
+    
+    function clearHistory() { if(confirm("Clear history?")) fetch('/api/history/clear', {method: 'POST'}).then(fetchHistory); }
+    
+    function exportHistoryCSV() { 
+        fetch('/api/history/export', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rows: allHistory})})
+        .then(r => r.blob()).then(b => { const u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = 'history.csv'; a.click(); }); 
     }
 
+    // --- Updater Logic (Global Version) ---
+    function checkUpdates() {
+        fetch('/api/update/check').then(r => r.json()).then(d => {
+            if (d.status === 'success' && isVersionHigher(d.remote_version, '{{ global_version }}')) {
+                const t = document.getElementById('ver-global');
+                if (t) {
+                    t.classList.add('ver-update');
+                    t.innerHTML = `Global: {{ global_version }} <i class="bi bi-exclamation-circle-fill"></i>`;
+                }
+            }
+        });
+    }
+
+    function isVersionHigher(v1, v2) {
+        const p1 = v1.split('.').map(Number), p2 = v2.split('.').map(Number);
+        for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
+            if ((p1[i]||0) > (p2[i]||0)) return true;
+            if ((p1[i]||0) < (p2[i]||0)) return false;
+        }
+        return false;
+    }
+
+    function openUpdateModal() {
+        updateModal.show();
+        const msg = document.getElementById('update-msg'), btn = document.getElementById('btn-apply'), cl = document.getElementById('changelog-text');
+        msg.innerText = "Checking..."; cl.innerText = "Loading...";
+        
+        fetch('/api/update/check').then(r => r.json()).then(d => {
+            if (isVersionHigher(d.remote_version, '{{ global_version }}')) {
+                msg.className = "alert alert-warning";
+                msg.innerText = `Update Available: v${d.remote_version} (Current: v{{ global_version }})`;
+                btn.disabled = false;
+            } else {
+                msg.className = "alert alert-success"; msg.innerText = "System is up to date."; btn.disabled = true;
+            }
+            return fetch('/api/update/changelog');
+        }).then(r => r.json()).then(d => { cl.innerText = d.changelog || "No notes."; });
+    }
+
+    function applyUpdate() { 
+        if(confirm("Update system?")) fetch('/api/update/apply', {method: 'POST'}).then(r => r.json()).then(d => { alert(d.message); location.reload(); }); 
+    }
 </script>
 </body>
 </html>

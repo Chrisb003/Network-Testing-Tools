@@ -19,7 +19,7 @@ from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp, conf
 
 # --- Configuration ---
-APP_VERSION = "0.3.0" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.5.0" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -61,68 +61,86 @@ def init_db():
                         is_visible INTEGER DEFAULT 1
                     )''')
 
-        # 3. Networks Table (Stores known networks by Gateway MAC)
+        # 3. Networks Table
         c.execute('''CREATE TABLE IF NOT EXISTS networks (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         gateway_mac TEXT UNIQUE,
-                        name TEXT,
-                        last_scan TEXT,
+                        name TEXT, 
+                        last_scan TEXT, 
                         gateway_ip TEXT
                     )''')
 
-        # 4. Devices Table (Per-Network)
+        # 4. Devices Table
         c.execute('''CREATE TABLE IF NOT EXISTS devices (
-                        mac_address TEXT,
-                        network_id INTEGER,
+                        mac_address TEXT, 
+                        network_id INTEGER, 
                         hostname TEXT,
-                        custom_name TEXT,
-                        ip_address TEXT,
+                        custom_name TEXT, 
+                        ip_address TEXT, 
                         last_seen TEXT,
-                        services TEXT,
+                        services TEXT, 
                         is_online INTEGER DEFAULT 0,
                         PRIMARY KEY (mac_address, network_id),
                         FOREIGN KEY(network_id) REFERENCES networks(id) ON DELETE CASCADE
                     )''')
         
-        # 5. Global Device Names (Remembers names across ALL networks)
+        # 5. Global Device Names
         c.execute('''CREATE TABLE IF NOT EXISTS global_device_names (
-                        mac_address TEXT PRIMARY KEY,
+                        mac_address TEXT PRIMARY KEY, 
                         custom_name TEXT
                     )''')
         
-        # 6. DNS Logs (New)
+        # 6. DNS Logs (With NEW columns included for fresh installs)
         c.execute('''CREATE TABLE IF NOT EXISTS dns_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT,
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                        timestamp TEXT, 
                         domain TEXT,
-                        result_ip TEXT,
-                        record_type TEXT,
-                        status TEXT
+                        result_ip TEXT, 
+                        record_type TEXT, 
+                        status TEXT,
+                        router_ip TEXT, 
+                        network_name TEXT, 
+                        lan_ip TEXT
                     )''')
         
-        # 7. Ping Logs (New)
+        # 7. Ping Logs (With NEW columns included for fresh installs)
         c.execute('''CREATE TABLE IF NOT EXISTS ping_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT,
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                        timestamp TEXT, 
                         target TEXT,
                         status TEXT, 
-                        latency TEXT,
-                        packet_loss TEXT,
-                        network_context TEXT
+                        latency TEXT, 
+                        packet_loss TEXT, 
+                        network_context TEXT,
+                        router_ip TEXT, 
+                        network_name TEXT, 
+                        lan_ip TEXT
                     )''')
         
-        # Migrations for existing users
-        try:
-            c.execute("SELECT isp FROM history LIMIT 1")
-        except sqlite3.OperationalError:
-            c.execute("ALTER TABLE history ADD COLUMN isp TEXT")
-        try:
-            c.execute("SELECT connection_type FROM history LIMIT 1")
-        except sqlite3.OperationalError:
-            c.execute("ALTER TABLE history ADD COLUMN connection_type TEXT")
-            
+        # --- MIGRATIONS (Updates existing databases safely) ---
+        
+        # History Table Migrations
+        try: c.execute("ALTER TABLE history ADD COLUMN isp TEXT"); 
+        except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE history ADD COLUMN connection_type TEXT"); 
+        except sqlite3.OperationalError: pass
+        
+        # Adapter Settings Migration
+        try: c.execute("ALTER TABLE adapter_settings ADD COLUMN is_visible INTEGER DEFAULT 1"); 
+        except sqlite3.OperationalError: pass
+
+        # DNS & Ping Logs Migrations (The critical part for your request)
+        # This loop adds the 3 new columns to both log tables if they are missing
+        for table in ['dns_logs', 'ping_logs']:
+            for col in ['router_ip', 'network_name', 'lan_ip']:
+                try: 
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError: 
+                    pass # Column exists, skip
+
         conn.commit()
 
+# Ensure this runs on startup
 init_db()
 
 # --- Versioning Helpers ---
@@ -169,44 +187,150 @@ def get_local_ip():
         s.close()
 
 def get_extended_iface_info():
-    """Gathers Gateway and DNS details for network interfaces."""
+    """Gathers Gateway and DNS details strictly per-interface (Win/Mac/Linux)."""
     info_map = {}
     system = platform.system()
+    
     try:
+        # --- WINDOWS LOGIC ---
         if system == "Windows":
-            output = subprocess.check_output(["ipconfig", "/all"], text=True)
-            curr = None
+            output = subprocess.check_output(["ipconfig", "/all"], text=True, encoding='latin-1', errors='ignore')
+            current_adapter = None
             for line in output.split('\n'):
                 line = line.strip()
-                if "adapter" in line and ":" in line:
-                    curr = line.split("adapter")[-1].replace(":", "").strip()
-                    info_map[curr] = {"gateway": "-", "dns": "-"}
-                if curr:
-                    if "Default Gateway" in line and ":" in line: 
-                        info_map[curr]["gateway"] = line.split(":")[1].strip()
-                    elif "DNS Servers" in line and ":" in line: 
-                        info_map[curr]["dns"] = line.split(":")[1].strip()
-                        
-        elif system == "Darwin": # macOS
-            gateway = "-"
+                if not line: continue
+                if "adapter" in line and line.endswith(":"):
+                    current_adapter = line.split("adapter")[-1].replace(":", "").strip()
+                    info_map[current_adapter] = {"gateway": "-", "dns": "-"}
+                if current_adapter:
+                    if "Default Gateway" in line:
+                        parts = line.split(":")
+                        if len(parts) > 1:
+                            val = parts[1].strip()
+                            if val and "::" not in val: info_map[current_adapter]["gateway"] = val
+                    elif "DNS Servers" in line:
+                        parts = line.split(":")
+                        if len(parts) > 1:
+                            val = parts[1].strip()
+                            if val and "::" not in val: info_map[current_adapter]["dns"] = val
+                    elif line[0].isdigit() and "." in line and "::" not in line:
+                        prev_dns = info_map[current_adapter].get("dns", "-")
+                        if prev_dns != "-" and line not in prev_dns:
+                             info_map[current_adapter]["dns"] += f", {line}"
+
+        # --- MACOS LOGIC (FIXED) ---
+        elif system == "Darwin":
+            # Map friendly names if needed, but primarily we need the ID (en0)
+            service_map = {} # Maps 'en0' -> 'Wi-Fi'
             try:
-                route_out = subprocess.check_output(["netstat", "-nr"], text=True)
-                for line in route_out.split('\n'):
-                    if "default" in line:
-                        parts = line.split()
-                        if len(parts) > 1: gateway = parts[1]; break
+                ports = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
+                for line in ports.split('\n'):
+                    if "Hardware Port" in line: port_name = line.split(": ")[1]
+                    elif "Device" in line: service_map[line.split(": ")[1]] = port_name
             except: pass
             
-            dns = "-"
+            # DNS via scutil
             try:
-                dns_out = subprocess.check_output(["scutil", "--dns"], text=True)
-                for line in dns_out.split('\n'):
-                    if "nameserver[0]" in line: dns = line.split(":")[1].strip(); break
+                raw_dns = subprocess.check_output("scutil --dns", shell=True, text=True)
+                current_resolver = None
+                for line in raw_dns.split('\n'):
+                    if "resolver #" in line: current_resolver = {}
+                    if "nameserver[0]" in line and current_resolver is not None:
+                        current_resolver['dns'] = line.split(":")[1].strip()
+                    if "if_index" in line and current_resolver is not None:
+                        # Extract the interface index number (e.g., 6)
+                        idx_num = line.split("(")[-1].replace(")", "")
+                        # scutil output doesn't explicitly say "en0", so we might need 
+                        # to match it if we want 100% precision, but usually 
+                        # we rely on the Primary/Active resolver.
+                        
+                        # BETTER STRATEGY FOR MAC:
+                        # scutil --dns usually groups by resolver. 
+                        # Instead, let's parse `networksetup -getdnsservers` for known services
+                        pass
             except: pass
-            info_map["global"] = {"gateway": gateway, "dns": dns}
-        else:
-            info_map["global"] = {"gateway": "-", "dns": "-"}
-    except: pass
+
+            # ALTERNATIVE RELIABLE MAC DNS/GATEWAY:
+            # Loop through known interfaces (en0, en1) and ask specific questions
+            for dev_id, friendly_name in service_map.items():
+                # 1. Get DNS
+                try:
+                    dns_out = subprocess.check_output(["networksetup", "-getdnsservers", friendly_name], text=True)
+                    if "There aren't any DNS Servers" not in dns_out:
+                        # Output is just lines of IPs
+                        dns_list = [x.strip() for x in dns_out.strip().split('\n') if x.strip()]
+                        if dns_list:
+                            if dev_id not in info_map: info_map[dev_id] = {}
+                            info_map[dev_id]['dns'] = ", ".join(dns_list)
+                except: pass
+
+                # 2. Get Gateway (via route get)
+                try:
+                    # 'route get default' usually gives the active one, but we want per-interface.
+                    # netstat -nr is better for scanning.
+                    pass
+                except: pass
+
+            # Gateway via netstat -nr (Fast & Accurate)
+            try:
+                routes = subprocess.check_output(["netstat", "-nr"], text=True)
+                for line in routes.split('\n'):
+                    if "default" in line and "UGSc" in line:
+                        parts = line.split()
+                        # default  192.168.1.1  UGSc  en0
+                        if len(parts) >= 4:
+                            gw = parts[1]
+                            iface = parts[3] # en0
+                            # SAVE DIRECTLY TO 'en0' KEY
+                            if iface not in info_map: info_map[iface] = {}
+                            info_map[iface]['gateway'] = gw
+                            
+                            # Fallback: If networksetup didn't find DNS (e.g. DHCP provided), 
+                            # we might not have it yet. Scutil is complex to parse per-iface.
+                            # On Mac, often the "Active" DNS is all that matters.
+            except: pass
+
+        # --- LINUX LOGIC ---
+        elif system == "Linux":
+            # 1. Get Gateways
+            try:
+                routes = subprocess.check_output(["ip", "route", "show", "default"], text=True)
+                for line in routes.split('\n'):
+                    if "default via" in line:
+                        parts = line.split()
+                        if len(parts) > 4:
+                            gw = parts[2]
+                            dev = parts[4]
+                            if dev not in info_map: info_map[dev] = {}
+                            info_map[dev]['gateway'] = gw
+            except: pass
+
+            # 2. Get DNS
+            try:
+                # Try resolvectl (systemd)
+                dns_out = subprocess.check_output(["resolvectl", "status"], text=True)
+                current_iface = None
+                for line in dns_out.split('\n'):
+                    if "Link" in line and "(" in line:
+                        current_iface = line.split("(")[1].split(")")[0] # 'eth0'
+                        if current_iface not in info_map: info_map[current_iface] = {}
+                    if "DNS Servers:" in line and current_iface:
+                        dns = line.split(":")[1].strip().split()[0]
+                        info_map[current_iface]['dns'] = dns
+            except:
+                # Fallback to /etc/resolv.conf
+                try:
+                    with open("/etc/resolv.conf", "r") as f:
+                        for line in f:
+                            if line.startswith("nameserver"):
+                                dns = line.split()[1]
+                                for iface in info_map:
+                                    if 'dns' not in info_map[iface]: info_map[iface]['dns'] = dns
+                except: pass
+
+    except Exception as e:
+        print(f"Error getting extended info: {e}")
+        
     return info_map
 
 # --- Bandwidth Tracking ---
@@ -323,25 +447,93 @@ def process_device_info(received):
         "services": check_open_ports(ip)['services']
     }
 
+def get_current_network_context():
+    """Returns (lan_ip, gateway_ip, network_name) for logging."""
+    lan_ip = get_local_ip()
+    
+    # 1. Get Gateway
+    ext_info = get_extended_iface_info()
+    gateway_ip = "-"
+    # Try to find gateway from the extended info
+    for iface_details in ext_info.values():
+        if iface_details.get("gateway") and iface_details.get("gateway") != "-":
+            gateway_ip = iface_details.get("gateway")
+            break
+            
+    # 2. Get Network Name
+    network_name = "Unknown Network"
+    if gateway_ip != "-":
+        gateway_mac = get_gateway_mac(gateway_ip)
+        if gateway_mac:
+            with sqlite3.connect(DB_NAME) as conn:
+                row = conn.execute("SELECT name FROM networks WHERE gateway_mac=?", (gateway_mac,)).fetchone()
+                if row: network_name = row[0]
+                
+    return lan_ip, gateway_ip, network_name
+
+def request_macos_permissions():
+    """Probes for macOS Location and Local Network permissions."""
+    if platform.system() == "Darwin":
+        print("[*] Probing macOS Network & Location permissions...")
+        
+        # 1. Trigger Local Network Access Prompt (by sending a single UDP packet)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            s.send(b"probing-local-network")
+            s.close()
+        except: pass
+
+        # 2. Trigger Location Services Prompt (by attempting a Wi-Fi scan)
+        airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+        if os.path.exists(airport_path):
+            try:
+                # Running a scan forces the OS to check for Location permissions
+                subprocess.Popen([airport_path, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print("[!] If prompted, please allow 'Location Access' for Wi-Fi scanning to work.")
+            except: pass
+
 # --- Routes ---
 @app.route('/')
 def index():
     info = get_isp_info()
     ext_info = get_extended_iface_info()
+    active_iface = get_active_interface_name() # e.g., "Wi-Fi" or "Ethernet"
     
-    active_ext = ext_info.get("global", {"gateway": "Unknown", "dns": "Unknown"})
-    if platform.system() == "Windows":
-        for adapter in ext_info.values():
-            if adapter.get("gateway") != "-":
-                active_ext = adapter
+    # Default to "Unknown"
+    active_gateway = "Unknown"
+    active_dns = "Unknown"
+
+    # Try to find the specific Gateway/DNS for the active interface
+    if active_iface:
+        # 1. Try Exact Match
+        if active_iface in ext_info:
+            active_gateway = ext_info[active_iface].get("gateway", "Unknown")
+            active_dns = ext_info[active_iface].get("dns", "Unknown")
+        
+        # 2. Try Fuzzy Match (Windows naming is often messy)
+        elif platform.system() == "Windows":
+            for k, v in ext_info.items():
+                # If "Wi-Fi" is in "Wireless LAN adapter Wi-Fi"
+                if active_iface in k or k in active_iface:
+                    active_gateway = v.get("gateway", active_gateway)
+                    active_dns = v.get("dns", active_dns)
+                    break
+    
+    # 3. Fallback: If still unknown, just grab the first one that has a Gateway
+    if active_gateway == "Unknown" or active_gateway == "-":
+        for v in ext_info.values():
+            if v.get("gateway") and v.get("gateway") != "-":
+                active_gateway = v.get("gateway")
+                active_dns = v.get("dns")
                 break
 
     return render_template('dashboard.html', 
                            local_ip=get_local_ip(), 
                            wan_ip=info['ip'], 
                            isp_name=info['isp'],
-                           router_ip=active_ext.get("gateway", "Unknown"),
-                           dns_servers=active_ext.get("dns", "Unknown"),
+                           router_ip=active_gateway,
+                           dns_servers=active_dns,
                            global_version=get_global_version(), 
                            setup_version=get_setup_version(), 
                            app_version=APP_VERSION)
@@ -353,9 +545,12 @@ def get_adapters():
     stats = psutil.net_if_stats()
     ext_info = get_extended_iface_info()
     
+    # 1. Identify the ACTUAL Active Interface
+    active_iface_name = get_active_interface_name()
     primary_gw = "Unknown"
     primary_dns = "Unknown"
     
+    # Load saved settings
     settings = {}
     with sqlite3.connect(DB_NAME) as conn:
         for row in conn.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings"):
@@ -363,23 +558,38 @@ def get_adapters():
 
     for name, addrs in interfaces.items():
         st = stats.get(name)
+        
+        # SKIP Loopback/Virtual
+        if "Loopback" in name or "vEthernet" in name: continue
+        
         ip4, ip6, mac = "-", "-", "-"
         for a in addrs:
             if a.family == socket.AF_INET: ip4 = a.address
             elif a.family == socket.AF_INET6: ip6 = a.address.split('%')[0]
             elif a.family == psutil.AF_LINK: mac = a.address
 
-        gw = ext_info.get(name, {}).get("gateway", "-")
-        dns = ext_info.get(name, {}).get("dns", "-")
-        
-        if gw == "-" and st and st.isup:
-             gw = ext_info.get("global", {}).get("gateway", "-")
-             dns = ext_info.get("global", {}).get("dns", "-")
+        # Strict Info Lookup
+        spec_info = ext_info.get(name, {})
+        if not spec_info and platform.system() == "Windows":
+             for k, v in ext_info.items():
+                 if k in name or name in k:
+                     spec_info = v
+                     break
 
-        if st and st.isup and gw != "-" and primary_gw == "Unknown":
+        gw = spec_info.get("gateway", "-")
+        dns = spec_info.get("dns", "-")
+
+        # 2. Check if THIS is the active interface to set the Header
+        if active_iface_name and (name == active_iface_name or name in active_iface_name):
+            if gw != "-": primary_gw = gw
+            if dns != "-": primary_dns = dns
+
+        # Fallback 1: If active detection failed, grab the first working one we encounter
+        if primary_gw == "Unknown" and st and st.isup and gw != "-":
             primary_gw = gw
             primary_dns = dns
 
+        # Name / Visibility logic
         user_name = name
         is_vis = True
         key = mac if (mac and mac != "-") else name
@@ -394,6 +604,16 @@ def get_adapters():
             "speed": f"{st.speed} Mbps" if (st and st.speed > 0) else "N/A",
             "visible": is_vis
         })
+
+    # --- FAILSAFE FOR HEADER FLICKER ---
+    # If we finished the loop and STILL don't have a header IP, 
+    # just grab the first valid gateway from the extended info map.
+    if primary_gw == "Unknown":
+        for v in ext_info.values():
+            if v.get("gateway") and v.get("gateway") != "-":
+                primary_gw = v.get("gateway")
+                primary_dns = v.get("dns")
+                break
         
     return jsonify({
         "adapters": adapters_data, 
@@ -404,12 +624,27 @@ def get_adapters():
 
 @app.route('/api/adapters/update', methods=['POST'])
 def update_adapter_settings():
+    """Updates custom name and visibility for a specific adapter."""
     d = request.json
-    key = d.get('mac') if (d.get('mac') and d.get('mac') != "-") else d.get('id')
+    mac = d.get('mac')
+    name = d.get('name')
+    visible = 1 if d.get('visible') else 0
+    
+    # If the adapter has no MAC (virtual interface), we can't reliably save settings
+    if not mac or mac == '-':
+        return jsonify({"status": "error", "message": "Cannot configure adapter without MAC address"})
+
     with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("REPLACE INTO adapter_settings (mac_address, custom_name, is_visible) VALUES (?, ?, ?)", 
-                     (key, d.get('name'), 1 if d.get('visible') else 0))
+        # Upsert: Update if exists, Insert if new
+        conn.execute("""
+            INSERT INTO adapter_settings (mac_address, custom_name, is_visible)
+            VALUES (?, ?, ?)
+            ON CONFLICT(mac_address) DO UPDATE SET
+            custom_name=excluded.custom_name,
+            is_visible=excluded.is_visible
+        """, (mac, name, visible))
         conn.commit()
+        
     return jsonify({"status": "success"})
 
 # --- Network & Device Management Routes ---
@@ -479,51 +714,61 @@ def get_network_devices(net_id):
 @app.route('/api/scan_network')
 def scan_network():
     """
-    Parallel Network Scan:
-    1. Detects Active Interface (Fixes Wi-Fi).
-    2. Sends ARP Packets.
-    3. Multithreaded Hostname/Port resolution (Speed fix).
-    4. Database Update (Timeout protection).
+    Robust Network Scan:
+    1. Tries to find the active interface/gateway.
+    2. Fallback: If gateway fails, guesses subnet based on Local IP (e.g. 192.168.1.0/24).
+    3. Runs ARP scan.
     """
-    # 1. Prepare Interface
+    # 1. Prepare Interface & IP
     active_iface = get_active_interface_name()
-    if not active_iface: return jsonify({"error": "No active interface found."})
-    
-    # Force Scapy to use the active interface
-    conf.iface = active_iface
-    
     local_ip = get_local_ip()
-    target_ip = f"{local_ip.rsplit('.', 1)[0]}.0/24"
     
-    # 2. Identify Gateway
-    ext_info = get_extended_iface_info()
-    gateway_ip = ext_info.get("global", {}).get("gateway", "-")
-    if platform.system() == "Windows" and gateway_ip == "-":
-        for adapter in ext_info.values():
-            if adapter.get("gateway") != "-": gateway_ip = adapter.get("gateway"); break
+    # Calculate Target Subnet (The "Failsafe" that fixes your issue)
+    # If Local IP is 192.168.1.50, this makes the target 192.168.1.0/24
+    if local_ip and local_ip != "127.0.0.1":
+        target_ip = f"{local_ip.rsplit('.', 1)[0]}.0/24"
+    else:
+        return jsonify({"error": "Could not determine local IP subnet."})
 
-    gateway_mac = get_gateway_mac(gateway_ip)
+    # 2. Configure Scapy (Try to use active interface, but don't crash if it fails)
+    if active_iface:
+        conf.iface = active_iface
+
+    # 3. Identify Gateway (Visual only - doesn't stop the scan anymore)
+    ext_info = get_extended_iface_info()
+    gateway_ip = "-"
+    
+    # Try to find gateway from the extended info we built earlier
+    for iface_details in ext_info.values():
+        if iface_details.get("gateway") and iface_details.get("gateway") != "-":
+            gateway_ip = iface_details.get("gateway")
+            break
+            
+    gateway_mac = get_gateway_mac(gateway_ip) if gateway_ip != "-" else None
     if not gateway_mac: gateway_mac = "UNKNOWN_GATEWAY"
     
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     scanned_results = []
 
     try:
-        # 3. Physical Scan (ARP)
-        # inter=0.02 is optimized for speed without flooding Wi-Fi
+        # 4. Physical Scan (ARP)
+        # We scan the calculated subnet (target_ip) regardless of whether we found a gateway
+        # inter=0.02 avoids flooding Wi-Fi networks
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_ip), 
-                     iface=active_iface, timeout=2, verbose=0, inter=0.02)
+                     timeout=2, verbose=0, inter=0.02)
         
-        # 4. Parallel Processing (Hostname/Ports)
-        # This uses the process_device_info helper defined above
+        # 5. Parallel Processing
+        # Uses the 'process_device_info' helper helper function defined earlier in app.py
         with ThreadPoolExecutor(max_workers=30) as executor:
             futures = [executor.submit(process_device_info, received) for _, received in ans]
             for future in futures: scanned_results.append(future.result())
             
-    except Exception as e: return jsonify({"error": f"Scan failed: {str(e)}"})
+    except Exception as e: 
+        print(f"SCAN ERROR: {e}")
+        return jsonify({"error": f"Scan failed: {str(e)}"})
 
     try:
-        # 5. Database Write (With Timeout Protection)
+        # 6. Database Write (With Timeout Protection)
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
             
@@ -540,11 +785,11 @@ def scan_network():
                                (gateway_mac, default_name, current_time, gateway_ip))
                 network_id = cursor.lastrowid
 
-            # Mark all offline initially
+            # Mark all offline initially (so we can see who is currently online)
             cursor.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
 
             for device in scanned_results:
-                # Check Local Name
+                # Name sync logic (Preserve custom names)
                 cursor.execute("SELECT custom_name FROM devices WHERE mac_address=? AND network_id=?", 
                                (device["mac"], network_id))
                 existing = cursor.fetchone()
@@ -572,40 +817,45 @@ def scan_network():
             
             conn.commit()
             
-            # Fetch & Return Sorted List
+            # 7. Fetch & Return Sorted List
             cursor.row_factory = sqlite3.Row
             devices = cursor.execute("SELECT * FROM devices WHERE network_id=?", (network_id,)).fetchall()
             cursor.execute("SELECT name FROM networks WHERE id=?", (network_id,))
-            net_name = cursor.fetchone()[0]
+            net_name_row = cursor.fetchone()
+            net_name = net_name_row[0] if net_name_row else "Unknown Network"
 
             dev_list = [dict(d) for d in devices]
             try: dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
             except: pass
 
             return jsonify({"network_id": network_id, "network_name": net_name, "devices": dev_list})
-    except Exception as e: return jsonify({"error": f"DB Error: {str(e)}"})
+            
+    except Exception as e: 
+        return jsonify({"error": f"DB Error: {str(e)}"})
 
 # --- NEW TOOLS: DNS & Ping ---
 
 @app.route('/api/dns/lookup', methods=['POST'])
 def dns_lookup():
-    """
-    Performs a DNS A-record lookup and logs the result.
-    """
+    """Performs DNS lookup and logs with network context."""
     domain = request.json.get('domain')
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Get Context
+    lan_ip, router_ip, net_name = get_current_network_context()
+
     try:
-        # Standard socket lookup
         ip = socket.gethostbyname(domain)
         status = "Resolved"
     except:
         ip = "-"
         status = "Failed"
     
-    # Log to Database
     with sqlite3.connect(DB_NAME, timeout=5) as conn:
-        conn.execute("INSERT INTO dns_logs (timestamp, domain, result_ip, record_type, status) VALUES (?, ?, ?, ?, ?)",
-                     (ts, domain, ip, "A", status))
+        conn.execute("""
+            INSERT INTO dns_logs (timestamp, domain, result_ip, record_type, status, router_ip, network_name, lan_ip) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, domain, ip, "A", status, router_ip, net_name, lan_ip))
         conn.commit()
     
     return jsonify({"timestamp": ts, "domain": domain, "ip": ip, "status": status})
@@ -630,6 +880,7 @@ def clear_dns_logs():
 def run_ping():
     """
     Executes a system ping (4 packets) and logs latency/loss.
+    Now includes Network Context (Router IP, Name, LAN IP).
     """
     target = request.json.get('target')
     
@@ -642,20 +893,26 @@ def run_ping():
     latency = "N/A"
     loss = "100%"
     status = "Failed"
+    
+    # --- GET CONTEXT (Router, Network Name, LAN IP) ---
+    # This calls the helper function we added earlier
+    lan_ip, router_ip, net_name = get_current_network_context()
 
     try:
         # Run the ping command and capture output
+        # stderr=subprocess.STDOUT ensures we capture errors like "Host unreachable"
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
         
         # Parse output for Latency and Packet Loss
         if platform.system().lower() == 'windows':
+            # Windows Output: "Average = 24ms", "Lost = 0 (0% loss)"
             if "Average =" in output:
                 latency = output.split("Average =")[1].strip().replace("ms", "").strip() + " ms"
             if "Lost =" in output:
                 loss_part = output.split("Lost =")[1].split("(")[1]
                 loss = loss_part.split(")")[0] # e.g., "0% loss"
         else:
-            # Linux / macOS parsing
+            # Linux / macOS Output: "min/avg/max = ...", "0% packet loss"
             if "avg" in output: 
                 # Output format: min/avg/max/mdev = ...
                 latency = output.split(" = ")[1].split("/")[1] + " ms"
@@ -675,21 +932,24 @@ def run_ping():
     except subprocess.CalledProcessError:
         pass # Ping command returned non-zero exit code (Host Unreachable)
     
-    # Context: Which network were we on?
-    try:
-        with sqlite3.connect(DB_NAME) as conn:
-            row = conn.execute("SELECT name FROM networks ORDER BY last_scan DESC LIMIT 1").fetchone()
-            net_name = row[0] if row else "Unknown"
-    except: 
-        net_name = "Unknown"
-
-    # Log to Database
+    # Log to Database with the new columns
     with sqlite3.connect(DB_NAME, timeout=5) as conn:
-        conn.execute("INSERT INTO ping_logs (timestamp, target, status, latency, packet_loss, network_context) VALUES (?, ?, ?, ?, ?, ?)",
-                     (ts, target, status, latency, loss, net_name))
+        conn.execute("""
+            INSERT INTO ping_logs (
+                timestamp, target, status, latency, packet_loss, network_context, 
+                router_ip, network_name, lan_ip
+            ) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, target, status, latency, loss, net_name, router_ip, net_name, lan_ip))
         conn.commit()
 
-    return jsonify({"timestamp": ts, "target": target, "status": status, "latency": latency, "loss": loss})
+    return jsonify({
+        "timestamp": ts, 
+        "target": target, 
+        "status": status, 
+        "latency": latency, 
+        "loss": loss
+    })
 
 @app.route('/api/ping/logs')
 def get_ping_logs():
@@ -709,8 +969,8 @@ def clear_ping_logs():
 
 @app.route('/api/export/tool_logs', methods=['POST'])
 def export_tool_logs():
-    """Exports DNS or Ping logs to CSV file."""
-    log_type = request.json.get('type') # 'dns' or 'ping'
+    """Exports DNS or Ping logs to CSV including new columns."""
+    log_type = request.json.get('type')
     out = io.StringIO()
     writer = csv.writer(out)
     
@@ -718,14 +978,14 @@ def export_tool_logs():
         conn.row_factory = sqlite3.Row
         if log_type == 'dns':
             rows = conn.execute("SELECT * FROM dns_logs ORDER BY id DESC").fetchall()
-            writer.writerow(['Timestamp', 'Domain', 'Result IP', 'Record Type', 'Status'])
+            writer.writerow(['Timestamp', 'Domain', 'Result IP', 'Status', 'Router IP', 'Network', 'LAN IP'])
             for r in rows: 
-                writer.writerow([r['timestamp'], r['domain'], r['result_ip'], r['record_type'], r['status']])
+                writer.writerow([r['timestamp'], r['domain'], r['result_ip'], r['status'], r['router_ip'], r['network_name'], r['lan_ip']])
         else:
             rows = conn.execute("SELECT * FROM ping_logs ORDER BY id DESC").fetchall()
-            writer.writerow(['Timestamp', 'Target', 'Status', 'Latency', 'Packet Loss', 'Network Context'])
+            writer.writerow(['Timestamp', 'Target', 'Status', 'Latency', 'Loss', 'Router IP', 'Network', 'LAN IP'])
             for r in rows: 
-                writer.writerow([r['timestamp'], r['target'], r['status'], r['latency'], r['packet_loss'], r['network_context']])
+                writer.writerow([r['timestamp'], r['target'], r['status'], r['latency'], r['packet_loss'], r['router_ip'], r['network_name'], r['lan_ip']])
             
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={log_type}_logs.csv"})
 
@@ -733,56 +993,47 @@ def export_tool_logs():
 
 @app.route('/api/wifi')
 def get_wifi_networks():
-    """Scans for available Wi-Fi networks using OS-specific CLI tools."""
+    """Returns Wi-Fi data for Win/Linux or an incompatibility notice for macOS."""
     networks = []
     sys_plat = platform.system()
+    
     try:
-        if sys_plat == "Windows":
-            output = subprocess.check_output(["netsh", "wlan", "show", "network", "mode=bssid"], text=True)
-            ssid = ""
-            for line in output.split('\n'):
-                line = line.strip()
-                if line.startswith("SSID"): 
-                    ssid = line.split(":")[1].strip()
-                elif line.startswith("Signal") and ssid:
-                    networks.append({"ssid": ssid, "signal": line.split(":")[1].strip()})
-                    ssid = ""
+        # --- MACOS: EXPLICIT INCOMPATIBILITY ---
+        if sys_plat == "Darwin":
+            return jsonify({
+                "error": "Incompatible",
+                "message": "Wi-Fi Scanning is currently restricted on macOS due to OS-level privacy locks on location services."
+            })
 
-        elif sys_plat == "Darwin": # macOS
+        # --- WINDOWS LOGIC ---
+        elif sys_plat == "Windows":
             try:
-                # Attempt 1: NetworkSetup (Modern macOS)
-                iface_out = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
-                wifi_iface = "en0" # Default
-                if "Wi-Fi" in iface_out:
-                    lines = iface_out.split('\n')
-                    for i, line in enumerate(lines):
-                        if "Wi-Fi" in line: 
-                            # The device identifier is usually on the next line
-                            wifi_iface = lines[i+1].split(":")[1].strip()
-                            break
-                
-                output = subprocess.check_output(["networksetup", "-getavailablenetworks", wifi_iface], text=True)
-                for line in output.strip().split('\n'):
-                    if line.strip() and "Available networks" not in line: 
-                        networks.append({"ssid": line.strip(), "signal": "N/A"}) # NetworkSetup doesn't provide signal strength
+                output = subprocess.check_output(["netsh", "wlan", "show", "network", "mode=bssid"], 
+                                                 text=True, encoding='latin-1', errors='ignore')
+                ssid = ""
+                for line in output.split('\n'):
+                    line = line.strip()
+                    if line.startswith("SSID"): 
+                        ssid = line.split(":")[1].strip()
+                    elif line.startswith("Signal") and ssid:
+                        networks.append({"ssid": ssid, "signal": line.split(":")[1].strip()})
+                        ssid = ""
+            except: 
+                return jsonify({"error": "Failed", "message": "Windows WLAN service not responding."})
 
-            except subprocess.CalledProcessError as e:
-                # Error 5 means permission denied (Location Services)
-                if e.returncode == 5: 
-                    return jsonify({"error": "Permission Denied: Please Enable Location Services for Terminal/Python."})
-                
-                # Attempt 2: Airport Utility (Legacy/Fallback)
-                airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-                if os.path.exists(airport_path):
-                    output = subprocess.check_output([airport_path, "-s"], text=True)
-                    lines = output.strip().split('\n')
-                    for line in lines[1:]:
-                        parts = line.split()
-                        if len(parts) >= 3: 
-                            networks.append({"ssid": parts[0], "signal": f"{parts[2]} dBm"})
+        # --- LINUX LOGIC ---
+        elif sys_plat == "Linux":
+            try:
+                output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,SIGNAL", "dev", "wifi"], text=True)
+                for line in output.strip().split('\n'):
+                    parts = line.split(":")
+                    if len(parts) >= 2 and parts[0]:
+                        networks.append({"ssid": parts[0], "signal": f"{parts[1]}%"})
+            except:
+                return jsonify({"error": "Failed", "message": "Linux 'nmcli' tool not found or permission denied."})
 
     except Exception as e: 
-        return jsonify({"error": str(e)})
+        return jsonify({"error": "Error", "message": str(e)})
         
     return jsonify(networks)
 
@@ -877,15 +1128,22 @@ def export_history():
 
 @app.route('/api/devices/export', methods=['POST'])
 def export_devices():
-    """Exports current device list to CSV."""
+    """Exports current device list to CSV dynamically."""
     d = request.json
     rows = d.get('rows', [])
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(['Hostname', 'IP Address', 'MAC Address', 'Services'])
-    for r in rows: 
-        writer.writerow([r.get('hostname'), r.get('ip'), r.get('mac'), r.get('services')])
     
+    # Check if we have data
+    if rows:
+        # 1. Write Header Row (using keys from the first item, e.g., "Hostname", "IP Address")
+        headers = list(rows[0].keys())
+        writer.writerow(headers)
+        
+        # 2. Write Data Rows (mapping values to the headers)
+        for r in rows: 
+            writer.writerow([r.get(h) for h in headers])
+            
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": "attachment; filename=devices.csv"})
 
 # --- Updater (GitHub Integration) ---
