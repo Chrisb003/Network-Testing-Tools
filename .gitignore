@@ -2,3 +2,4 @@ speedtest.db
 .DS_Store
 speedtest.db-shm
 speedtest.db-wal
+venv/
