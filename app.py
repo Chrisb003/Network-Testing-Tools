@@ -19,13 +19,13 @@ from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp, conf
 import sys
 import zipfile
-from pathlib import Pathimport os
+from pathlib import Path
 import shutil
 import threading
 from flask import jsonify
 
 # --- Configuration ---
-APP_VERSION = "0.6.4" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.5" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
