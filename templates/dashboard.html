@@ -1,4 +1,4 @@
-<!-- Version number 0.6.0 -->
+<!-- Version number 0.6.1 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -418,6 +418,7 @@ async function fetchAdapters() {
      * 1. The Global Header (WAN, Router IP, DNS).
      * 2. The Adapter Table (IPs, Status, MACs).
      * 3. Handles "Pinned" status for the primary interface.
+     * Includes safety fallbacks for offline/NoneType scenarios.
      */
     const noMac = document.getElementById('hideNoMacCheck').checked;
     const showHidden = document.getElementById('showHiddenCheck').checked;
@@ -428,14 +429,15 @@ async function fetchAdapters() {
         
         if (!data || !data.adapters) return;
 
-        // 1. Update Global Header Stats (Syncing IDs with your HTML)
+        // 1. Update Global Header Stats
         const routerEl = document.getElementById('header-router-ip');
         const dnsEl = document.getElementById('header-dns');
         const downEl = document.getElementById('live-down');
         const upEl = document.getElementById('live-up');
 
-        if (routerEl) routerEl.innerText = data.primary_router || "-";
-        if (dnsEl) dnsEl.innerText = data.primary_dns || "-";
+        // Logic: Display 'Disconnected' or 'N/A' if the backend returns empty values
+        if (routerEl) routerEl.innerText = data.primary_router && data.primary_router !== "-" ? data.primary_router : "Disconnected";
+        if (dnsEl) dnsEl.innerText = data.primary_dns && data.primary_dns !== "-" ? data.primary_dns : "N/A";
         
         if (data.global_speed) { 
             if (downEl) downEl.innerText = data.global_speed.download; 
@@ -451,7 +453,7 @@ async function fetchAdapters() {
             if (noMac && (!a.mac || a.mac === '-')) return '';
             if (!a.visible && !showHidden) return '';
 
-            // Sanitize strings for the onclick event to prevent JS errors
+            // Sanitize strings for the onclick event
             const safeName = (a.name || '').replace(/'/g, "\\'"); 
             const safeId = (a.id || '').replace(/'/g, "\\'");
             const safeMac = a.mac || '-';
@@ -482,7 +484,10 @@ async function fetchAdapters() {
         }).join('');
 
     } catch (err) {
-        console.error("Failed to fetch adapter data:", err);
+        // Fallback for if the API fails entirely due to disconnection
+        console.warn("Failed to fetch adapter data: System might be offline.", err);
+        const routerEl = document.getElementById('header-router-ip');
+        if (routerEl) routerEl.innerText = "Disconnected";
     }
 }
 

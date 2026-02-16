@@ -19,7 +19,7 @@ from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp, conf
 
 # --- Configuration ---
-APP_VERSION = "0.6.0" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.1" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -372,9 +372,10 @@ def get_bandwidth():
     }
 
 def get_active_interface_name():
-    """Finds the interface matching the local IP, ignoring loopback."""
+    """Finds the interface matching the local IP, returning an empty string if offline."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        # This will fail if there is no network routing at all
         s.connect(('8.8.8.8', 80))
         target_ip = s.getsockname()[0]
     except:
@@ -382,12 +383,15 @@ def get_active_interface_name():
     finally:
         s.close()
 
+    if target_ip == '127.0.0.1':
+        return "" # Return empty string instead of None
+
     interfaces = psutil.net_if_addrs()
     for iface_name, addrs in interfaces.items():
         for addr in addrs:
-            if addr.family == socket.AF_INET and addr.address == target_ip and not addr.address.startswith("127."):
+            if addr.family == socket.AF_INET and addr.address == target_ip:
                 return iface_name
-    return None
+    return ""
 
 def resolve_hostname(ip):
     """Resolves hostname with a strict timeout to avoid Wi-Fi hangs."""
@@ -626,11 +630,11 @@ def get_adapters():
 
         # --- HEADER PINNING LOGIC ---
         is_pinned = (mac == pinned_mac) if pinned_mac else False
-        is_active_default = (name == active_iface_name or name in active_iface_name) if not pinned_mac else False
 
-        if is_pinned or is_active_default:
-            if gw != "-": primary_gw = gw
-            if dns != "-": primary_dns = dns
+        # Fix: Check if active_iface_name exists before doing the 'in' comparison
+        is_active_default = False
+        if not pinned_mac and active_iface_name:
+            is_active_default = (name == active_iface_name or name in active_iface_name)
 
         # --- SPEED LOGIC (Corrected for 'Not Available') ---
         # 1. Start with the hardware negotiated speed

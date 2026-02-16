@@ -5,6 +5,8 @@ Not all features will work with all OS's.
 
 On my list to add/get working. Wifi scanning (with listing network channel numbers if possible), So far in testing it does not work on mac os at all. Mostly completed windows testing. To be tested with linux to ensure it functions.
 
+0.6.1 Small fix to adapter checks to make it work with no active connection (No wifi or ethernet connected)
+
 0.6.0 Various small fixes to functions. As well as huge amount of work done on the wifi scanning. Wifi scanning doesnt work on Mac. It has now been tested on windows and seems functional. To get it to scan properly when doing this it will disable and reenable the wifi adaptor. There has also been various updates to the dashboard to support the changes. With the setup script most of the changes are to get it to install the prerequirments when first ran. 
 In this version the code is at 0.6.0, the setup is at 0.5.0. Added version number for html dashboard currently 0.6.0
 
