@@ -1,4 +1,9 @@
-0.6.5-0.6. Various fixes to allow functions to work correctly with linux
+0.6.8 added logo and favicon to dashboard.
+
+0.6.7 Included a couple of scripts for Windows, Mac OS and Linux to ensure python is installed then run the setup script. This can also be used when wanting to start the script.
+    Update mechanism in the dashboard is still broken, but delete the app.py script and it will download the latest version of the whole thing.
+
+0.6.5-0.6.6 Various fixes to allow functions to work correctly with linux. Versions are as follows Setup 0.6.0, app 0.6.6, dashboard 0.6.1
 
 0.6.4 More changes to fix issues with linux. app script now version 0.6.3 and setup script 0.6.0 
 

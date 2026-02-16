@@ -5,6 +5,10 @@ It lists local IP, router IP and wan IP, ISP name. It can also be used to run sp
 
 Not all features will work with all OS's. Below is a list of what works with what.
 
+I have included a .sh script for mac/linux to make sure python is installed and then run the setup script which should install the rest.
+
+There is also a bat file for windows to install python and then start the setup script.
+
 Fully works with Windows 11. Just need to have python installed and run the setup script it should install the rest of the requirements. In order for the network scanning to work you need to make sure location services are enabled and the script needs to run as admin.
 
 Works with Mac OS. Just install python and run the script it should install the rest. Wifi network scanning does not function due to limitations with Mac OS but all other features work.
