@@ -1,3 +1,5 @@
+0.6.4 More changes to fix issues with linux. app script now version 0.6.3 and setup script 0.6.0 
+
 0.6.3 Changelog seperated to own file. App script updated to 0.6.2 to update reference to file.
 
 0.6.2 small fixes with setup script to better support linux. Setup script now version - 0.5.1

@@ -9,6 +9,6 @@ Fully works with Windows 11. Just need to have python installed and run the setu
 
 Works with Mac OS. Just install python and run the script it should install the rest. Wifi network scanning does not function due to limitations with Mac OS but all other features work.
 
-Linux, Tested with Linux minit. Basic tests were done. It may require extra work to get functional. Intial tests see to show most functions but still need more testing.
+Linux, Tested with Linux minit. Basic tests were done. It may require extra work to get functional. Intial tests see to show most functions but still need more testing. May require speed test cli downloading manually and putting into the venv/bin folder within the folder you have run this script from if it doesnt download on its own.
 
-On my list to add/get working. Linux - fix issue with speed test, do full testing.
+On my list to add/get working. Linux - do full testing.

@@ -17,9 +17,15 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp, conf
+import sys
+import zipfile
+from pathlib import Pathimport os
+import shutil
+import threading
+from flask import jsonify
 
 # --- Configuration ---
-APP_VERSION = "0.6.3" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.4" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -196,6 +202,38 @@ def get_local_ip():
         return '127.0.0.1'
     finally:
         s.close()
+
+def cleanup_old_files():
+    """
+    Scans the application directory for .old files (created during Windows updates)
+    and removes them to keep the folder clean.
+    """
+    base_dir = app.root_path
+    print("[*] Performing startup cleanup...")
+    
+    # Walk through all directories in the project
+    for root, dirs, files in os.walk(base_dir):
+        # Skip the venv folder to save time and avoid permission issues
+        if "venv" in dirs:
+            dirs.remove("venv")
+        if "__pycache__" in dirs:
+            dirs.remove("__pycache__")
+
+        for filename in files:
+            if filename.endswith(".old"):
+                file_path = os.path.join(root, filename)
+                try:
+                    os.remove(file_path)
+                    print(f"[✓] Deleted backup file: {filename}")
+                except Exception as e:
+                    print(f"[!] Could not delete {filename}: {e}")
+
+def restart_server():
+    """Restarts the current Python script."""
+    print("[*] Triggering application restart...")
+    time.sleep(1)  # Give the server a moment to flush the HTTP response
+    python = sys.executable
+    os.execl(python, python, *sys.argv)
 
 def get_extended_iface_info():
     """
@@ -883,6 +921,105 @@ def get_network_devices(net_id):
             dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
         except: pass
         return jsonify(dev_list)
+
+@app.route('/api/system/update', methods=['POST'])
+def update_software():
+    """
+    Downloads the latest code from GitHub, handles Windows file locking,
+    updates the files, and restarts the application.
+    """
+    try:
+        # Ensure GITHUB_SETTINGS is available (defined at top of app.py)
+        if 'GITHUB_SETTINGS' not in globals():
+            return jsonify({"error": "GitHub settings not configured."}), 500
+
+        print("[*] Starting Update Process...")
+        
+        # 1. Download the ZIP from Private Repo
+        zip_url = f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}"
+        req = urllib.request.Request(zip_url)
+        req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
+        req.add_header("Accept", "application/vnd.github.v3+json")
+
+        # Buffer the download in memory
+        with urllib.request.urlopen(req) as response:
+            zip_data = io.BytesIO(response.read())
+
+        base_dir = app.root_path
+
+        # 2. Extract and Overwrite
+        with zipfile.ZipFile(zip_data) as zip_ref:
+            # GitHub zips have a dynamic top-level folder (e.g. 'Pancool-Repo-a1b2c')
+            # We need to find it and strip it.
+            root_folder = zip_ref.namelist()[0]
+            
+            for member in zip_ref.infolist():
+                # Skip the root folder itself
+                if member.filename == root_folder:
+                    continue
+                
+                # Strip the root folder from the path
+                # Example: 'Pancool-Repo-123/templates/index.html' -> 'templates/index.html'
+                rel_path = member.filename[len(root_folder):]
+                
+                # Security check: Don't allow climbing up directories
+                if ".." in rel_path or not rel_path:
+                    continue
+
+                target_path = os.path.join(base_dir, rel_path)
+
+                # Handle Directories
+                if member.is_dir():
+                    os.makedirs(target_path, exist_ok=True)
+                    continue
+
+                # Handle Files
+                # Ensure the parent directory exists
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
+                try:
+                    # Attempt standard overwrite
+                    with zip_ref.open(member) as source, open(target_path, "wb") as target:
+                        shutil.copyfileobj(source, target)
+                        
+                except PermissionError:
+                    # WINDOWS FIX: File is locked (likely app.py)
+                    if platform.system() == "Windows":
+                        print(f"[!] File locked: {rel_path}. Attempting rename-and-replace...")
+                        try:
+                            # Rename the running file to .old (Windows allows this)
+                            old_backup = target_path + ".old"
+                            if os.path.exists(old_backup):
+                                os.remove(old_backup) # Remove previous backup if exists
+                            
+                            os.replace(target_path, old_backup)
+                            
+                            # Now write the new file to the original name
+                            with zip_ref.open(member) as source, open(target_path, "wb") as target:
+                                shutil.copyfileobj(source, target)
+                            print(f"[✓] Successfully patched locked file: {rel_path}")
+                        except Exception as rename_err:
+                            print(f"[X] Critical Update Error for {rel_path}: {rename_err}")
+                            return jsonify({"error": f"Failed to update locked file {rel_path}"}), 500
+                    else:
+                        # Linux/Mac usually allow overwriting running files, so this is a real permission issue
+                        print(f"[X] Permission Denied: {rel_path}")
+                        return jsonify({"error": f"Permission denied for {rel_path}"}), 500
+
+        print("[✓] Update extracted successfully.")
+        
+        # 3. Trigger Background Restart
+        # We start a thread to restart the server AFTER this function returns 200 OK
+        threading.Thread(target=restart_server).start()
+
+        return jsonify({
+            "status": "success", 
+            "message": "Update installed. Server restarting..."
+        })
+
+    except Exception as e:
+        print(f"[X] Update Failed: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/scan_network')
 def scan_network():
@@ -1625,5 +1762,6 @@ def update_wifi_history():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
+    cleanup_old_files()
     # Set to port 81 per your configuration
     app.run(debug=True, host='0.0.0.0', port=81)
