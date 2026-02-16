@@ -19,7 +19,7 @@ from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp, conf
 
 # --- Configuration ---
-APP_VERSION = "0.6.1" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.2" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -1460,7 +1460,7 @@ def check_update():
 @app.route('/api/update/changelog')
 def get_changelog():
     """Fetches Release Notes."""
-    content = fetch_github_file("README.md")
+    content = fetch_github_file("Changelog")
     return jsonify({"status": "success", "changelog": content}) if content else jsonify({"status": "error"})
 
 @app.route('/api/update/apply', methods=['POST'])

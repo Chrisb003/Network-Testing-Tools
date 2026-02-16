@@ -3,19 +3,10 @@ This is an app I created for basic network testing. I put it together mainly so 
 It lists local IP, router IP and wan IP, ISP name. It can also be used to run speed tests with using speedtest cli, it lists network adaptors and what IP address and dns each have. It can do a network scan and list network devices IP address and mac addresses. Store a history of speed tests completed which can be exported as a csv. Do ping test, DNS lookups.
 Not all features will work with all OS's.
 
-On my list to add/get working. Wifi scanning (with listing network channel numbers if possible), So far in testing it does not work on mac os at all. Mostly completed windows testing. To be tested with linux to ensure it functions.
+Fully works with Windows 11. Just need to have python installed and run the setup script it should install the rest of the requirements. In order for the network scanning to work you need to make sure location services are enabled and the script needs to run as admin.
 
-0.6.1 Small fix to adapter checks to make it work with no active connection (No wifi or ethernet connected)
+Works with Mac OS. Just install python and run the script it should install the rest. Wifi network scanning does not function due to limitations with Mac OS but all other features work.
 
-0.6.0 Various small fixes to functions. As well as huge amount of work done on the wifi scanning. Wifi scanning doesnt work on Mac. It has now been tested on windows and seems functional. To get it to scan properly when doing this it will disable and reenable the wifi adaptor. There has also been various updates to the dashboard to support the changes. With the setup script most of the changes are to get it to install the prerequirments when first ran. 
-In this version the code is at 0.6.0, the setup is at 0.5.0. Added version number for html dashboard currently 0.6.0
+Linux, Tested with Linux minit. Basic tests were done. It may require extra work to get functional. Most functions but still need more testing.
 
-0.5.0 Various fixes and changes. Setup scipt also downloads the latest version from github the first time it runs. The main app script there has been various changes to make sure everything is working as it should be. The dashboard page updated visuals to fix a few things, csv export now working correctly, Wifi scanning tool still to be worked on remove various duplicate functions.
-
-0.3.1 Fixes for missing code relating to speedtest
-
-0.3.0 - Setup script version 0.1.0 nothing has changed with this. Main app script 0.3.0 various changes adding in ability to save network scans and give names to devices, doo dns lookup and ping tool. Dashboard has been updated to acomidate these extra features.
-
-0.2.0 few fixes to existing functions and adding darkmode/lightmode toggle
-
-0.1.0 Initial beta version
+On my list to add/get working. Linux - fix issue with speed test, do full testing.
