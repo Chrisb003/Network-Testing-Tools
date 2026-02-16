@@ -25,7 +25,7 @@ import threading
 from flask import jsonify
 
 # --- Configuration ---
-APP_VERSION = "0.6.5" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.6" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -227,6 +227,45 @@ def cleanup_old_files():
                     print(f"[✓] Deleted backup file: {filename}")
                 except Exception as e:
                     print(f"[!] Could not delete {filename}: {e}")
+
+def get_linux_dns(interface_name):
+    """
+    Fetches the actual upstream DNS servers for a specific interface on Linux.
+    Prioritizes nmcli, then resolvectl, then falls back to /etc/resolv.conf.
+    """
+    try:
+        # Method 1: NMCLI (Best for Ubuntu Desktop/Server with NetworkManager)
+        # -g returns just the value, cleaner than parsing grep
+        cmd = ["nmcli", "-g", "IP4.DNS", "dev", "show", interface_name]
+        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+        if output:
+            # nmcli separates multiple servers with lines or pipes
+            return output.replace('\n', ', ').replace(' | ', ', ')
+
+        # Method 2: resolvectl (Standard on modern systemd Linux)
+        cmd = f"resolvectl status {interface_name}"
+        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode()
+        # Parse output like "DNS Servers: 8.8.8.8 1.1.1.1"
+        for line in output.split('\n'):
+            if "DNS Servers:" in line:
+                return line.split(":", 1)[1].strip().replace(' ', ', ')
+
+    except Exception:
+        pass
+
+    # Method 3: Global Fallback (/etc/resolv.conf)
+    # This usually returns 127.0.0.53 on Ubuntu, but it's better than nothing
+    dns_list = []
+    try:
+        with open('/etc/resolv.conf', 'r') as f:
+            for line in f:
+                if line.startswith('nameserver'):
+                    ip = line.strip().split()[1]
+                    if ip not in dns_list:
+                        dns_list.append(ip)
+        return ', '.join(dns_list)
+    except:
+        return "Unknown"
 
 def restart_server():
     """Restarts the current Python script."""
@@ -605,12 +644,14 @@ def get_adapters():
     2. Pinned Adapter logic (Header locks to user choice).
     3. Hardware link speeds with a fallback to 'Not Available' if idle.
     4. Real-time Wi-Fi rates only when active traffic exists.
+    5. OS-Specific DNS handling (Fixes Ubuntu 127.0.0.53 issue).
     """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     
     # Fetch stable system info (Gateway/DNS) and Wi-Fi rates
+    # This works great for Windows/Mac but often fails for Linux DNS
     ext_info = get_extended_iface_info()
     wifi_rates = get_wifi_rates()
     
@@ -649,7 +690,7 @@ def get_adapters():
             elif a.family == psutil.AF_LINK: 
                 mac = a.address
 
-        # Get stable Gateway and DNS from the ipconfig parser
+        # Get stable Gateway and DNS from the default parser (Works for Windows/Mac)
         spec_info = ext_info.get(name, {})
         
         # Windows Cross-reference (Handle alias vs full name)
@@ -666,6 +707,14 @@ def get_adapters():
         dns = spec_info.get("dns", "-")
         if ":" in dns: dns = "-"
 
+        # --- NEW LINUX SPECIFIC FIX ---
+        # This block ONLY runs on Linux, leaving Windows/Mac untouched.
+        if platform.system() == "Linux":
+            real_dns = get_linux_dns(name)
+            if real_dns:
+                dns = real_dns
+        # -----------------------------
+
         # --- HEADER PINNING LOGIC ---
         is_pinned = (mac == pinned_mac) if pinned_mac else False
 
@@ -673,6 +722,11 @@ def get_adapters():
         is_active_default = False
         if not pinned_mac and active_iface_name:
             is_active_default = (name == active_iface_name or name in active_iface_name)
+
+        # Update Primary Header values if this is the active adapter
+        if is_pinned or (not pinned_mac and is_active_default):
+             if gw != "-": primary_gw = gw
+             if dns != "-": primary_dns = dns
 
         # --- SPEED LOGIC (Corrected for 'Not Available') ---
         # 1. Start with the hardware negotiated speed
@@ -717,14 +771,17 @@ def get_adapters():
             "is_primary": is_pinned
         })
 
-    # Global Failsafe for the Header
+    # Global Failsafe for the Header (Fallback if loop didn't set it)
     if primary_gw == "Unknown" or ":" in primary_gw:
         primary_gw = "-"
+        # Only fallback to ext_info if we haven't found a better one
         for v in ext_info.values():
             curr_gw = v.get("gateway")
             if curr_gw and curr_gw != "-" and ":" not in curr_gw:
                 primary_gw = curr_gw
-                primary_dns = v.get("dns", "-")
+                # Only fallback DNS if we didn't find a Linux specific one earlier
+                if primary_dns == "Unknown":
+                    primary_dns = v.get("dns", "-")
                 break
         
     return jsonify({
