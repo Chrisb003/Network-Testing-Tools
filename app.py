@@ -19,7 +19,7 @@ from flask import Flask, render_template, jsonify, Response, request
 from scapy.all import ARP, Ether, srp, conf
 
 # --- Configuration ---
-APP_VERSION = "0.6.2" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.3" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -1312,6 +1312,7 @@ def run_speedtest():
             st_path = os.path.join(base_dir, "venv", "bin", "speedtest")
 
         # 2. Check if the binary exists; if not, fall back to global 'speedtest' command
+        # This is the CRITICAL "Fallback" line I missed in the shorter version
         cmd_path = st_path if os.path.exists(st_path) else "speedtest"
         
         # 3. Execute the Speedtest

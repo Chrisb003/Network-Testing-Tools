@@ -6,12 +6,14 @@ import platform
 import shutil
 import urllib.request
 import zipfile
+import tarfile  # Added for Linux .tgz support
 import io
 import ctypes
+import stat
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.5.1"
+SETUP_VERSION = "0.6.0"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy"]
 APP_FILENAME = "app.py"
@@ -42,7 +44,6 @@ def ensure_linux_prerequisites():
     if platform.system() == "Linux":
         print("[*] Checking Linux system prerequisites...")
         
-        # Check if we are on a Debian/Ubuntu based system by looking for apt-get
         if shutil.which("apt-get"):
             try:
                 # 1. Update Package List
@@ -50,9 +51,6 @@ def ensure_linux_prerequisites():
                 subprocess.run(["sudo", "apt-get", "update"], check=True)
                 
                 # 2. Install Critical Dependencies
-                # python3-venv: Required to create the venv
-                # python3-pip: Required to install packages
-                # build-essential & python3-dev: Required to compile psutil/scapy extensions
                 print("[*] Installing Python build tools and venv...")
                 subprocess.run([
                     "sudo", "apt-get", "install", "-y", 
@@ -83,7 +81,7 @@ def install_git():
             if install_homebrew():
                 subprocess.run(["brew", "install", "git"], check=True)
         elif system == "Linux":
-            # Already handled in ensure_linux_prerequisites, but safe to double check
+            # Already handled in ensure_linux_prerequisites
             subprocess.run(["sudo", "apt-get", "install", "-y", "git"], check=True)
         
         print("[✓] Git successfully installed.")
@@ -144,7 +142,6 @@ def create_venv(base_dir):
     venv_path = base_dir / VENV_DIR_NAME
     if not venv_path.exists():
         print(f"[*] Creating virtual environment (Setup v{SETUP_VERSION})...")
-        # clear=True ensures we start fresh if a broken venv exists
         try:
             venv.create(venv_path, with_pip=True, clear=True)
         except Exception as e:
@@ -163,11 +160,10 @@ def get_venv_paths(venv_path):
             "bin_dir": venv_path / "Scripts"
         }
     else:
-        # On Linux/Mac, the binary is in 'bin' and usually named 'python' or 'python3'
+        # Linux/Mac standard path
         py_path = venv_path / "bin" / "python"
         if not py_path.exists():
              py_path = venv_path / "bin" / "python3"
-             
         return {
             "python": py_path,
             "bin_dir": venv_path / "bin"
@@ -177,11 +173,7 @@ def install_requirements(python_path):
     """Installs required Python libraries into the venv."""
     print("[*] Installing Python dependencies...")
     try:
-        # 1. Upgrade pip inside the venv
         subprocess.check_call([str(python_path), "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
-        
-        # 2. Install requirements
-        # We pass stdout=sys.stdout so you can see the progress on Linux
         subprocess.check_call([str(python_path), "-m", "pip", "install"] + REQUIREMENTS)
         print("[✓] Dependencies installed.")
     except subprocess.CalledProcessError as e:
@@ -191,9 +183,11 @@ def install_requirements(python_path):
         sys.exit(1)
 
 def install_speedtest_cli(bin_dir):
-    """Installs Speedtest CLI."""
+    """Installs Speedtest CLI directly into the virtual environment."""
     system = platform.system()
+    machine = platform.machine().lower()
     
+    # 1. WINDOWS INSTALLATION
     if system == "Windows":
         target = bin_dir / "speedtest.exe"
         if not target.exists():
@@ -204,23 +198,44 @@ def install_speedtest_cli(bin_dir):
                 with zipfile.ZipFile(bin_dir / "st.zip", 'r') as z: 
                     z.extract("speedtest.exe", bin_dir)
                 os.remove(bin_dir / "st.zip")
+                print("[✓] Speedtest CLI installed to venv.")
             except: pass
 
+    # 2. LINUX INSTALLATION (NEW: Manual Download)
+    elif system == "Linux":
+        target = bin_dir / "speedtest"
+        if not target.exists():
+            print(f"[*] Downloading Speedtest CLI for Linux ({machine})...")
+            
+            # Detect Architecture
+            if "aarch64" in machine or "arm64" in machine:
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz"
+            elif "arm" in machine:
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-armhf.tgz"
+            else: # Default to x86_64
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
+            
+            try:
+                # Download and Extract Tarball
+                urllib.request.urlretrieve(url, bin_dir / "st.tgz")
+                with tarfile.open(bin_dir / "st.tgz", "r:gz") as tar:
+                    tar.extract("speedtest", path=bin_dir)
+                os.remove(bin_dir / "st.tgz")
+                
+                # Make Executable (chmod +x)
+                st_stat = os.stat(target)
+                os.chmod(target, st_stat.st_mode | stat.S_IEXEC)
+                print("[✓] Speedtest CLI installed to venv.")
+            except Exception as e:
+                print(f"[X] Linux Speedtest install failed: {e}")
+
+    # 3. MACOS INSTALLATION (Brew is safest for notarization)
     elif system == "Darwin":
         if not shutil.which("speedtest") and install_homebrew():
             try:
                 subprocess.run(["brew", "tap", "teamookla/speedtest"], check=True)
                 subprocess.run(["brew", "install", "speedtest"], check=True)
             except: pass
-
-    elif system == "Linux":
-        if not shutil.which("speedtest"):
-            print("[*] Installing Speedtest CLI via Apt...")
-            try:
-                subprocess.run("curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash", shell=True, check=True)
-                subprocess.run(["sudo", "apt-get", "install", "-y", "speedtest"], check=True)
-            except Exception as e:
-                print(f"[X] Linux Speedtest install failed: {e}")
 
 def install_npcap_windows():
     """Checks/Installs Npcap on Windows."""
