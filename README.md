@@ -11,4 +11,4 @@ Works with Mac OS. Just install python and run the script it should install the 
 
 Linux, Tested with Linux minit. Basic tests were done. It may require extra work to get functional. Intial tests see to show most functions but still need more testing. May require speed test cli downloading manually and putting into the venv/bin folder within the folder you have run this script from if it doesnt download on its own.
 
-On my list to add/get working. Linux - do full testing.
+On my list to add/get working. Linux - do full testing. Update mechanism still needs work until I can fix it just stop the code and delete the app.py file and start up the setup script again it will download the latest version when it starts.
