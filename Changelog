@@ -1,4 +1,4 @@
-0.6.8 added logo and favicon to dashboard.
+0.6.8 added logo and favicon to dashboard. Dashboard version now 0.6.3
 
 0.6.7 Included a couple of scripts for Windows, Mac OS and Linux to ensure python is installed then run the setup script. This can also be used when wanting to start the script.
     Update mechanism in the dashboard is still broken, but delete the app.py script and it will download the latest version of the whole thing.
