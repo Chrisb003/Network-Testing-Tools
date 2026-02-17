@@ -1597,9 +1597,8 @@ def get_wifi_networks():
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
     """
-    Executes an Ookla Speedtest using the pinned adapter if set.
-    Windows: Uses IP address for binding to avoid 'ConfigurationError'.
-    Linux/macOS: Uses interface name for standard binding.
+    Executes an Ookla Speedtest.
+    Windows Fix: Uses the --ip flag to force binding to the local IP of the pinned adapter.
     """
     d = request.json
     pinned_iface = None
@@ -1612,7 +1611,8 @@ def run_speedtest():
             if row:
                 pinned_mac = row[0]
                 for name, addrs in psutil.net_if_addrs().items():
-                    temp_mac, temp_ip = None, None
+                    temp_mac = None
+                    temp_ip = None
                     for a in addrs:
                         if a.family == psutil.AF_LINK: temp_mac = a.address
                         if a.family == socket.AF_INET: temp_ip = a.address
@@ -1624,12 +1624,12 @@ def run_speedtest():
     except Exception as e:
         print(f"[*] Pinned interface lookup failed: {e}")
 
-    # Fallback for Device IP logging
+    # Fallback to general local IP if no pin is found
     if device_ip == "-":
         device_ip = get_local_ip()
 
     try:
-        # 2. Determine Binary Path
+        # 2. Path to the CLI Binary
         base_dir = app.root_path 
         st_path = os.path.join(base_dir, "venv", "Scripts", "speedtest.exe") if platform.system() == "Windows" else os.path.join(base_dir, "venv", "bin", "speedtest")
         cmd_path = st_path if os.path.exists(st_path) else "speedtest"
@@ -1637,14 +1637,12 @@ def run_speedtest():
         # 3. Build Command
         cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
         
-        # --- THE CROSS-PLATFORM FIX ---
-        if pinned_iface:
-            if platform.system() == "Windows":
-                # Windows requires the IP to avoid the "Failed binding" error
-                cmd.extend(["--interface", device_ip])
-            else:
-                # Linux/macOS require the interface name (e.g., eth0)
-                cmd.extend(["--interface", pinned_iface])
+        # IMPROVED WINDOWS BINDING: Use --ip instead of --interface
+        if device_ip and device_ip != "127.0.0.1" and device_ip != "-":
+            # On Windows, --ip is often more successful at resolving 'Failed binding' errors
+            flag = "--ip" if platform.system() == "Windows" else "--interface"
+            print(f"[*] Forcing Speedtest via {flag}: {device_ip}")
+            cmd.extend([flag, device_ip])
         
         res = json.loads(subprocess.check_output(cmd, text=True))
         
@@ -1659,7 +1657,7 @@ def run_speedtest():
         conn_type = d.get('connection_type') or "Ethernet"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 5. Save to Database
+        # 5. SAVE TO DATABASE
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             conn.execute("PRAGMA journal_mode=WAL;") 
             conn.execute("""
@@ -1670,8 +1668,9 @@ def run_speedtest():
             
         return jsonify({"download": down, "upload": up, "ping": ping})
 
-    except subprocess.CalledProcessError:
-        return jsonify({"error": "Speedtest CLI failed to bind. Ensure the pinned adapter is active."})
+    except subprocess.CalledProcessError as e:
+        # Catch the specific bind failure to provide better feedback
+        return jsonify({"error": "Speedtest failed to bind to the selected adapter. Ensure the adapter has a valid IP and internet access."})
     except Exception as e:
         return jsonify({"error": str(e)})
 
