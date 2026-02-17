@@ -1648,7 +1648,7 @@ def check_update():
             "regex": r'SETUP_VERSION\s*=\s*["\']([^"\']+)["\']'
         },
         "dashboard.html": {
-            "path": "templates/dashboard.html", # Assumes flask structure in repo
+            "path": "templates/dashboard.html",
             "local": get_html_version(),
             "regex": r'Version number\s+([\d.]+)'
         }
@@ -1689,25 +1689,27 @@ def check_update():
             res = f.result()
             if res: mismatches.append(res)
             
-    # Also get the global tag for the footer
+    # Fetch the global tag for the footer
     global_remote = "0.0.0"
     try:
         c = fetch_github_file("version.json")
-        if c: global_remote = json.loads(c).get("version", "0.0.0")
-    except: pass
+        if c: 
+            global_remote = json.loads(c).get("version", "0.0.0")
+    except: 
+        pass
 
     return jsonify({
         "status": "success",
         "update_available": len(mismatches) > 0,
         "mismatches": mismatches,
-        "global_remote": global_remote,
-        "global_local": get_global_version()
+        "remote_version": global_remote,      # Key used by dashboard.html footer
+        "global_local": get_global_version()   # Current local version.json
     })
 
 @app.route('/api/update/changelog')
 def get_changelog():
-    """Fetches Release Notes."""
-    content = fetch_github_file("Changelog")
+    """Fetches Release Notes from the GitHub repository."""
+    content = fetch_github_file("Changelog") 
     return jsonify({"status": "success", "changelog": content}) if content else jsonify({"status": "error"})
 
 @app.route('/api/update/apply', methods=['POST'])

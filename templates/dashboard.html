@@ -308,24 +308,6 @@
                 <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill"></i> Update Failed</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
-                <p>The system update was attempted, but the following files are still outdated (version mismatch):</p>
-                
-                <div class="alert alert-warning p-3">
-                    <ul id="failed-list" class="mb-0 ps-3 small">
-                        <li>Checking...</li>
-                    </ul>
-                </div>
-
-                <p class="mb-2 small text-muted">The update process failed to overwrite these files. This is likely due to file permissions or the process being locked.</p>
-                <p class="mb-2">Please download the latest version manually:</p>
-                <a href="https://github.com/Pancool/Network-Testing-Tools/archive/refs/heads/main.zip" class="btn btn-primary w-100">
-                    <i class="bi bi-download"></i> Download Latest ZIP
-                </a>
-                <small class="text-muted d-block mt-2 text-center">
-                    (Extract and replace files manually)
-                </small>
-            </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
             </div>
@@ -341,7 +323,53 @@
         <span class="ver-tag" onclick="openUpdateModal()">HTML: {{ html_version }}</span>
     </div>
 </div>
+<div class="modal fade" id="updateModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">System Update</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="update-msg" class="alert alert-info">Checking for updates...</div>
+                <h6>Release Notes</h6>
+                <div class="bg-light p-3 border rounded small" style="max-height: 400px; overflow-y: auto;">
+                    <pre id="changelog-text" style="white-space: pre-wrap; color: #000;">Loading changelog...</pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-apply" class="btn btn-success" disabled onclick="applyUpdate()">Update Now</button>
+            </div>
+        </div>
+    </div>
+</div>
 
+<div class="modal fade" id="updateFailedModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content border-danger">
+            <div class="modal-header bg-danger-subtle text-danger">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill"></i> Update Failed</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>The automatic update was attempted, but some files could not be overwritten (version mismatch):</p>
+                <div class="alert alert-warning p-3">
+                    <ul id="failed-list" class="mb-0 ps-3 small">
+                        <li>Checking files...</li>
+                    </ul>
+                </div>
+                <p class="mb-2 small text-muted">This is usually due to file permissions or the files being locked by the system during the update.</p>
+                <p class="mb-2">Please download and replace the files manually:</p>
+                <a href="https://github.com/Pancool/Network-Testing-Tools/archive/refs/heads/main.zip" class="btn btn-primary w-100">
+                    <i class="bi bi-download"></i> Download Latest ZIP
+                </a>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     let updateModal, adapterModal, allDevices = [], allHistory = [], currentNetworkId = null;
@@ -983,14 +1011,17 @@ async function saveAdapterSettings() {
     }
 
     // --- Updater Logic (Global Version) ---
-    function checkUpdates() {
+    function checkUpdates() {   
         fetch('/api/update/check').then(r => r.json()).then(d => {
-            if (d.status === 'success' && isVersionHigher(d.remote_version, '{{ global_version }}')) {
-                pendingRemoteVersion = d.remote_version; // Store for later use
-                const t = document.getElementById('ver-global');
-                if (t) {
-                    t.classList.add('ver-update');
-                    t.innerHTML = `Global: {{ global_version }} <i class="bi bi-exclamation-circle-fill"></i>`;
+            if (d.status === 'success') {
+                pendingRemoteVersion = d.remote_version;
+                // Highlight the version tag if a global update is available OR specific files mismatch
+                if (d.update_available || isVersionHigher(d.remote_version, '{{ global_version }}')) {
+                    const t = document.getElementById('ver-global');
+                    if (t) {
+                        t.classList.add('ver-update');
+                        t.innerHTML = `Global: {{ global_version }} <i class="bi bi-exclamation-circle-fill"></i>`;
+                    }
                 }
             }
         });
@@ -1005,30 +1036,62 @@ async function saveAdapterSettings() {
         return false;
     }
 
-    function openUpdateModal() {
-        updateModal.show();
-        const msg = document.getElementById('update-msg'), btn = document.getElementById('btn-apply'), cl = document.getElementById('changelog-text');
-        msg.innerText = "Checking..."; cl.innerText = "Loading...";
-        
-        fetch('/api/update/check').then(r => r.json()).then(d => {
-            if (isVersionHigher(d.remote_version, '{{ global_version }}')) {
-                // --- ADD THIS LINE ---
-                pendingRemoteVersion = d.remote_version; 
-                // --------------------
-                msg.className = "alert alert-warning";
-                msg.innerText = `Update Available: v${d.remote_version} (Current: v{{ global_version }})`;
-                btn.disabled = false;
-            } else {
-                msg.className = "alert alert-success"; msg.innerText = "System is up to date."; btn.disabled = true;
-            }
-            return fetch('/api/update/changelog');
-        }).then(r => r.json()).then(d => { cl.innerText = d.changelog || "No notes."; });
+function openUpdateModal() {
+    // 1. Safety Check: Ensure the modal object exists before calling it
+    if (!updateModal) {
+        const modalEl = document.getElementById('updateModal');
+        if (modalEl) updateModal = new bootstrap.Modal(modalEl);
+        else return console.error("Update modal HTML is missing.");
     }
 
-function applyUpdate() { 
+    // 2. Show the modal immediately
+    updateModal.show();
+    
+    const msg = document.getElementById('update-msg');
+    const btn = document.getElementById('btn-apply');
+    const cl = document.getElementById('changelog-text');
+    
+    msg.innerText = "Checking for updates...";
+    msg.className = "alert alert-info";
+    cl.innerText = "Fetching release notes...";
+    btn.disabled = true;
+
+    // 3. Fetch status and changelog in parallel
+    fetch('/api/update/check')
+        .then(r => r.json())
+        .then(d => {
+            const updateFound = d.update_available || isVersionHigher(d.remote_version, '{{ global_version }}');
+            
+            if (updateFound) {
+                pendingRemoteVersion = d.remote_version; 
+                msg.className = "alert alert-warning";
+                msg.innerText = d.update_available ? 
+                    `Update Required: File mismatch detected (Remote v${d.remote_version})` : 
+                    `Update Available: v${d.remote_version} (Current: v{{ global_version }})`;
+                btn.disabled = false;
+            } else {
+                msg.className = "alert alert-success"; 
+                msg.innerText = "Your system and all core files are up to date."; 
+                btn.disabled = true;
+            }
+            return fetch('/api/update/changelog');
+        })
+        .then(r => r.json())
+        .then(d => { 
+            cl.innerText = d.changelog || "No release notes available for this version."; 
+        })
+        .catch(err => {
+            msg.className = "alert alert-danger";
+            msg.innerText = "Error communicating with update server.";
+            cl.innerText = "Check your internet connection.";
+        });
+}
+
+// 1. Trigger the update and set the verification flag
+    function applyUpdate() { 
         if(!confirm("Update system? The server will restart.")) return;
         
-        // Set a flag so we know to verify files on the next reload
+        // Save flag to trigger verification after the page reloads
         localStorage.setItem('update_pending', 'true');
 
         const btn = document.getElementById('btn-apply');
@@ -1039,18 +1102,19 @@ function applyUpdate() {
             .then(r => r.json())
             .then(d => { 
                 alert(d.message); 
+                // Wait 5 seconds for the server to cycle before reloading
                 setTimeout(() => location.reload(), 5000); 
             })
             .catch(err => {
-                alert("Connection lost. Server restarting...");
+                alert("Connection lost. Server is likely restarting. Page will reload.");
                 setTimeout(() => location.reload(), 5000); 
             }); 
     }
 
+    // 2. Perform file-by-file verification after the reload
     function verifyUpdateStatus() {
-        // Only run this check if we just came back from an update
         if (localStorage.getItem('update_pending')) {
-            localStorage.removeItem('update_pending'); // Clear flag
+            localStorage.removeItem('update_pending'); // Clear flag immediately
             
             console.log("Verifying update integrity...");
             
@@ -1058,7 +1122,7 @@ function applyUpdate() {
                 .then(r => r.json())
                 .then(d => {
                     if (d.mismatches && d.mismatches.length > 0) {
-                        // UPDATE FAILED: Show the specific files
+                        // Display the specific files that failed to update
                         const listEl = document.getElementById('failed-list');
                         if(listEl) {
                             listEl.innerHTML = d.mismatches.map(m => 
@@ -1067,8 +1131,8 @@ function applyUpdate() {
                         }
                         new bootstrap.Modal(document.getElementById('updateFailedModal')).show();
                     } else {
-                        // SUCCESS
-                        alert("Update verified! All files are up to date.");
+                        // All versions match the remote repository
+                        alert("Update verified! All core files are successfully updated.");
                     }
                 });
         }
