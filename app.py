@@ -30,7 +30,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -1598,53 +1598,57 @@ def get_wifi_networks():
 def run_speedtest():
     """
     Executes an Ookla Speedtest using the pinned adapter if set.
-    Captures both WAN and Local Device IP for the history log.
+    Windows: Uses IP address for binding to avoid 'ConfigurationError'.
+    Linux/macOS: Uses interface name for standard binding.
     """
     d = request.json
     pinned_iface = None
-    device_ip = "-" # Default if not found
+    device_ip = "-" 
 
-    # 1. Identify the Pinned Interface Name
+    # 1. Identify the Pinned Interface and its IP
     try:
         with sqlite3.connect(DB_NAME) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
             if row:
                 pinned_mac = row[0]
                 for name, addrs in psutil.net_if_addrs().items():
+                    temp_mac, temp_ip = None, None
                     for a in addrs:
-                        if a.family == psutil.AF_LINK and a.address == pinned_mac:
-                            pinned_iface = name
-                            break
-                    if pinned_iface: break
+                        if a.family == psutil.AF_LINK: temp_mac = a.address
+                        if a.family == socket.AF_INET: temp_ip = a.address
+                    
+                    if temp_mac == pinned_mac:
+                        pinned_iface = name
+                        device_ip = temp_ip
+                        break
     except Exception as e:
         print(f"[*] Pinned interface lookup failed: {e}")
 
-    # 2. CAPTURE DEVICE IP (The local IP of the interface being used)
-    if pinned_iface:
-        # Get the IP specifically from the pinned hardware
-        addrs = psutil.net_if_addrs().get(pinned_iface, [])
-        for a in addrs:
-            if a.family == socket.AF_INET:
-                device_ip = a.address
-                break
-    else:
-        # Fallback to general local IP if no pin
+    # Fallback for Device IP logging
+    if device_ip == "-":
         device_ip = get_local_ip()
 
     try:
-        # 3. Determine Absolute Path to the CLI Binary
+        # 2. Determine Binary Path
         base_dir = app.root_path 
         st_path = os.path.join(base_dir, "venv", "Scripts", "speedtest.exe") if platform.system() == "Windows" else os.path.join(base_dir, "venv", "bin", "speedtest")
         cmd_path = st_path if os.path.exists(st_path) else "speedtest"
         
-        # 4. Build and Run Command
+        # 3. Build Command
         cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
+        
+        # --- THE CROSS-PLATFORM FIX ---
         if pinned_iface:
-            cmd.extend(["--interface", pinned_iface])
+            if platform.system() == "Windows":
+                # Windows requires the IP to avoid the "Failed binding" error
+                cmd.extend(["--interface", device_ip])
+            else:
+                # Linux/macOS require the interface name (e.g., eth0)
+                cmd.extend(["--interface", pinned_iface])
         
         res = json.loads(subprocess.check_output(cmd, text=True))
         
-        # 5. Format Results
+        # 4. Format Results
         down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
@@ -1655,7 +1659,7 @@ def run_speedtest():
         conn_type = d.get('connection_type') or "Ethernet"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 6. SAVE TO DATABASE (Updated to include device_ip)
+        # 5. Save to Database
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             conn.execute("PRAGMA journal_mode=WAL;") 
             conn.execute("""
@@ -1666,8 +1670,8 @@ def run_speedtest():
             
         return jsonify({"download": down, "upload": up, "ping": ping})
 
-    except subprocess.CalledProcessError as e:
-        return jsonify({"error": "Speedtest CLI failed. If pinned, ensure adapter is connected."})
+    except subprocess.CalledProcessError:
+        return jsonify({"error": "Speedtest CLI failed to bind. Ensure the pinned adapter is active."})
     except Exception as e:
         return jsonify({"error": str(e)})
 
