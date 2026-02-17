@@ -498,10 +498,45 @@ def get_html_version():
         return "Error"
     
 def get_bandwidth():
-    """Calculates real-time network throughput."""
+    """
+    Calculates network throughput. 
+    Prioritizes the Pinned Adapter's traffic if one is set.
+    """
     global last_received, last_sent, last_time
-    curr_recv = psutil.net_io_counters().bytes_recv
-    curr_sent = psutil.net_io_counters().bytes_sent
+    
+    target_iface = None
+    pinned_mac = None
+
+    # 1. Identify if an adapter is pinned
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
+            if row:
+                pinned_mac = row[0]
+    except: 
+        pass
+
+    # 2. Map Pinned MAC to system interface name
+    if pinned_mac:
+        for name, addrs in psutil.net_if_addrs().items():
+            if any(a.family == psutil.AF_LINK and a.address == pinned_mac for a in addrs):
+                target_iface = name
+                break
+
+    # 3. Get IO Counters
+    if target_iface:
+        # Get stats ONLY for the pinned adapter
+        try:
+            io = psutil.net_io_counters(pernic=True)[target_iface]
+        except KeyError:
+            # Fallback to global if adapter was unplugged
+            io = psutil.net_io_counters()
+    else:
+        # Use global sum if no pin is set
+        io = psutil.net_io_counters()
+
+    curr_recv = io.bytes_recv
+    curr_sent = io.bytes_sent
     curr_time = time.time()
     
     delta = curr_time - last_time
@@ -509,6 +544,8 @@ def get_bandwidth():
     
     down = (curr_recv - last_received) / delta
     up = (curr_sent - last_sent) / delta
+    
+    # Update global tracking variables for the next poll
     last_received, last_sent, last_time = curr_recv, curr_sent, curr_time
     
     return {
@@ -778,13 +815,13 @@ def get_adapters():
     4. Real-time Wi-Fi rates only when active traffic exists.
     5. OS-Specific DNS handling (Fixes Ubuntu 127.0.0.53 issue).
     6. macOS MAC Address Fallback (Fixes missing adapters).
+    7. ADDED: Real-time global bandwidth for dashboard metric cards.
     """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     
     # Fetch stable system info (Gateway/DNS) and Wi-Fi rates
-    # This works great for Windows/Mac but often fails for Linux DNS
     ext_info = get_extended_iface_info()
     wifi_rates = get_wifi_rates()
     
@@ -823,7 +860,7 @@ def get_adapters():
             elif a.family == psutil.AF_LINK: 
                 mac = a.address
 
-        # Get stable Gateway and DNS from the default parser (Works for Windows/Mac)
+        # Get stable Gateway and DNS from the default parser
         spec_info = ext_info.get(name, {})
         
         # Windows Cross-reference (Handle alias vs full name)
@@ -833,11 +870,9 @@ def get_adapters():
                      spec_info = v
                      break
 
-        # --- MISSING SECTION RESTORED HERE ---
-        # If psutil failed to find a MAC (common on macOS), use the one we found via networksetup
+        # macOS MAC Address Fallback
         if mac == "-" and spec_info.get("mac"):
             mac = spec_info.get("mac")
-        # -------------------------------------
 
         # Extract values and filter for IPv4
         gw = spec_info.get("gateway", "-")
@@ -846,29 +881,23 @@ def get_adapters():
         dns = spec_info.get("dns", "-")
         if ":" in dns: dns = "-"
 
-        # --- NEW LINUX SPECIFIC FIX ---
-        # This block ONLY runs on Linux, leaving Windows/Mac untouched.
+        # Linux Specific DNS Fix
         if platform.system() == "Linux":
             real_dns = get_linux_dns(name)
             if real_dns:
                 dns = real_dns
-        # -----------------------------
 
-        # --- HEADER PINNING LOGIC ---
+        # HEADER PINNING LOGIC
         is_pinned = (mac == pinned_mac) if pinned_mac else False
-
-        # Fix: Check if active_iface_name exists before doing the 'in' comparison
         is_active_default = False
         if not pinned_mac and active_iface_name:
             is_active_default = (name == active_iface_name or name in active_iface_name)
 
-        # Update Primary Header values if this is the active adapter
         if is_pinned or (not pinned_mac and is_active_default):
              if gw != "-": primary_gw = gw
              if dns != "-": primary_dns = dns
 
-        # --- SPEED LOGIC (Corrected for 'Not Available') ---
-        # 1. Start with the hardware negotiated speed
+        # SPEED LOGIC
         raw_speed = st.speed if st else 0
         display_speed = "Not Available"
         
@@ -878,13 +907,11 @@ def get_adapters():
             else:
                 display_speed = f"{raw_speed} Mbps"
         
-        # 2. Override with Real-time Wi-Fi rates (only if get_wifi_rates detected traffic)
+        # Real-time Wi-Fi rate override
         for wifi_name, rate_str in wifi_rates.items():
             if wifi_name.lower() in name.lower() or name.lower() in wifi_name.lower():
-                # If rate_str is valid, it overrides the link speed
                 display_speed = rate_str
 
-        # Final sanity check to avoid '0 Mbps' strings
         if "0 Mbps" in display_speed:
             display_speed = "Not Available"
 
@@ -910,23 +937,26 @@ def get_adapters():
             "is_primary": is_pinned
         })
 
-    # Global Failsafe for the Header (Fallback if loop didn't set it)
+    # Global Failsafe for the Header
     if primary_gw == "Unknown" or ":" in primary_gw:
         primary_gw = "-"
-        # Only fallback to ext_info if we haven't found a better one
         for v in ext_info.values():
             curr_gw = v.get("gateway")
             if curr_gw and curr_gw != "-" and ":" not in curr_gw:
                 primary_gw = curr_gw
-                # Only fallback DNS if we didn't find a Linux specific one earlier
                 if primary_dns == "Unknown":
                     primary_dns = v.get("dns", "-")
                 break
+    
+    # --- THE LIVE SPEED FIX ---
+    # Call the existing helper to get live throughput
+    live_traffic = get_bandwidth()
         
     return jsonify({
         "adapters": adapters_data, 
         "primary_router": primary_gw, 
-        "primary_dns": primary_dns
+        "primary_dns": primary_dns,
+        "global_speed": live_traffic  # This powers 'live-down' and 'live-up' in the dashboard
     })
 
 @app.route('/api/adapter_settings', methods=['POST'])
@@ -1027,11 +1057,24 @@ def get_wifi_rates():
                     
         elif system == "Darwin": # macOS
             try:
-                # Target en0 which is usually the default Wi-Fi interface
-                out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
-                tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
-                if tx_match: rates["en0"] = f"{tx_match.group(1)} Mbps"
-            except: pass
+                # 1. Primary Method: Use the 'airport' utility to get the real-time link rate
+                airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+                if os.path.exists(airport_path):
+                    # -I provides detailed info including the transmit rate
+                    out = subprocess.check_output([airport_path, "-I"], text=True)
+                    rate_match = re.search(r'lastTxRate:\s+(\d+)', out)
+                    if rate_match:
+                        # Map to 'en0' (Standard macOS Wi-Fi interface name)
+                        rates["en0"] = f"{rate_match.group(1)} Mbps"
+                
+                # 2. Fallback: Use ipconfig if airport is restricted
+                if "en0" not in rates:
+                    out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
+                    tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
+                    if tx_match: 
+                        rates["en0"] = f"{tx_match.group(1)} Mbps"
+            except Exception as e:
+                print(f"macOS Wi-Fi rate fetch failed: {e}")    
 
         elif system == "Linux": # Linux
             try:

@@ -17,6 +17,4 @@ Linux, Tested with Linux minit. Basic tests were done. Intial tests see to show 
 
 On my list to add/get working. 
 Not a huge amount now Functionaly is mostly as I want it now but as I use it I may find other bits to fix and improve or add.
-Linux - try to get speed test to download itself all the time. 
-
-For all Update mechanism still needs work until I can fix it just stop the code and delete the app.py file and start up the setup script again it will download the latest version when it starts.
+Linux - try to get speed test to download itself all the time.

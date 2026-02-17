@@ -75,6 +75,15 @@
         </div>
     </div>
 </div>
+<div id="pinned-adapter-alert" class="alert alert-primary shadow-sm py-2 mb-3 hidden">
+    <div class="d-flex align-items-center">
+        <i class="bi bi-pin-angle-fill me-2"></i>
+        <span>Monitoring Pinned Adapter: <strong id="pinned-adapter-name">-</strong></span>
+        <button class="btn btn-sm btn-outline-primary ms-auto" onclick="unpinAdapter()">
+            <i class="bi bi-x-circle me-1"></i> Unpin
+        </button>
+    </div>
+</div>
     <div class="row mb-2 text-center">
         <div class="col-md-4"><div class="alert alert-info shadow-sm py-2 small">LAN: <strong>{{ local_ip }}</strong></div></div>
         <div class="col-md-4"><div class="alert alert-primary shadow-sm py-2 small">WAN: <strong id="header-wan-ip">{{ wan_ip }}</strong></div></div>
@@ -467,6 +476,47 @@
         if (typeof verifyUpdateStatus === "function") verifyUpdateStatus();
     });
 
+    async function unpinAdapter() {
+    /**
+     * Locates the currently pinned adapter and removes its primary status.
+     * Triggers a UI refresh upon success.
+     */
+    const mac = document.getElementById('modal-mac').value; // Temporary grab or fetch from data
+    
+    // First, we need to find which adapter is currently pinned in the local data
+    const response = await fetch('/api/adapters');
+    const data = await response.json();
+    const pinned = data.adapters.find(a => a.is_primary === true);
+
+    if (!pinned) return;
+
+    if (!confirm(`Are you sure you want to unpin "${pinned.name}"? The dashboard will return to global monitoring.`)) {
+        return;
+    }
+
+    try {
+        const updateResponse = await fetch('/api/adapter_settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mac: pinned.mac,
+                name: pinned.name,
+                visible: pinned.visible ? 1 : 0,
+                is_primary: 0 // Remove the pin
+            })
+        });
+
+        if (updateResponse.ok) {
+            // Refresh the full UI to update the header and live rates
+            refreshNetworkInfo();
+        } else {
+            alert("Failed to unpin adapter.");
+        }
+    } catch (err) {
+        alert("Error: " + err.message);
+    }
+}
+
     // Function to handle database cleanup with confirmation prompts
 async function runCleanup(interval) {
     let warning = `Are you sure you want to delete data older than ${interval} days?`;
@@ -527,14 +577,20 @@ function showPage(id, link) {
 
     let isManualRefreshing = false;
 
-    async function updateLiveRatesOnly() {
-    if (isManualRefreshing) return; // Don't interrupt if we are doing a full refresh
+async function updateLiveRatesOnly() {
+    if (isManualRefreshing) return; 
 
     try {
         const response = await fetch('/api/adapters');
         const data = await response.json();
         
-        // Only update the "Speed" column in the table to avoid flickering the whole UI
+        // UPDATE THE MAIN METRIC CARDS
+        if (data.global_speed) {
+            document.getElementById('live-down').innerText = data.global_speed.download;
+            document.getElementById('live-up').innerText = data.global_speed.upload;
+        }
+        
+        // Update the "Speed" column in the table
         data.adapters.forEach(adapter => {
             const speedCell = document.querySelector(`tr[data-id="${adapter.id}"] .speed-cell`);
             if (speedCell) {
@@ -544,7 +600,7 @@ function showPage(id, link) {
     } catch (err) {
         console.warn("Fast poll failed, skipping update.");
     }
-    }
+}
 
     async function handleImport(input) {
     if (!input.files || !input.files[0]) return;
@@ -629,8 +685,9 @@ async function fetchAdapters() {
     /**
      * Performs a full data fetch to update:
      * 1. The Global Header (WAN, Router IP, DNS).
-     * 2. The Adapter Table (IPs, Status, MACs).
-     * 3. Handles "Pinned" status for the primary interface.
+     * 2. The Pinned Adapter Alert message.
+     * 3. The Adapter Table (IPs, Status, MACs).
+     * 4. Handles "Pinned" status for the primary interface.
      * Includes safety fallbacks for offline/NoneType scenarios.
      */
     const noMac = document.getElementById('hideNoMacCheck').checked;
@@ -648,7 +705,6 @@ async function fetchAdapters() {
         const downEl = document.getElementById('live-down');
         const upEl = document.getElementById('live-up');
 
-        // Logic: Display 'Disconnected' or 'N/A' if the backend returns empty values
         if (routerEl) routerEl.innerText = data.primary_router && data.primary_router !== "-" ? data.primary_router : "Disconnected";
         if (dnsEl) dnsEl.innerText = data.primary_dns && data.primary_dns !== "-" ? data.primary_dns : "N/A";
         
@@ -657,10 +713,24 @@ async function fetchAdapters() {
             if (upEl) upEl.innerText = data.global_speed.upload; 
         }
 
+        // --- 2. PINNED ADAPTER ALERT LOGIC ---
+        const alertEl = document.getElementById('pinned-adapter-alert');
+        const alertNameEl = document.getElementById('pinned-adapter-name');
+        
+        // Find if any adapter in the response is marked as primary
+        const pinned = data.adapters.find(a => a.is_primary === true);
+        
+        if (pinned && alertEl && alertNameEl) {
+            alertEl.classList.remove('hidden');
+            alertNameEl.innerText = pinned.name; // Display custom name
+        } else if (alertEl) {
+            alertEl.classList.add('hidden');
+        }
+
         const tbody = document.getElementById('adapter-table'); 
         if (!tbody) return;
 
-        // 2. Render the Adapter Table
+        // 3. Render the Adapter Table
         tbody.innerHTML = data.adapters.map(a => {
             // Filter Logic based on UI toggles
             if (noMac && (!a.mac || a.mac === '-')) return '';

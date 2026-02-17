@@ -1,4 +1,4 @@
-0.7.0 - More of a major bump, still currently beta. Fixed speed test. It will now use the active adapter unless one is pinned and it will now use that. Various bug fixes. Local IP of interface logged with speedtest, added database import and export and cleanup functions.
+0.7.0 - More of a major bump, still currently beta. Fixed speed test. It will now use the active adapter unless one is pinned and it will now use that. Various bug fixes. Local IP of interface logged with speedtest, added database import and export and cleanup functions. Added alert at top of page if interface pinned
 
 0.6.12-15 update test - update fixes and file permission fixes.
 
