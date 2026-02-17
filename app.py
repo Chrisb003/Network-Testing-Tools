@@ -25,7 +25,7 @@ import threading
 from flask import jsonify
 
 # --- Configuration ---
-APP_VERSION = "0.6.9"
+APP_VERSION = "0.6.10"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
