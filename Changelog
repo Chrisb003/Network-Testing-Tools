@@ -1,3 +1,5 @@
+0.6.10 update test - no changes
+
 0.6.9 - Fixed issue saving network scan as same network when working with VLANs, updated scan network page to add indication it is scanning. Fix issue with speedtestcli download linux, prompt user to download from speedtest site if fails. More fixes for update mechanism.
 
 0.6.8 - added logo and favicon to dashboard. Dashboard version now 0.6.3
