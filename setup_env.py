@@ -336,8 +336,20 @@ def main():
         install_npcap_windows()
     
     install_speedtest_cli(paths["bin_dir"])
-    
-    # 6. LAUNCH
+
+    # 6. FINAL PERMISSION FIX (Last step before launch)
+    print("[*] Verifying file system permissions for all users...")
+    for root, dirs, files in os.walk(base_dir):
+        # Apply to directories
+        for d in dirs:
+            if d == ".git": continue # Skip git internals
+            fix_permissions(os.path.join(root, d))
+        # Apply to files
+        for f in files:
+            if f.endswith(".pyc") or f == ".DS_Store": continue
+            fix_permissions(os.path.join(root, f))
+
+    # 7. LAUNCH
     run_application(base_dir, paths["python"])
 
 if __name__ == "__main__":
