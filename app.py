@@ -1631,19 +1631,78 @@ def fetch_github_file(filename):
 
 @app.route('/api/update/check')
 def check_update():
-    """Checks for version mismatch."""
-    content = fetch_github_file("version.json")
-    if content:
-        try: 
-            remote = json.loads(content)
-            return jsonify({
-                "status": "success", 
-                "remote_version": remote.get("version", "0.0.0"), 
-                "app_version": APP_VERSION, 
-                "global_version": get_global_version()
-            })
+    """
+    Checks the version of SPECIFIC core files against GitHub.
+    Returns a list of mismatches so the frontend knows exactly what is outdated.
+    """
+    # Map friendly names to their Repo Paths and Regex Patterns
+    targets = {
+        "app.py": {
+            "path": "app.py",
+            "local": APP_VERSION,
+            "regex": r'APP_VERSION\s*=\s*["\']([^"\']+)["\']'
+        },
+        "setup_env.py": {
+            "path": "setup_env.py",
+            "local": get_setup_version(),
+            "regex": r'SETUP_VERSION\s*=\s*["\']([^"\']+)["\']'
+        },
+        "dashboard.html": {
+            "path": "templates/dashboard.html", # Assumes flask structure in repo
+            "local": get_html_version(),
+            "regex": r'Version number\s+([\d.]+)'
+        }
+    }
+    
+    mismatches = []
+    
+    def check_file(name, config):
+        try:
+            # Fetch raw content from GitHub
+            content = fetch_github_file(config["path"])
+            if not content: return None
+            
+            # Parse Remote Version
+            match = re.search(config["regex"], content)
+            if match:
+                remote_ver = match.group(1)
+                
+                # Semantic Versioning Check (Remote > Local)
+                def is_newer(r, l):
+                    try:
+                        return [int(x) for x in r.split('.')] > [int(x) for x in l.split('.')]
+                    except: return r != l
+                
+                if is_newer(remote_ver, config["local"]):
+                    return {
+                        "file": name,
+                        "local": config["local"],
+                        "remote": remote_ver
+                    }
         except: pass
-    return jsonify({"status": "error"})
+        return None
+
+    # Run checks in parallel to keep dashboard load time fast
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(check_file, name, cfg) for name, cfg in targets.items()]
+        for f in futures:
+            res = f.result()
+            if res: mismatches.append(res)
+            
+    # Also get the global tag for the footer
+    global_remote = "0.0.0"
+    try:
+        c = fetch_github_file("version.json")
+        if c: global_remote = json.loads(c).get("version", "0.0.0")
+    except: pass
+
+    return jsonify({
+        "status": "success",
+        "update_available": len(mismatches) > 0,
+        "mismatches": mismatches,
+        "global_remote": global_remote,
+        "global_local": get_global_version()
+    })
 
 @app.route('/api/update/changelog')
 def get_changelog():
@@ -1689,8 +1748,9 @@ def update_software():
                     for file in files:
                         src_file = os.path.join(root, file)
                         dest_file = os.path.join(dest_dir, file)
-                        # Skip critical files
-                        if file == DB_NAME or file.endswith(".db") or "venv" in dest_file or "setup_env.py" in dest_file: continue
+                        
+                        # Exclusions: Database and venv (setup_env.py is ALLOWED now)
+                        if file == DB_NAME or file.endswith(".db") or "venv" in dest_file: continue
 
                         try:
                             if os.path.exists(dest_file):
