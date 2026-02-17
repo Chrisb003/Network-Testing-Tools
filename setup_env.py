@@ -13,7 +13,7 @@ import stat
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.6.5"
+SETUP_VERSION = "0.6.6"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy"]
 APP_FILENAME = "app.py"
@@ -109,7 +109,7 @@ def install_homebrew():
         return False
 
 def fetch_latest_from_github(base_dir):
-    """Downloads and extracts the private project if app.py is missing."""
+    """Downloads and extracts the private project and sets full permissions."""
     print(f"[*] '{APP_FILENAME}' not found. Initializing private download from GitHub...")
     
     zip_url = f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}"
@@ -126,13 +126,17 @@ def fetch_latest_from_github(base_dir):
                     if member.filename == top_folder: continue
                     filename = Path(member.filename).relative_to(top_folder)
                     target_path = base_dir / filename
+                    
                     if member.is_dir():
                         target_path.mkdir(parents=True, exist_ok=True)
+                        fix_permissions(target_path) # Set folder permissions
                     else:
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         with zip_ref.open(member) as source, open(target_path, "wb") as target:
                             shutil.copyfileobj(source, target)
-        print("[✓] Project files synchronized.")
+                        fix_permissions(target_path) # Set file permissions
+                        
+        print("[✓] Project files synchronized and permissions set.")
     except Exception as e:
         print(f"[X] Failed to download from GitHub: {e}")
         sys.exit(1)
@@ -184,21 +188,18 @@ def install_requirements(python_path):
 
 def install_speedtest_cli(bin_dir):
     """
-    Installs Speedtest CLI directly into the virtual environment.
-    Includes fallback prompting if automatic installation fails.
+    Installs Speedtest CLI and sets full Read/Write/Execute permissions.
+    Includes dynamic architecture detection for Linux (x86 vs ARM).
     """
     system = platform.system()
     machine = platform.machine().lower()
-    
-    # Path where we expect the binary to end up in the venv
     target_path = bin_dir / ("speedtest.exe" if system == "Windows" else "speedtest")
     
-    # If it already exists, skip
     if target_path.exists():
         print("[✓] Speedtest CLI already installed.")
         return
 
-    print(f"[*] Attempting to install Speedtest CLI for {system}...")
+    print(f"[*] Attempting to install Speedtest CLI for {system} ({machine})...")
 
     try:
         # 1. WINDOWS INSTALLATION
@@ -206,46 +207,43 @@ def install_speedtest_cli(bin_dir):
             print("[*] Downloading Speedtest CLI for Windows...")
             url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
             zip_path = bin_dir / "st.zip"
-            
             urllib.request.urlretrieve(url, zip_path)
             with zipfile.ZipFile(zip_path, 'r') as z: 
                 z.extract("speedtest.exe", bin_dir)
             os.remove(zip_path)
 
-        # 2. LINUX INSTALLATION
+        # 2. LINUX INSTALLATION (With Multi-Arch Support)
         elif system == "Linux":
-            print(f"[*] Downloading Speedtest CLI for Linux (x86_64)...")
-            # Specific URL as requested
-            url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
-            tgz_path = bin_dir / "st.tgz"
+            # Dynamic URL Selection based on Architecture
+            if "arm" in machine or "aarch64" in machine:
+                print(f"[*] Architecture detected: ARM/Raspberry Pi")
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz"
+            else:
+                print(f"[*] Architecture detected: x86_64")
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
             
+            tgz_path = bin_dir / "st.tgz"
             urllib.request.urlretrieve(url, tgz_path)
             
-            # Extract 'speedtest' binary from tgz to bin_dir
             with tarfile.open(tgz_path, "r:gz") as tar:
                 tar.extract("speedtest", path=bin_dir)
-            
             os.remove(tgz_path)
-            
-            # Make Executable (chmod +x)
-            st_stat = os.stat(target_path)
-            os.chmod(target_path, st_stat.st_mode | stat.S_IEXEC)
 
         # 3. MACOS INSTALLATION
         elif system == "Darwin":
-            # Check for global install since brew installs to /usr/local or /opt/homebrew
             if not shutil.which("speedtest"):
-                print("[*] Installing via Homebrew...")
-                if install_homebrew(): # Assumes install_homebrew() is defined elsewhere in your script
+                if install_homebrew():
                     subprocess.run(["brew", "tap", "teamookla/speedtest"], check=True)
                     subprocess.run(["brew", "install", "speedtest"], check=True)
                 else:
-                    raise Exception("Homebrew not found and could not be installed.")
+                    raise Exception("Homebrew not found.")
 
-        # FINAL VERIFICATION
-        # Check if the binary exists (either in venv or globally for Mac)
-        if target_path.exists() or shutil.which("speedtest"):
-            print("[✓] Speedtest CLI installed successfully.")
+        # --- THE MISSING PERMISSION FIX ---
+        if target_path.exists():
+            fix_permissions(target_path)  # Sets R/W/X for all users
+            print("[✓] Speedtest CLI installed successfully with full permissions.")
+        elif shutil.which("speedtest"):
+             print("[✓] Speedtest CLI found in system path.")
         else:
             raise Exception("Binary not found after installation attempt.")
 
@@ -256,6 +254,7 @@ def install_speedtest_cli(bin_dir):
         print("    1. Download the CLI for your OS: https://www.speedtest.net/apps/cli")
         print(f"    2. Extract the 'speedtest' binary into this folder:")
         print(f"       {bin_dir}")
+        print("    3. Ensure you set execute permissions (chmod +x speedtest)")
         print("="*60 + "\n")
 
 def install_npcap_windows():
@@ -290,6 +289,22 @@ def run_application(base_dir, venv_python):
         subprocess.run(cmd)
     except KeyboardInterrupt:
         print("\n[!] Dashboard stopped by user.")
+
+def fix_permissions(path):
+    """
+    Sets path to full Read/Write/Execute for all users.
+    Linux/Mac: chmod 777
+    Windows: icacls grant Everyone:FullControl
+    """
+    try:
+        if platform.system() == "Windows":
+            # Grant 'Everyone' group Full Control (F)
+            subprocess.run(['icacls', str(path), '/grant', 'Everyone:(F)'], capture_output=True)
+        else:
+            # Linux/Mac: 0o777 is rwxrwxrwx
+            os.chmod(path, 0o777)
+    except Exception as e:
+        print(f"[!] Permission fix failed for {path}: {e}")
 
 def main():
     base_dir = Path(__file__).parent.resolve()
