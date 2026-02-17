@@ -7,6 +7,10 @@ All data is stored in a .db file using sqlite and you can export more bits as cs
 
 Not all features will work with all OS's. Below is a list of what works with what so far. It will need to run directly on a host OS. I don’t think it will function if made into a docker app.
 
+This app runss on port 81. To access it once started open a web broswer and go to 127.0.0.1:81
+
+I have no plans to add https. It is meant to be run and accessed from the same device so no need for the secure web page.
+
 I have included a .sh script for mac/linux to make sure python is installed and then run the setup script which should install the rest. You need to make sure you use "chmod ugo+x" on the .sh file to make it executable then run it from the terminal.
 There is also a bat file for windows to install python and then start the setup script.
 
