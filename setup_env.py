@@ -15,7 +15,7 @@ from pathlib import Path
 # --- Configuration ---
 SETUP_VERSION = "0.7.0"
 VENV_DIR_NAME = "venv"
-REQUIREMENTS = ["flask", "psutil", "scapy"]
+REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
 APP_FILENAME = "app.py"
 
 # GITHUB PRIVATE REPO CONFIGURATION
@@ -293,24 +293,25 @@ def run_application(base_dir, venv_python):
 def fix_permissions(path):
     """
     Sets path to full Read/Write/Execute for all users.
-    Linux/Mac: chmod 777
-    Windows: icacls grant Everyone:FullControl
+    Returns True on success, False on failure.
     """
     try:
         if platform.system() == "Windows":
             # Grant 'Everyone' group Full Control (F)
-            subprocess.run(['icacls', str(path), '/grant', 'Everyone:(F)'], capture_output=True)
+            res = subprocess.run(['icacls', str(path), '/grant', 'Everyone:(F)'], capture_output=True)
+            return res.returncode == 0
         else:
             # Linux/Mac: 0o777 is rwxrwxrwx
             os.chmod(path, 0o777)
-    except Exception as e:
-        print(f"[!] Permission fix failed for {path}: {e}")
+            return True
+    except:
+        return False
 
 def main():
     base_dir = Path(__file__).parent.resolve()
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
 
-    # 1. LINUX PRE-REQUISITES (Critical for Ubuntu)
+    # 1. LINUX PRE-REQUISITES
     ensure_linux_prerequisites()
 
     # 2. WINDOWS ADMIN CHECK
@@ -337,17 +338,46 @@ def main():
     
     install_speedtest_cli(paths["bin_dir"])
 
+    # 6. FINAL PERMISSION FIX (Filtered and Silent)
     # 6. FINAL PERMISSION FIX (Last step before launch)
     print("[*] Verifying file system permissions for all users...")
+    
+    success_count = 0
+    fail_count = 0
+
     for root, dirs, files in os.walk(base_dir):
-        # Apply to directories
+        # Skip internal Git folder
+        if ".git" in dirs:
+            dirs.remove(".git")
+
+        # Process Directories
         for d in dirs:
-            if d == ".git": continue # Skip git internals
-            fix_permissions(os.path.join(root, d))
-        # Apply to files
+            dir_path = os.path.join(root, d)
+            if fix_permissions(dir_path):
+                success_count += 1
+            else:
+                fail_count += 1
+            
+        # Process Files
         for f in files:
-            if f.endswith(".pyc") or f == ".DS_Store": continue
-            fix_permissions(os.path.join(root, f))
+            file_path = os.path.join(root, f)
+            
+            # EXCLUSION LOGIC: Skip sensitive system/db files
+            if any(x in f for x in [".db-shm", ".db-wal", "python3", "python.exe"]):
+                continue
+            
+            if fix_permissions(file_path):
+                success_count += 1
+            else:
+                # We only print failures for non-system files to keep it clean
+                if not f.startswith("."):
+                    print(f"[!] Warning: Could not set permissions for {f}")
+                fail_count += 1
+
+    if fail_count == 0:
+        print(f"[✓] Permission check complete. All {success_count} items verified.")
+    else:
+        print(f"[!] Permission check finished: {success_count} succeeded, {fail_count} skipped/failed.")
 
     # 7. LAUNCH
     run_application(base_dir, paths["python"])

@@ -1598,35 +1598,40 @@ def get_wifi_networks():
 def run_speedtest():
     """
     Executes an Ookla Speedtest.
-    Windows Fix: Uses the --ip flag to force binding to the local IP of the pinned adapter.
+    - Windows: Uses --ip with the local IP.
+    - macOS/Linux: Uses --interface with the hardware name (e.g., en0).
     """
     d = request.json
-    pinned_iface = None
+    target_iface_name = None
     device_ip = "-" 
 
-    # 1. Identify the Pinned Interface and its IP
+    # 1. Identify the Adapter and its IP
     try:
         with sqlite3.connect(DB_NAME) as conn:
+            # Check for Pinned Adapter first
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
-            if row:
-                pinned_mac = row[0]
-                for name, addrs in psutil.net_if_addrs().items():
-                    temp_mac = None
-                    temp_ip = None
-                    for a in addrs:
-                        if a.family == psutil.AF_LINK: temp_mac = a.address
-                        if a.family == socket.AF_INET: temp_ip = a.address
-                    
-                    if temp_mac == pinned_mac:
-                        pinned_iface = name
-                        device_ip = temp_ip
-                        break
+            pinned_mac = row[0] if row else None
+            
+            interfaces = psutil.net_if_addrs()
+            
+            # Find the interface name and IP
+            for name, addrs in interfaces.items():
+                temp_mac, temp_ip = None, None
+                for a in addrs:
+                    if a.family == psutil.AF_LINK: temp_mac = a.address
+                    if a.family == socket.AF_INET: temp_ip = a.address
+                
+                # If pinned, match by MAC; otherwise, find the active one
+                if pinned_mac and temp_mac == pinned_mac:
+                    target_iface_name = name
+                    device_ip = temp_ip
+                    break
+                elif not pinned_mac and temp_ip == get_local_ip():
+                    target_iface_name = name
+                    device_ip = temp_ip
+                    # Don't break yet in case we find a pinned one later in loop
     except Exception as e:
-        print(f"[*] Pinned interface lookup failed: {e}")
-
-    # Fallback to general local IP if no pin is found
-    if device_ip == "-":
-        device_ip = get_local_ip()
+        print(f"[*] Speedtest adapter lookup failed: {e}")
 
     try:
         # 2. Path to the CLI Binary
@@ -1637,16 +1642,18 @@ def run_speedtest():
         # 3. Build Command
         cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
         
-        # IMPROVED WINDOWS BINDING: Use --ip instead of --interface
-        if device_ip and device_ip != "127.0.0.1" and device_ip != "-":
-            # On Windows, --ip is often more successful at resolving 'Failed binding' errors
-            flag = "--ip" if platform.system() == "Windows" else "--interface"
-            print(f"[*] Forcing Speedtest via {flag}: {device_ip}")
-            cmd.extend([flag, device_ip])
+        # 4. Apply OS-Specific Binding
+        if platform.system() == "Windows":
+            if device_ip and device_ip != "-":
+                cmd.extend(["--ip", device_ip])
+        else:
+            # macOS/Linux require the Interface Name (e.g., 'en0'), not the IP
+            if target_iface_name:
+                cmd.extend(["--interface", target_iface_name])
         
         res = json.loads(subprocess.check_output(cmd, text=True))
         
-        # 4. Format Results
+        # 5. Format and Save Results
         down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
@@ -1657,9 +1664,7 @@ def run_speedtest():
         conn_type = d.get('connection_type') or "Ethernet"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 5. SAVE TO DATABASE
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
-            conn.execute("PRAGMA journal_mode=WAL;") 
             conn.execute("""
                 INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, device_ip, isp) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1668,11 +1673,8 @@ def run_speedtest():
             
         return jsonify({"download": down, "upload": up, "ping": ping})
 
-    except subprocess.CalledProcessError as e:
-        # Catch the specific bind failure to provide better feedback
-        return jsonify({"error": "Speedtest failed to bind to the selected adapter. Ensure the adapter has a valid IP and internet access."})
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error": f"Speedtest failed: {str(e)}"})
 
 @app.route('/api/get_last_name')
 def get_last_name():
@@ -2202,5 +2204,15 @@ def update_wifi_history():
 
 if __name__ == '__main__':
     cleanup_old_files()
-    # Set to port 81 per your configuration
+    
+    # Try to use the production-ready Waitress server
+  #  try:
+        #      from waitress import serve
+        #      print("\n" + "="*60)
+        #     print(f"   DASHBOARD ACTIVE: http://0.0.0.0:81")
+        #     print("   (Production WSGI Server - No Warnings)")
+        #      print("="*60 + "\n")
+        #       serve(app, host='0.0.0.0', port=81, threads=6)
+  #  except ImportError:
+        # Fallback to dev server if waitress isn't installed yet
     app.run(debug=True, host='0.0.0.0', port=81)
