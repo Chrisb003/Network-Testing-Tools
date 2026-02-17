@@ -13,7 +13,7 @@ import stat
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.7.0"
+SETUP_VERSION = "0.7.1"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
 APP_FILENAME = "app.py"

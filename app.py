@@ -30,7 +30,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.7.1"
+APP_VERSION = "0.7.3"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -2206,13 +2206,13 @@ if __name__ == '__main__':
     cleanup_old_files()
     
     # Try to use the production-ready Waitress server
-  #  try:
-        #      from waitress import serve
-        #      print("\n" + "="*60)
-        #     print(f"   DASHBOARD ACTIVE: http://0.0.0.0:81")
-        #     print("   (Production WSGI Server - No Warnings)")
-        #      print("="*60 + "\n")
-        #       serve(app, host='0.0.0.0', port=81, threads=6)
-  #  except ImportError:
-        # Fallback to dev server if waitress isn't installed yet
-    app.run(debug=True, host='0.0.0.0', port=81)
+    try:
+            from waitress import serve
+            print("\n" + "="*60)
+            print(f"   DASHBOARD ACTIVE: http://0.0.0.0:81")
+            print("   (Production WSGI Server - No Warnings)")
+            print("="*60 + "\n")
+            serve(app, host='0.0.0.0', port=81, threads=6)
+    except ImportError:
+       # Fallback to dev server if waitress isn't installed yet
+        app.run(debug=True, host='0.0.0.0', port=81)
