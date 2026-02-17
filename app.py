@@ -1714,10 +1714,7 @@ def get_changelog():
 def update_software():
     """
     Cross-Platform Update Mechanism:
-    1. Downloads repo to RAM.
-    2. Extracts to temp dir.
-    3. Smart-Copies files (Renames locked files on Windows).
-    4. Restarts server.
+    Sets full Read/Write/Execute (777) permissions for all users.
     """
     try:
         if 'GITHUB_SETTINGS' not in globals(): return jsonify({"error": "No GitHub settings."}), 500
@@ -1743,36 +1740,58 @@ def update_software():
                 for root, dirs, files in os.walk(source_root):
                     rel_path = os.path.relpath(root, source_root)
                     dest_dir = os.path.join(base_dir, rel_path)
-                    if not os.path.exists(dest_dir): os.makedirs(dest_dir)
+                    
+                    # Create directory and set 777
+                    if not os.path.exists(dest_dir):
+                        os.makedirs(dest_dir)
+                    fix_permissions(dest_dir)
                     
                     for file in files:
                         src_file = os.path.join(root, file)
                         dest_file = os.path.join(dest_dir, file)
                         
-                        # Exclusions: Database and venv (setup_env.py is ALLOWED now)
                         if file == DB_NAME or file.endswith(".db") or "venv" in dest_file: continue
 
                         try:
                             if os.path.exists(dest_file):
                                 try: os.replace(src_file, dest_file)
                                 except OSError:
-                                    # Windows Locking Fix
                                     if platform.system() == "Windows":
                                         backup = dest_file + f".old_{int(time.time())}"
                                         if os.path.exists(backup): os.remove(backup)
                                         os.rename(dest_file, backup)
                                         shutil.move(src_file, dest_file)
                             else: shutil.move(src_file, dest_file)
+                            
+                            # Apply Full R/W/X Permissions
+                            fix_permissions(dest_file)
+                            
                         except Exception as e: print(f"[!] Update copy failed for {file}: {e}")
 
-        print("[✓] Update applied. Restarting...")
-        # 4. Restart
+        print("[✓] Update applied. Permissions set to Read/Write/Execute for all.")
         threading.Thread(target=restart_server).start()
-        return jsonify({"status": "success", "message": "Update successful. Server is restarting..."})
+        return jsonify({"status": "success", "message": "Update successful. All files set to R/W/X."})
 
     except Exception as e:
         print(f"[X] Update Error: {e}")
         return jsonify({"error": str(e)}), 500
+
+def fix_permissions(path):
+    """
+    Sets path to full Read/Write/Execute for all users.
+    Linux/Mac: chmod 777
+    Windows: icacls grant Everyone:FullControl
+    """
+    try:
+        if platform.system() == "Windows":
+            # Grant 'Everyone' group Full Control (F)
+            # /t and /c are avoided here as we are walking the tree manually in the loop above
+            subprocess.run(['icacls', str(path), '/grant', 'Everyone:(F)'], capture_output=True)
+        else:
+            # Linux/Mac: 0o777 is rwxrwxrwx
+            os.chmod(path, 0o777)
+    except Exception as e:
+        print(f"[!] Permission fix failed for {path}: {e}")
 
 @app.route('/api/wifi/save', methods=['POST'])
 def save_wifi_scan():
