@@ -1040,114 +1040,6 @@ def get_network_devices(net_id):
         except: pass
         return jsonify(dev_list)
 
-@app.route('/api/system/update', methods=['POST'])
-def update_software():
-    """
-    Cross-Platform Update Mechanism:
-    1. Downloads the repo zip to RAM.
-    2. Extracts to a temporary directory (Safe Zone).
-    3. Smart-Copies files to the app directory:
-       - On Windows: Renames locked files (like app.py) to .old before replacing.
-       - On Linux/Mac: Overwrites normally (inode swapping).
-    4. Restarts the server.
-    """
-    try:
-        # Ensure GitHub settings are loaded
-        if 'GITHUB_SETTINGS' not in globals():
-            return jsonify({"error": "GitHub settings not configured."}), 500
-
-        print(f"[*] Starting Update Process on {platform.system()}...")
-        
-        # 1. Download ZIP from GitHub
-        zip_url = f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}"
-        req = urllib.request.Request(zip_url)
-        if GITHUB_SETTINGS.get('token'):
-            req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
-        
-        try:
-            with urllib.request.urlopen(req) as response:
-                zip_data = io.BytesIO(response.read())
-        except Exception as dl_err:
-            return jsonify({"error": f"Download failed: {str(dl_err)}"}), 500
-
-        # 2. Extract and Apply Updates
-        import tempfile
-        base_dir = app.root_path
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            print(f"[*] Staging update in: {temp_dir}")
-            
-            with zipfile.ZipFile(zip_data) as zip_ref:
-                # GitHub zips have a root folder (e.g., "Repo-main-xyz"). Detect it.
-                root_name = zip_ref.namelist()[0].split('/')[0]
-                zip_ref.extractall(temp_dir)
-                
-                source_root = os.path.join(temp_dir, root_name)
-                
-                # Walk through the temp folder and copy to real folder
-                for root, dirs, files in os.walk(source_root):
-                    # Calculate relative path to mirror structure
-                    rel_path = os.path.relpath(root, source_root)
-                    dest_dir = os.path.join(base_dir, rel_path)
-                    
-                    if not os.path.exists(dest_dir):
-                        os.makedirs(dest_dir)
-                    
-                    for file in files:
-                        src_file = os.path.join(root, file)
-                        dest_file = os.path.join(dest_dir, file)
-                        
-                        # --- EXCLUSIONS ---
-                        # Never overwrite the database or virtual env
-                        if file == DB_NAME or file.endswith(".db") or "venv" in dest_file:
-                            continue
-
-                        try:
-                            # --- WINDOWS LOCKING FIX ---
-                            if os.path.exists(dest_file):
-                                try:
-                                    # Try standard replace first (Works on Linux/Mac)
-                                    os.replace(src_file, dest_file)
-                                except OSError:
-                                    # If that fails (Windows Locked File), rename old file first
-                                    if platform.system() == "Windows":
-                                        try:
-                                            # Rename running file to .old_timestamp
-                                            backup_name = dest_file + f".old_{int(time.time())}"
-                                            if os.path.exists(backup_name):
-                                                os.remove(backup_name)
-                                            os.rename(dest_file, backup_name)
-                                            
-                                            # Now we can move the new file in
-                                            shutil.move(src_file, dest_file)
-                                            print(f"[!] Locked file patched: {file}")
-                                        except Exception as win_err:
-                                            print(f"[X] Could not patch locked file {file}: {win_err}")
-                                    else:
-                                        # Actual permission error on Linux/Mac
-                                        print(f"[X] Permission denied: {file}")
-                            else:
-                                # File doesn't exist, just move it in
-                                shutil.move(src_file, dest_file)
-                                
-                        except Exception as copy_err:
-                            print(f"[!] Warning: Failed to copy {file}: {copy_err}")
-
-        print("[✓] Update applied. Restarting...")
-        
-        # 4. Trigger Background Restart
-        # Using a thread allows this request to return '200 OK' to the browser first
-        threading.Thread(target=restart_server).start()
-
-        return jsonify({
-            "status": "success", 
-            "message": "Update successful. Server is restarting..."
-        })
-
-    except Exception as e:
-        print(f"[X] Critical Update Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/api/scan_network')
 def scan_network():
     """
@@ -1747,9 +1639,67 @@ def get_changelog():
     return jsonify({"status": "success", "changelog": content}) if content else jsonify({"status": "error"})
 
 @app.route('/api/update/apply', methods=['POST'])
-def apply_update():
-    """Placeholder for applying updates."""
-    return jsonify({"status": "success", "message": "Update initiated. Please restart manually."})
+def update_software():
+    """
+    Cross-Platform Update Mechanism:
+    1. Downloads repo to RAM.
+    2. Extracts to temp dir.
+    3. Smart-Copies files (Renames locked files on Windows).
+    4. Restarts server.
+    """
+    try:
+        if 'GITHUB_SETTINGS' not in globals(): return jsonify({"error": "No GitHub settings."}), 500
+        print(f"[*] Starting Update on {platform.system()}...")
+        
+        # 1. Download
+        req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}")
+        if GITHUB_SETTINGS.get('token'): req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
+        
+        try:
+            with urllib.request.urlopen(req) as response: zip_data = io.BytesIO(response.read())
+        except Exception as e: return jsonify({"error": f"Download failed: {e}"}), 500
+
+        # 2. Extract & Install
+        import tempfile
+        base_dir = app.root_path
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(zip_data) as zip_ref:
+                root_name = zip_ref.namelist()[0].split('/')[0]
+                zip_ref.extractall(temp_dir)
+                source_root = os.path.join(temp_dir, root_name)
+                
+                for root, dirs, files in os.walk(source_root):
+                    rel_path = os.path.relpath(root, source_root)
+                    dest_dir = os.path.join(base_dir, rel_path)
+                    if not os.path.exists(dest_dir): os.makedirs(dest_dir)
+                    
+                    for file in files:
+                        src_file = os.path.join(root, file)
+                        dest_file = os.path.join(dest_dir, file)
+                        # Skip critical files
+                        if file == DB_NAME or file.endswith(".db") or "venv" in dest_file or "setup_env.py" in dest_file: continue
+
+                        try:
+                            if os.path.exists(dest_file):
+                                try: os.replace(src_file, dest_file)
+                                except OSError:
+                                    # Windows Locking Fix
+                                    if platform.system() == "Windows":
+                                        backup = dest_file + f".old_{int(time.time())}"
+                                        if os.path.exists(backup): os.remove(backup)
+                                        os.rename(dest_file, backup)
+                                        shutil.move(src_file, dest_file)
+                            else: shutil.move(src_file, dest_file)
+                        except Exception as e: print(f"[!] Update copy failed for {file}: {e}")
+
+        print("[✓] Update applied. Restarting...")
+        # 4. Restart
+        threading.Thread(target=restart_server).start()
+        return jsonify({"status": "success", "message": "Update successful. Server is restarting..."})
+
+    except Exception as e:
+        print(f"[X] Update Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/wifi/save', methods=['POST'])
 def save_wifi_scan():

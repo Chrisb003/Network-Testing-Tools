@@ -1021,6 +1021,9 @@ async function saveAdapterSettings() {
         
         fetch('/api/update/check').then(r => r.json()).then(d => {
             if (isVersionHigher(d.remote_version, '{{ global_version }}')) {
+                // --- ADD THIS LINE ---
+                pendingRemoteVersion = d.remote_version; 
+                // --------------------
                 msg.className = "alert alert-warning";
                 msg.innerText = `Update Available: v${d.remote_version} (Current: v{{ global_version }})`;
                 btn.disabled = false;
