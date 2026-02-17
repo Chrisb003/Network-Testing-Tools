@@ -7,6 +7,12 @@ echo "========================================================"
 echo "   NETWORK DIAGNOSTICS - INSTALLER WRAPPER"
 echo "========================================================"
 
+# --- NEW: AUTO-DIRECTORY DETECTION ---
+# Move to the folder where this script is actually located
+# $0 is the script path, dirname gets the folder, and cd -P handles symlinks safely
+cd "$(dirname "$0")" || exit
+echo "[*] Working Directory: $(pwd)"
+
 # 1. DETECT OPERATING SYSTEM
 OS="$(uname -s)"
 case "${OS}" in
@@ -78,6 +84,7 @@ fi
 # ---------------------------------------------------------
 # 4. HANDOFF TO SETUP SCRIPT
 # ---------------------------------------------------------
+# Now that we have cd'd into the correct folder, this check will always pass
 if [ -f "setup_env.py" ]; then
     echo ""
     echo "[*] Launching Python Setup Script..."
@@ -85,7 +92,7 @@ if [ -f "setup_env.py" ]; then
     python3 setup_env.py
 else
     echo ""
-    echo "[X] Error: 'setup_env.py' not found in this directory."
+    echo "[X] Error: 'setup_env.py' not found in $(pwd)."
     echo "    Please ensure install.sh and setup_env.py are in the same folder."
     exit 1
 fi

@@ -6,7 +6,7 @@ All data is stored in a .db file using sqlite and you can export more bits as cs
 
 Not all features will work with all OS's. Below is a list of what works with what.
 
-I have included a .sh script for mac/linux to make sure python is installed and then run the setup script which should install the rest.
+I have included a .sh script for mac/linux to make sure python is installed and then run the setup script which should install the rest. You need to make sure you use "chmod ugo+x" on the .sh file to make it exicutable then run it from the terminal.
 There is also a bat file for windows to install python and then start the setup script.
 
 Fully seems to works with Windows 11 havent verified with previous versions. Just need to have python installed and run the setup script it should install the rest of the requirements. In order for the network scanning to work you need to make sure location services are enabled and the script needs to run as admin.
