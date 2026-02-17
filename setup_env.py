@@ -13,7 +13,7 @@ import stat
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.6.0"
+SETUP_VERSION = "0.6.1"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy"]
 APP_FILENAME = "app.py"
@@ -183,59 +183,80 @@ def install_requirements(python_path):
         sys.exit(1)
 
 def install_speedtest_cli(bin_dir):
-    """Installs Speedtest CLI directly into the virtual environment."""
+    """
+    Installs Speedtest CLI directly into the virtual environment.
+    Includes fallback prompting if automatic installation fails.
+    """
     system = platform.system()
     machine = platform.machine().lower()
     
-    # 1. WINDOWS INSTALLATION
-    if system == "Windows":
-        target = bin_dir / "speedtest.exe"
-        if not target.exists():
+    # Path where we expect the binary to end up in the venv
+    target_path = bin_dir / ("speedtest.exe" if system == "Windows" else "speedtest")
+    
+    # If it already exists, skip
+    if target_path.exists():
+        print("[✓] Speedtest CLI already installed.")
+        return
+
+    print(f"[*] Attempting to install Speedtest CLI for {system}...")
+
+    try:
+        # 1. WINDOWS INSTALLATION
+        if system == "Windows":
             print("[*] Downloading Speedtest CLI for Windows...")
             url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip"
-            try:
-                urllib.request.urlretrieve(url, bin_dir / "st.zip")
-                with zipfile.ZipFile(bin_dir / "st.zip", 'r') as z: 
-                    z.extract("speedtest.exe", bin_dir)
-                os.remove(bin_dir / "st.zip")
-                print("[✓] Speedtest CLI installed to venv.")
-            except: pass
-
-    # 2. LINUX INSTALLATION (NEW: Manual Download)
-    elif system == "Linux":
-        target = bin_dir / "speedtest"
-        if not target.exists():
-            print(f"[*] Downloading Speedtest CLI for Linux ({machine})...")
+            zip_path = bin_dir / "st.zip"
             
-            # Detect Architecture
-            if "aarch64" in machine or "arm64" in machine:
-                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz"
-            elif "arm" in machine:
-                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-armhf.tgz"
-            else: # Default to x86_64
-                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
-            
-            try:
-                # Download and Extract Tarball
-                urllib.request.urlretrieve(url, bin_dir / "st.tgz")
-                with tarfile.open(bin_dir / "st.tgz", "r:gz") as tar:
-                    tar.extract("speedtest", path=bin_dir)
-                os.remove(bin_dir / "st.tgz")
-                
-                # Make Executable (chmod +x)
-                st_stat = os.stat(target)
-                os.chmod(target, st_stat.st_mode | stat.S_IEXEC)
-                print("[✓] Speedtest CLI installed to venv.")
-            except Exception as e:
-                print(f"[X] Linux Speedtest install failed: {e}")
+            urllib.request.urlretrieve(url, zip_path)
+            with zipfile.ZipFile(zip_path, 'r') as z: 
+                z.extract("speedtest.exe", bin_dir)
+            os.remove(zip_path)
 
-    # 3. MACOS INSTALLATION (Brew is safest for notarization)
-    elif system == "Darwin":
-        if not shutil.which("speedtest") and install_homebrew():
-            try:
-                subprocess.run(["brew", "tap", "teamookla/speedtest"], check=True)
-                subprocess.run(["brew", "install", "speedtest"], check=True)
-            except: pass
+        # 2. LINUX INSTALLATION
+        elif system == "Linux":
+            print(f"[*] Downloading Speedtest CLI for Linux (x86_64)...")
+            # Specific URL as requested
+            url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
+            tgz_path = bin_dir / "st.tgz"
+            
+            urllib.request.urlretrieve(url, tgz_path)
+            
+            # Extract 'speedtest' binary from tgz to bin_dir
+            with tarfile.open(tgz_path, "r:gz") as tar:
+                tar.extract("speedtest", path=bin_dir)
+            
+            os.remove(tgz_path)
+            
+            # Make Executable (chmod +x)
+            st_stat = os.stat(target_path)
+            os.chmod(target_path, st_stat.st_mode | stat.S_IEXEC)
+
+        # 3. MACOS INSTALLATION
+        elif system == "Darwin":
+            # Check for global install since brew installs to /usr/local or /opt/homebrew
+            if not shutil.which("speedtest"):
+                print("[*] Installing via Homebrew...")
+                if install_homebrew(): # Assumes install_homebrew() is defined elsewhere in your script
+                    subprocess.run(["brew", "tap", "teamookla/speedtest"], check=True)
+                    subprocess.run(["brew", "install", "speedtest"], check=True)
+                else:
+                    raise Exception("Homebrew not found and could not be installed.")
+
+        # FINAL VERIFICATION
+        # Check if the binary exists (either in venv or globally for Mac)
+        if target_path.exists() or shutil.which("speedtest"):
+            print("[✓] Speedtest CLI installed successfully.")
+        else:
+            raise Exception("Binary not found after installation attempt.")
+
+    except Exception as e:
+        print(f"\n[!] SPEEDTEST CLI INSTALLATION FAILED: {e}")
+        print("="*60)
+        print("    Automatic installation failed. Please install manually:")
+        print("    1. Download the CLI for your OS: https://www.speedtest.net/apps/cli")
+        print(f"    2. Extract the 'speedtest' binary into this folder:")
+        print(f"       {bin_dir}")
+        print("="*60 + "\n")
 
 def install_npcap_windows():
     """Checks/Installs Npcap on Windows."""

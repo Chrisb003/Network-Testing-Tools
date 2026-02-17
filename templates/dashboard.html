@@ -1,4 +1,4 @@
-<!-- Version number 0.6.3 -->
+<!-- Version number 0.6.4 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -576,15 +576,37 @@ async function saveAdapterSettings() {
 
     function scanDevices() {
         const b = document.getElementById('btn-scan-devices'); 
+        const originalText = b.innerText; // Save original text to restore later
+
+        // 1. Show Loading State
         b.disabled = true; 
-        b.innerText = "Scanning...";
+        b.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Scanning...';
         
-        fetch('/api/scan_network').then(r=>r.json()).then(d => {
-            b.disabled = false; 
-            b.innerText = "Scan"; 
-            if(d.error) { alert(d.error); return; }
-            loadNetworkDevices(d.network_id, d.network_name);
-        });
+        // 2. Clear the table temporarily to indicate refresh
+        const tb = document.getElementById('device-list');
+        if (tb) tb.innerHTML = '<tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Scanning Network...</h5><p class="small text-secondary">This may take a few seconds.</p></td></tr>';
+
+        // 3. Perform the Scan
+        fetch('/api/scan_network')
+            .then(r => r.json())
+            .then(d => {
+                if(d.error) { 
+                    alert(d.error); 
+                    // Restore table if error
+                    tb.innerHTML = '<tr><td colspan="6" class="text-center p-4 text-danger">Scan Failed. Check console/logs.</td></tr>';
+                    return; 
+                }
+                loadNetworkDevices(d.network_id, d.network_name);
+            })
+            .catch(err => {
+                console.error("Scan Error:", err);
+                tb.innerHTML = '<tr><td colspan="6" class="text-center p-4 text-danger">Communication Error.</td></tr>';
+            })
+            .finally(() => {
+                // 4. Restore Button State
+                b.disabled = false; 
+                b.innerHTML = '<i class="bi bi-search"></i> Scan'; // You can keep it simple or restore originalText
+            });
     }
 
     function renderDevices(d) {

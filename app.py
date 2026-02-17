@@ -25,7 +25,7 @@ import threading
 from flask import jsonify
 
 # --- Configuration ---
-APP_VERSION = "0.6.6" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.7" # Version bumped for DNS/Ping tools
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -68,10 +68,11 @@ def init_db():
                         is_primary INTEGER DEFAULT 0
                     )''')
 
-        # 3. Networks Table
+        # 3. Networks Table 
+        # CRITICAL CHANGE: Removed 'UNIQUE' from gateway_mac to allow VLANs
         c.execute('''CREATE TABLE IF NOT EXISTS networks (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        gateway_mac TEXT UNIQUE,
+                        gateway_mac TEXT,
                         name TEXT, 
                         last_scan TEXT, 
                         gateway_ip TEXT
@@ -124,7 +125,7 @@ def init_db():
                         lan_ip TEXT
                     )''')
 
-        # --- 8. NEW: Wi-Fi Scan History Table ---
+        # 8. Wi-Fi Scan History Table
         c.execute('''CREATE TABLE IF NOT EXISTS wifi_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -135,7 +136,37 @@ def init_db():
         
         # --- MIGRATIONS (Updates existing databases safely) ---
         
-        # Existing Migrations
+        # NEW: VLAN Support Migration (Removes UNIQUE constraint from gateway_mac)
+        try:
+            # Check if the table exists and has the unique constraint
+            # We look at the SQL used to create the table
+            c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='networks'")
+            row = c.fetchone()
+            if row and "gateway_mac TEXT UNIQUE" in row[0]:
+                print("[*] Migrating database for VLAN support (Removing Unique MAC constraint)...")
+                
+                # 1. Rename old table
+                c.execute("ALTER TABLE networks RENAME TO networks_old")
+                
+                # 2. Create new table WITHOUT unique constraint
+                c.execute('''CREATE TABLE networks (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                                gateway_mac TEXT, 
+                                name TEXT, 
+                                last_scan TEXT, 
+                                gateway_ip TEXT
+                            )''')
+                
+                # 3. Copy data back
+                c.execute("INSERT INTO networks (id, gateway_mac, name, last_scan, gateway_ip) SELECT id, gateway_mac, name, last_scan, gateway_ip FROM networks_old")
+                
+                # 4. Drop old table
+                c.execute("DROP TABLE networks_old")
+                print("[✓] Database migration successful.")
+        except Exception as e:
+            print(f"[!] Migration check failed (Ignore if DB is new): {e}")
+
+        # Existing Column Migrations
         try: c.execute("ALTER TABLE history ADD COLUMN isp TEXT"); 
         except sqlite3.OperationalError: pass
         try: c.execute("ALTER TABLE history ADD COLUMN connection_type TEXT"); 
@@ -150,10 +181,6 @@ def init_db():
             for col in ['router_ip', 'network_name', 'lan_ip']:
                 try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
                 except sqlite3.OperationalError: pass 
-
-        # --- Migration for Wi-Fi History (In case table exists but missing columns) ---
-        # Note: Since this is a new table, the 'CREATE TABLE IF NOT EXISTS' handles most cases,
-        # but if you add columns later, place them here.
 
         conn.commit()
         
@@ -348,29 +375,60 @@ def get_extended_iface_info():
 
         elif system == "Darwin": # macOS
             try:
-                # Gateway via netstat
+                # 1. Identify Default Gateway & Active Interface via netstat
+                # Output looks like: "default   192.168.1.1   UGScg   en0"
                 gw_out = subprocess.check_output("netstat -rn -f inet | grep 'default'", shell=True, text=True)
                 default_gw = "-"
+                primary_iface = None
+                
                 for line in gw_out.split('\n'):
                     parts = line.split()
-                    if len(parts) >= 2 and ":" not in parts[1]:
+                    if "default" in parts[0] and len(parts) >= 4:
                         default_gw = parts[1]
+                        # The interface is typically the last column
+                        primary_iface = parts[-1]
                         break
                 
-                # DNS and Interface Mapping via networksetup
+                # 2. Map Hardware Ports and fetch DNS
                 port_out = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
                 lines = port_out.split('\n')
+                
                 for i, line in enumerate(lines):
                     if "Hardware Port" in line:
                         port_name = line.split(":")[1].strip()
-                        dev_name = lines[i+1].split(":")[1].strip()
-                        try:
-                            dns_out = subprocess.check_output(["networksetup", "-getdnsservers", port_name], text=True)
-                            dns_list = [d.strip() for d in dns_out.split('\n') if d.strip() and ":" not in d]
-                            dns_val = ", ".join(dns_list) if dns_list and "Any" not in dns_list[0] else "-"
-                        except: dns_val = "-"
-                        info[dev_name] = {"gateway": default_gw, "dns": dns_val}
-            except: pass
+                        # The Device name (e.g., en0) is on the next line
+                        if i + 1 < len(lines):
+                            dev_name = lines[i+1].split(":")[1].strip() 
+                            
+                            # A. Gateway: Only assign to the active interface found in step 1
+                            gw_val = default_gw if dev_name == primary_iface else "-"
+
+                            # B. DNS: Try DHCP (ipconfig) first, then Static (networksetup)
+                            dns_val = "-"
+                            
+                            # Method 1: ipconfig getpacket (Best for DHCP/Automatic)
+                            try:
+                                ipconfig = subprocess.check_output(["ipconfig", "getpacket", dev_name], text=True)
+                                # Regex to find {1.1.1.1, 8.8.8.8} inside the output
+                                match = re.search(r'domain_name_server\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
+                                if match:
+                                    raw_dns = match.group(1).replace('\n', '').strip()
+                                    dns_val = raw_dns.replace(',', ', ')
+                            except: pass
+
+                            # Method 2: networksetup (Best for Static IPs)
+                            if dns_val == "-" or not dns_val:
+                                try:
+                                    ns_out = subprocess.check_output(["networksetup", "-getdnsservers", port_name], text=True)
+                                    if "There aren't any" not in ns_out:
+                                        dns_list = [d.strip() for d in ns_out.split('\n') if d.strip() and ":" not in d]
+                                        if dns_list:
+                                            dns_val = ", ".join(dns_list)
+                                except: pass
+                            
+                            info[dev_name] = {"gateway": gw_val, "dns": dns_val}
+            except Exception as e:
+                print(f"macOS Iface Error: {e}")
 
         elif system == "Linux": # Linux
             try:
@@ -1085,6 +1143,8 @@ def scan_network():
     1. Tries to find the active interface/gateway.
     2. Fallback: If gateway fails, guesses subnet based on Local IP (e.g. 192.168.1.0/24).
     3. Runs ARP scan.
+    4. Force-creates a NEW network entry if Gateway MAC is unidentified.
+    5. VLAN SUPPORT: Treats networks as different if Gateway IP differs (even if MAC is same).
     """
     # 1. Prepare Interface & IP
     active_iface = get_active_interface_name()
@@ -1101,7 +1161,7 @@ def scan_network():
     if active_iface:
         conf.iface = active_iface
 
-    # 3. Identify Gateway (Visual only - doesn't stop the scan anymore)
+    # 3. Identify Gateway
     ext_info = get_extended_iface_info()
     gateway_ip = "-"
     
@@ -1112,7 +1172,13 @@ def scan_network():
             break
             
     gateway_mac = get_gateway_mac(gateway_ip) if gateway_ip != "-" else None
-    if not gateway_mac: gateway_mac = "UNKNOWN_GATEWAY"
+    
+    # --- CHANGED LOGIC: Force Unique ID if MAC is missing ---
+    if not gateway_mac:
+        # Use current timestamp to generate a unique ID.
+        # This guarantees the DB treats this as a separate network every time.
+        gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
+    # --------------------------------------------------------
     
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     scanned_results = []
@@ -1125,7 +1191,7 @@ def scan_network():
                      timeout=2, verbose=0, inter=0.02)
         
         # 5. Parallel Processing
-        # Uses the 'process_device_info' helper helper function defined earlier in app.py
+        # Uses the 'process_device_info' helper function defined earlier in app.py
         with ThreadPoolExecutor(max_workers=30) as executor:
             futures = [executor.submit(process_device_info, received) for _, received in ans]
             for future in futures: scanned_results.append(future.result())
@@ -1139,18 +1205,28 @@ def scan_network():
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
             
-            # Upsert Network
-            cursor.execute("SELECT id FROM networks WHERE gateway_mac=?", (gateway_mac,))
+            # --- CRITICAL VLAN LOGIC START ---
+            # Upsert Network: We check BOTH mac and ip. 
+            # If the IP is different (VLAN), it won't match, causing a new INSERT.
+            cursor.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
             row = cursor.fetchone()
+            
             if row:
                 network_id = row[0]
-                cursor.execute("UPDATE networks SET last_scan=?, gateway_ip=? WHERE id=?", 
-                               (current_time, gateway_ip, network_id))
+                cursor.execute("UPDATE networks SET last_scan=? WHERE id=?", 
+                               (current_time, network_id))
             else:
-                default_name = f"Network {gateway_mac[-5:]}" if gateway_mac != "UNKNOWN_GATEWAY" else "Unknown Network"
+                # Determine Name based on MAC type
+                if "NO_MAC_" in gateway_mac:
+                    default_name = f"Unknown Network ({current_time})"
+                else:
+                    # Append IP to name if we suspect VLAN usage to help user distinguish
+                    default_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+
                 cursor.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip) VALUES (?, ?, ?, ?)", 
                                (gateway_mac, default_name, current_time, gateway_ip))
                 network_id = cursor.lastrowid
+            # --- CRITICAL VLAN LOGIC END ---
 
             # Mark all offline initially (so we can see who is currently online)
             cursor.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
