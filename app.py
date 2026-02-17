@@ -25,7 +25,7 @@ import threading
 from flask import jsonify
 
 # --- Configuration ---
-APP_VERSION = "0.6.8" # Version bumped for DNS/Ping tools
+APP_VERSION = "0.6.8"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -306,9 +306,10 @@ def restart_server():
 
 def get_extended_iface_info():
     """
-    Fetches Gateway and DNS information across Windows, macOS, and Linux.
-    Prioritizes stable text-parsing (ipconfig/netstat) to prevent data flickering.
-    Strictly filters for IPv4 (no colons).
+    Fetches Gateway, DNS, and MAC information.
+    - Windows: Parses ipconfig (primary) -> PowerShell (fallback).
+    - macOS: Parses networksetup/ipconfig (Fixes missing MACs & secondary Gateways).
+    - Linux: Parses ip route/resolv.conf.
     """
     info = {}
     system = platform.system()
@@ -323,10 +324,8 @@ def get_extended_iface_info():
                 
                 for line in raw_ip.split('\n'):
                     line = line.strip()
-                    
-                    # Identify the start of an adapter section (e.g., "Ethernet adapter Ethernet:")
+                    # Identify the start of an adapter section
                     if "adapter" in line and ":" in line:
-                        # Extract name between 'adapter' and the trailing colon
                         parts = line.split("adapter")
                         if len(parts) > 1:
                             current_iface = parts[-1].split(":")[0].strip()
@@ -334,14 +333,10 @@ def get_extended_iface_info():
                                 info[current_iface] = {"gateway": "-", "dns": "-"}
                     
                     if current_iface:
-                        # Extract Default Gateway
                         if "Default Gateway" in line and ":" in line:
                             gw = line.split(":")[-1].strip()
-                            # Ensure it's not empty and is IPv4 (no colons)
                             if gw and "." in gw and ":" not in gw:
                                 info[current_iface]["gateway"] = gw
-                        
-                        # Extract DNS Servers
                         if "DNS Servers" in line and ":" in line:
                             dns = line.split(":")[-1].strip()
                             if dns and "." in dns and ":" not in dns:
@@ -349,38 +344,27 @@ def get_extended_iface_info():
             except Exception as e:
                 print(f"ipconfig failed: {e}")
 
-            # --- FALLBACK: PowerShell (Only if ipconfig failed to find an interface) ---
+            # --- FALLBACK: PowerShell ---
             if not info:
                 try:
-                    cmd = "Get-NetIPConfiguration | Select-Object InterfaceAlias, " \
-                          "@{Name='G';Expression={$_.IPv4DefaultGateway.NextHop}}, " \
-                          "@{Name='D';Expression={$_.DNSServer.ServerAddresses}} | ConvertTo-Json"
+                    cmd = "Get-NetIPConfiguration | Select-Object InterfaceAlias, @{Name='G';Expression={$_.IPv4DefaultGateway.NextHop}}, @{Name='D';Expression={$_.DNSServer.ServerAddresses}} | ConvertTo-Json"
                     out = subprocess.check_output(["powershell", "-Command", cmd], text=True, timeout=5)
                     data = json.loads(out)
                     adapters = [data] if isinstance(data, dict) else data
                     for item in adapters:
                         name = item.get('InterfaceAlias')
                         if not name: continue
-                        
                         gw_raw = item.get('G', "-")
                         gw = str(gw_raw[0]) if isinstance(gw_raw, list) and len(gw_raw) > 0 else str(gw_raw)
-                        
                         dns_raw = item.get('D', [])
-                        dns_list = [str(d) for d in (dns_raw if isinstance(dns_raw, list) else [dns_raw]) 
-                                    if d and ":" not in str(d) and "MSFT_" not in str(d)]
-                        
-                        info[name] = {
-                            "gateway": gw if (gw != "None" and ":" not in gw) else "-",
-                            "dns": ", ".join(dns_list) if dns_list else "-"
-                        }
-                except:
-                    pass
+                        dns_list = [str(d) for d in (dns_raw if isinstance(dns_raw, list) else [dns_raw]) if d and ":" not in str(d) and "MSFT_" not in str(d)]
+                        info[name] = {"gateway": gw if (gw != "None" and ":" not in gw) else "-", "dns": ", ".join(dns_list) if dns_list else "-"}
+                except: pass
 
         elif system == "Darwin": # macOS
             try:
-                # 1. Identify Default Gateway & Active Interface via netstat
-                # Output looks like: "default   192.168.1.1   UGScg   en0"
-                gw_out = subprocess.check_output("netstat -rn -f inet | grep 'default'", shell=True, text=True)
+                # 1. Identify Global Default Gateway via netstat (as a fallback/confirmation)
+                gw_out = subprocess.check_output("netstat -rn -f inet | grep 'default'", shell=True, text=True, stderr=subprocess.DEVNULL)
                 default_gw = "-"
                 primary_iface = None
                 
@@ -388,48 +372,70 @@ def get_extended_iface_info():
                     parts = line.split()
                     if "default" in parts[0] and len(parts) >= 4:
                         default_gw = parts[1]
-                        # The interface is typically the last column
                         primary_iface = parts[-1]
                         break
                 
-                # 2. Map Hardware Ports and fetch DNS
+                # 2. Map Hardware Ports, DNS, MACs, and Specific Gateways
                 port_out = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
-                lines = port_out.split('\n')
+                sections = port_out.split("Hardware Port: ")
                 
-                for i, line in enumerate(lines):
-                    if "Hardware Port" in line:
-                        port_name = line.split(":")[1].strip()
-                        # The Device name (e.g., en0) is on the next line
-                        if i + 1 < len(lines):
-                            dev_name = lines[i+1].split(":")[1].strip() 
+                for section in sections:
+                    if not section.strip(): continue 
+                    
+                    lines = section.split('\n')
+                    port_name = lines[0].strip() 
+                    
+                    dev_name = None
+                    mac_addr = "-"
+                    
+                    for line in lines:
+                        if "Device:" in line:
+                            dev_name = line.split(":")[1].strip()
+                        if "Ethernet Address:" in line:
+                            mac_addr = line.split(":")[1].strip()
+                    
+                    if dev_name:
+                        # Default to global gateway if this is the primary interface
+                        gw_val = default_gw if dev_name == primary_iface else "-"
+                        dns_val = "-"
+                        
+                        # Method 1: ipconfig (Get DHCP info including Router & DNS)
+                        try:
+                            # Silence errors for inactive interfaces
+                            ipconfig = subprocess.check_output(
+                                ["ipconfig", "getpacket", dev_name], 
+                                text=True, 
+                                stderr=subprocess.DEVNULL 
+                            )
                             
-                            # A. Gateway: Only assign to the active interface found in step 1
-                            gw_val = default_gw if dev_name == primary_iface else "-"
+                            # Extract DNS
+                            match_dns = re.search(r'domain_name_server\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
+                            if match_dns:
+                                raw_dns = match_dns.group(1).replace('\n', '').strip()
+                                dns_val = raw_dns.replace(',', ', ')
+                            
+                            # Extract Router (Gateway) - FIX FOR SECONDARY INTERFACES
+                            # Looks for: router (ip_mult): {192.168.1.1}
+                            match_gw = re.search(r'router\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
+                            if match_gw:
+                                gw_found = match_gw.group(1).replace('\n', '').strip()
+                                if gw_found and gw_found != "0.0.0.0":
+                                    gw_val = gw_found
 
-                            # B. DNS: Try DHCP (ipconfig) first, then Static (networksetup)
-                            dns_val = "-"
-                            
-                            # Method 1: ipconfig getpacket (Best for DHCP/Automatic)
+                        except: pass
+
+                        # Method 2: networksetup fallback (Static DNS)
+                        if dns_val == "-" or not dns_val:
                             try:
-                                ipconfig = subprocess.check_output(["ipconfig", "getpacket", dev_name], text=True)
-                                # Regex to find {1.1.1.1, 8.8.8.8} inside the output
-                                match = re.search(r'domain_name_server\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
-                                if match:
-                                    raw_dns = match.group(1).replace('\n', '').strip()
-                                    dns_val = raw_dns.replace(',', ', ')
+                                ns_out = subprocess.check_output(["networksetup", "-getdnsservers", port_name], text=True)
+                                if "There aren't any" not in ns_out:
+                                    dns_list = [d.strip() for d in ns_out.split('\n') if d.strip() and ":" not in d]
+                                    if dns_list:
+                                        dns_val = ", ".join(dns_list)
                             except: pass
+                        
+                        info[dev_name] = {"gateway": gw_val, "dns": dns_val, "mac": mac_addr}
 
-                            # Method 2: networksetup (Best for Static IPs)
-                            if dns_val == "-" or not dns_val:
-                                try:
-                                    ns_out = subprocess.check_output(["networksetup", "-getdnsservers", port_name], text=True)
-                                    if "There aren't any" not in ns_out:
-                                        dns_list = [d.strip() for d in ns_out.split('\n') if d.strip() and ":" not in d]
-                                        if dns_list:
-                                            dns_val = ", ".join(dns_list)
-                                except: pass
-                            
-                            info[dev_name] = {"gateway": gw_val, "dns": dns_val}
             except Exception as e:
                 print(f"macOS Iface Error: {e}")
 
@@ -706,6 +712,7 @@ def get_adapters():
     3. Hardware link speeds with a fallback to 'Not Available' if idle.
     4. Real-time Wi-Fi rates only when active traffic exists.
     5. OS-Specific DNS handling (Fixes Ubuntu 127.0.0.53 issue).
+    6. macOS MAC Address Fallback (Fixes missing adapters).
     """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
@@ -760,6 +767,12 @@ def get_adapters():
                  if k in name or name in k:
                      spec_info = v
                      break
+
+        # --- MISSING SECTION RESTORED HERE ---
+        # If psutil failed to find a MAC (common on macOS), use the one we found via networksetup
+        if mac == "-" and spec_info.get("mac"):
+            mac = spec_info.get("mac")
+        # -------------------------------------
 
         # Extract values and filter for IPv4
         gw = spec_info.get("gateway", "-")

@@ -359,15 +359,19 @@
     let pendingRemoteVersion = null;
 
     document.addEventListener("DOMContentLoaded", () => {
-setTheme(localStorage.getItem('theme') || 'dark');
-        updateModal = new bootstrap.Modal(document.getElementById('updateModal'));
-        adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
+        setTheme(localStorage.getItem('theme') || 'dark');
+        
+        // Initialize Modals
+        if(document.getElementById('updateModal')) 
+            updateModal = new bootstrap.Modal(document.getElementById('updateModal'));
+        if(document.getElementById('adapterModal'))
+            adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
         
         // Initial Header Data Load
         fetch('/api/get_last_name').then(r=>r.json()).then(d => { 
             if(d.last_name) document.getElementById('st-network-name').value = d.last_name;
-            document.getElementById('header-wan-ip').innerText = d.wan_ip;
-            document.getElementById('header-isp').innerText = d.isp;
+            if(document.getElementById('header-wan-ip')) document.getElementById('header-wan-ip').innerText = d.wan_ip;
+            if(document.getElementById('header-isp')) document.getElementById('header-isp').innerText = d.isp;
         });
 
         // Start Loops
@@ -377,17 +381,9 @@ setTheme(localStorage.getItem('theme') || 'dark');
         loadNetworks();
         
         // Run the new verification check
-        verifyUpdateStatus();
-        });
-
-        // Start Loops
-        setInterval(updateLiveRatesOnly, 3000); 
-        fetchAdapters(); 
-        checkUpdates(); 
-        loadNetworks();
-        
+        if (typeof verifyUpdateStatus === "function") verifyUpdateStatus();
     });
-
+    
     // --- Core UI Helpers ---
     function toggleTheme() {
         const next = document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark';

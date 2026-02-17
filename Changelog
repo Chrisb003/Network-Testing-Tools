@@ -1,3 +1,5 @@
+0.6.11 update fixes and few bug fixes relating to getting adaptor information.
+
 0.6.10 update test - no changes
 
 0.6.9 - Fixed issue saving network scan as same network when working with VLANs, updated scan network page to add indication it is scanning. Fix issue with speedtestcli download linux, prompt user to download from speedtest site if fails. More fixes for update mechanism.
