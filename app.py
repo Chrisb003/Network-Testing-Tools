@@ -15,7 +15,7 @@ import os
 import ipaddress
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, render_template, jsonify, Response, request
+from flask import Flask, render_template, jsonify, Response, request, send_file
 from scapy.all import ARP, Ether, srp, conf
 import sys
 import zipfile
@@ -23,9 +23,14 @@ from pathlib import Path
 import shutil
 import threading
 from flask import jsonify
+import logging
+import tempfile
+
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.6.12"
+APP_VERSION = "0.7.0"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -48,6 +53,7 @@ def init_db():
         c.execute("PRAGMA journal_mode=WAL;") 
         
         # 1. History Table (Speed Tests)
+        # Added device_ip to store the local interface IP used for the test
         c.execute('''CREATE TABLE IF NOT EXISTS history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT, 
@@ -57,6 +63,7 @@ def init_db():
                         upload TEXT, 
                         ping TEXT, 
                         wan_ip TEXT, 
+                        device_ip TEXT,
                         isp TEXT
                     )''')
         
@@ -69,7 +76,6 @@ def init_db():
                     )''')
 
         # 3. Networks Table 
-        # CRITICAL CHANGE: Removed 'UNIQUE' from gateway_mac to allow VLANs
         c.execute('''CREATE TABLE IF NOT EXISTS networks (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         gateway_mac TEXT,
@@ -136,19 +142,13 @@ def init_db():
         
         # --- MIGRATIONS (Updates existing databases safely) ---
         
-        # NEW: VLAN Support Migration (Removes UNIQUE constraint from gateway_mac)
+        # VLAN Support Migration (Removes UNIQUE constraint from gateway_mac)
         try:
-            # Check if the table exists and has the unique constraint
-            # We look at the SQL used to create the table
             c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='networks'")
             row = c.fetchone()
             if row and "gateway_mac TEXT UNIQUE" in row[0]:
-                print("[*] Migrating database for VLAN support (Removing Unique MAC constraint)...")
-                
-                # 1. Rename old table
+                print("[*] Migrating database for VLAN support...")
                 c.execute("ALTER TABLE networks RENAME TO networks_old")
-                
-                # 2. Create new table WITHOUT unique constraint
                 c.execute('''CREATE TABLE networks (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT, 
                                 gateway_mac TEXT, 
@@ -156,27 +156,28 @@ def init_db():
                                 last_scan TEXT, 
                                 gateway_ip TEXT
                             )''')
-                
-                # 3. Copy data back
                 c.execute("INSERT INTO networks (id, gateway_mac, name, last_scan, gateway_ip) SELECT id, gateway_mac, name, last_scan, gateway_ip FROM networks_old")
-                
-                # 4. Drop old table
                 c.execute("DROP TABLE networks_old")
-                print("[✓] Database migration successful.")
+                print("[✓] VLAN migration successful.")
         except Exception as e:
-            print(f"[!] Migration check failed (Ignore if DB is new): {e}")
+            print(f"[!] Migration check failed: {e}")
 
-        # Existing Column Migrations
+        # Column Migrations for History Table
         try: c.execute("ALTER TABLE history ADD COLUMN isp TEXT"); 
         except sqlite3.OperationalError: pass
         try: c.execute("ALTER TABLE history ADD COLUMN connection_type TEXT"); 
         except sqlite3.OperationalError: pass
+        # NEW: Migration to add device_ip to existing history tables
+        try: c.execute("ALTER TABLE history ADD COLUMN device_ip TEXT"); 
+        except sqlite3.OperationalError: pass
         
+        # Adapter Settings Migrations
         try: c.execute("ALTER TABLE adapter_settings ADD COLUMN is_visible INTEGER DEFAULT 1"); 
         except sqlite3.OperationalError: pass
         try: c.execute("ALTER TABLE adapter_settings ADD COLUMN is_primary INTEGER DEFAULT 0"); 
         except sqlite3.OperationalError: pass
 
+        # Tool Log Context Migrations
         for table in ['dns_logs', 'ping_logs']:
             for col in ['router_ip', 'network_name', 'lan_ip']:
                 try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
@@ -587,12 +588,46 @@ def check_open_ports(ip):
     return {"services": ", ".join(services) if services else "None"}
 
 def get_gateway_mac(gateway_ip):
-    """Resolves Gateway MAC to identify unique networks."""
-    if not gateway_ip or gateway_ip == "-" or gateway_ip == "Unknown": return None
+    """
+    Resolves Gateway MAC while respecting the Pinned Adapter.
+    Prevents 'bind' errors by locking Scapy to a single interface.
+    """
+    if not gateway_ip or gateway_ip == "-" or gateway_ip == "Unknown": 
+        return None
+    
+    target_iface = None
+    pinned_mac = None
+
+    # 1. Check for a user-pinned adapter first
     try:
-        ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), timeout=2, verbose=0)
-        for _, received in ans: return received.hwsrc
-    except: pass
+        with sqlite3.connect(DB_NAME) as conn:
+            row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
+            if row:
+                pinned_mac = row[0]
+    except: 
+        pass
+
+    # 2. Match the Pinned MAC to a system interface name
+    if pinned_mac:
+        for name, addrs in psutil.net_if_addrs().items():
+            if any(a.family == psutil.AF_LINK and a.address == pinned_mac for a in addrs):
+                target_iface = name
+                break
+
+    # 3. Fallback to the active interface if no pin is found
+    if not target_iface:
+        target_iface = get_active_interface_name()
+
+    try:
+        # Use 'iface' to force Scapy to only bind to the chosen adapter
+        ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), 
+                     timeout=2, verbose=0, iface=target_iface)
+        for _, received in ans: 
+            return received.hwsrc
+    except Exception as e:
+        # Silence the error in logs but print to console for debugging
+        print(f"[*] Gateway MAC resolution skipped on {target_iface}: {e}")
+    
     return None
 
 def process_device_info(received):
@@ -702,6 +737,36 @@ def index():
                            setup_version=get_setup_version(), 
                            app_version=APP_VERSION,
                            html_version=get_html_version())
+
+@app.route('/api/system/cleanup', methods=['POST'])
+def cleanup_database():
+    """
+    Cleans up the database based on the selected interval.
+    'days' can be 7, 30, 365, or 'all'.
+    """
+    days = request.json.get('days')
+    tables = ['history', 'dns_logs', 'ping_logs', 'wifi_history']
+    
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            
+            if days == 'all':
+                # Complete wipe of all user data
+                for table in tables + ['networks', 'devices', 'global_device_names', 'adapter_settings']:
+                    cursor.execute(f"DELETE FROM {table}")
+                message = "Database cleared completely."
+            else:
+                # Selective cleanup of logs based on timestamp
+                # SQLite handles '%Y-%m-%d %H:%M:%S' strings naturally with date() functions
+                for table in tables:
+                    cursor.execute(f"DELETE FROM {table} WHERE timestamp < datetime('now', '-{days} days')")
+                message = f"Data older than {days} days has been removed."
+            
+            conn.commit()
+            return jsonify({"status": "success", "message": message})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/adapters')
 def get_adapters():
@@ -1056,112 +1121,117 @@ def get_network_devices(net_id):
 @app.route('/api/scan_network')
 def scan_network():
     """
-    Robust Network Scan:
-    1. Tries to find the active interface/gateway.
-    2. Fallback: If gateway fails, guesses subnet based on Local IP (e.g. 192.168.1.0/24).
-    3. Runs ARP scan.
-    4. Force-creates a NEW network entry if Gateway MAC is unidentified.
-    5. VLAN SUPPORT: Treats networks as different if Gateway IP differs (even if MAC is same).
+    Robust Pinned-First Network Scan:
+    1. Checks for a user-pinned adapter in the database.
+    2. Locates the system interface/IP matching that pinned MAC.
+    3. Falls back to default active interface if no pin exists.
+    4. Runs ARP scan on the calculated subnet.
+    5. Syncs results with robust VLAN and Global Name logic.
     """
-    # 1. Prepare Interface & IP
-    active_iface = get_active_interface_name()
-    local_ip = get_local_ip()
-    
-    # Calculate Target Subnet (The "Failsafe" that fixes your issue)
-    # If Local IP is 192.168.1.50, this makes the target 192.168.1.0/24
-    if local_ip and local_ip != "127.0.0.1":
-        target_ip = f"{local_ip.rsplit('.', 1)[0]}.0/24"
-    else:
+    pinned_mac = None
+    target_iface = None
+    target_ip_val = None
+
+    # 1. Check for Pinned Adapter in Database
+    with sqlite3.connect(DB_NAME) as conn:
+        row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
+        if row:
+            pinned_mac = row[0]
+
+    # 2. Match Pinned MAC to a System Interface
+    if pinned_mac:
+        interfaces = psutil.net_if_addrs()
+        for name, addrs in interfaces.items():
+            current_mac = None
+            current_ip = None
+            for a in addrs:
+                if a.family == psutil.AF_LINK:
+                    current_mac = a.address
+                elif a.family == socket.AF_INET:
+                    current_ip = a.address
+            
+            if current_mac == pinned_mac:
+                target_iface = name
+                target_ip_val = current_ip
+                break
+
+    # 3. Fallback to Active Interface if no pin is found
+    if not target_iface or not target_ip_val:
+        target_iface = get_active_interface_name()
+        target_ip_val = get_local_ip()
+
+    # 4. Prepare Scan Parameters
+    if not target_ip_val or target_ip_val == "127.0.0.1":
         return jsonify({"error": "Could not determine local IP subnet."})
 
-    # 2. Configure Scapy (Try to use active interface, but don't crash if it fails)
-    if active_iface:
-        conf.iface = active_iface
+    # Calculate Subnet (e.g. 192.168.1.0/24)
+    target_subnet = f"{target_ip_val.rsplit('.', 1)[0]}.0/24"
+    
+    # Force Scapy to use the selected interface
+    if target_iface:
+        conf.iface = target_iface
 
-    # 3. Identify Gateway
-    ext_info = get_extended_iface_info()
-    gateway_ip = "-"
-    
-    # Try to find gateway from the extended info we built earlier
-    for iface_details in ext_info.values():
-        if iface_details.get("gateway") and iface_details.get("gateway") != "-":
-            gateway_ip = iface_details.get("gateway")
-            break
-            
-    gateway_mac = get_gateway_mac(gateway_ip) if gateway_ip != "-" else None
-    
-    # --- CHANGED LOGIC: Force Unique ID if MAC is missing ---
-    if not gateway_mac:
-        # Use current timestamp to generate a unique ID.
-        # This guarantees the DB treats this as a separate network every time.
-        gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
-    # --------------------------------------------------------
-    
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     scanned_results = []
 
     try:
-        # 4. Physical Scan (ARP)
-        # We scan the calculated subnet (target_ip) regardless of whether we found a gateway
-        # inter=0.02 avoids flooding Wi-Fi networks
-        ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_ip), 
+        # 5. Physical Scan (ARP)
+        ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
                      timeout=2, verbose=0, inter=0.02)
         
-        # 5. Parallel Processing
-        # Uses the 'process_device_info' helper function defined earlier in app.py
+        # Parallel Processing for Hostname and Port resolution
         with ThreadPoolExecutor(max_workers=30) as executor:
             futures = [executor.submit(process_device_info, received) for _, received in ans]
-            for future in futures: scanned_results.append(future.result())
+            for future in futures: 
+                scanned_results.append(future.result())
             
     except Exception as e: 
         print(f"SCAN ERROR: {e}")
         return jsonify({"error": f"Scan failed: {str(e)}"})
 
     try:
-        # 6. Database Write (With Timeout Protection)
+        # 6. Database Write (Robust Sync Logic)
+        # Identify Gateway for VLAN support
+        ext_info = get_extended_iface_info()
+        spec_info = ext_info.get(target_iface, {})
+        gateway_ip = spec_info.get("gateway", "-")
+        gateway_mac = get_gateway_mac(gateway_ip) if gateway_ip != "-" else None
+        
+        if not gateway_mac:
+            gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
+
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
             
-            # --- CRITICAL VLAN LOGIC START ---
-            # Upsert Network: We check BOTH mac and ip. 
-            # If the IP is different (VLAN), it won't match, causing a new INSERT.
+            # Upsert Network (VLAN Aware)
             cursor.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
             row = cursor.fetchone()
             
             if row:
                 network_id = row[0]
-                cursor.execute("UPDATE networks SET last_scan=? WHERE id=?", 
-                               (current_time, network_id))
+                cursor.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
             else:
-                # Determine Name based on MAC type
-                if "NO_MAC_" in gateway_mac:
-                    default_name = f"Unknown Network ({current_time})"
-                else:
-                    # Append IP to name if we suspect VLAN usage to help user distinguish
-                    default_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-
+                default_name = f"Unknown Network ({current_time})" if "NO_MAC_" in gateway_mac else f"Network {gateway_mac[-5:]} ({gateway_ip})"
                 cursor.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip) VALUES (?, ?, ?, ?)", 
                                (gateway_mac, default_name, current_time, gateway_ip))
                 network_id = cursor.lastrowid
-            # --- CRITICAL VLAN LOGIC END ---
 
-            # Mark all offline initially (so we can see who is currently online)
+            # Mark all offline for this network ID
             cursor.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
 
             for device in scanned_results:
-                # Name sync logic (Preserve custom names)
+                # Name sync logic (Local -> Global)
                 cursor.execute("SELECT custom_name FROM devices WHERE mac_address=? AND network_id=?", 
                                (device["mac"], network_id))
                 existing = cursor.fetchone()
                 final_name = existing[0] if existing and existing[0] else ""
                 
-                # Check Global Name if no local name
                 if not final_name:
                     cursor.execute("SELECT custom_name FROM global_device_names WHERE mac_address=?", (device["mac"],))
                     glob = cursor.fetchone()
                     if glob: final_name = glob[0]
 
-                # Upsert Device
+                # Upsert Device with all robust fields
                 cursor.execute("""
                     INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, last_seen, services, is_online)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
@@ -1185,8 +1255,10 @@ def scan_network():
             net_name = net_name_row[0] if net_name_row else "Unknown Network"
 
             dev_list = [dict(d) for d in devices]
-            try: dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
-            except: pass
+            try: 
+                dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
+            except: 
+                pass
 
             return jsonify({"network_id": network_id, "network_name": net_name, "devices": dev_list})
             
@@ -1482,32 +1554,54 @@ def get_wifi_networks():
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
     """
-    Executes an Ookla Speedtest using the CLI binary located in the virtual environment.
-    Automatically handles path resolution for Windows, macOS, and Linux.
+    Executes an Ookla Speedtest using the pinned adapter if set.
+    Captures both WAN and Local Device IP for the history log.
     """
     d = request.json
-    try:
-        # 1. Determine Absolute Path to the CLI Binary
-        # app.root_path provides the directory where app.py is located
-        base_dir = app.root_path 
-        
-        if platform.system() == "Windows":
-            # Windows venv structure uses 'Scripts'
-            st_path = os.path.join(base_dir, "venv", "Scripts", "speedtest.exe")
-        else:
-            # macOS and Linux venv structure uses 'bin'
-            st_path = os.path.join(base_dir, "venv", "bin", "speedtest")
+    pinned_iface = None
+    device_ip = "-" # Default if not found
 
-        # 2. Check if the binary exists; if not, fall back to global 'speedtest' command
-        # This is the CRITICAL "Fallback" line I missed in the shorter version
+    # 1. Identify the Pinned Interface Name
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
+            if row:
+                pinned_mac = row[0]
+                for name, addrs in psutil.net_if_addrs().items():
+                    for a in addrs:
+                        if a.family == psutil.AF_LINK and a.address == pinned_mac:
+                            pinned_iface = name
+                            break
+                    if pinned_iface: break
+    except Exception as e:
+        print(f"[*] Pinned interface lookup failed: {e}")
+
+    # 2. CAPTURE DEVICE IP (The local IP of the interface being used)
+    if pinned_iface:
+        # Get the IP specifically from the pinned hardware
+        addrs = psutil.net_if_addrs().get(pinned_iface, [])
+        for a in addrs:
+            if a.family == socket.AF_INET:
+                device_ip = a.address
+                break
+    else:
+        # Fallback to general local IP if no pin
+        device_ip = get_local_ip()
+
+    try:
+        # 3. Determine Absolute Path to the CLI Binary
+        base_dir = app.root_path 
+        st_path = os.path.join(base_dir, "venv", "Scripts", "speedtest.exe") if platform.system() == "Windows" else os.path.join(base_dir, "venv", "bin", "speedtest")
         cmd_path = st_path if os.path.exists(st_path) else "speedtest"
         
-        # 3. Execute the Speedtest
-        # --accept-license and --accept-gdpr are required for non-interactive execution
+        # 4. Build and Run Command
         cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
+        if pinned_iface:
+            cmd.extend(["--interface", pinned_iface])
+        
         res = json.loads(subprocess.check_output(cmd, text=True))
         
-        # 4. Format the Resulting Data
+        # 5. Format Results
         down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
@@ -1518,29 +1612,20 @@ def run_speedtest():
         conn_type = d.get('connection_type') or "Ethernet"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 5. Log to the Database
-        try:
-            with sqlite3.connect(DB_NAME, timeout=10) as conn:
-                # Ensure PRAGMA journal_mode=WAL is active for concurrency
-                conn.execute("PRAGMA journal_mode=WAL;") 
-                conn.execute("""
-                    INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, isp) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (ts, name, conn_type, down, up, ping, wan, isp))
-                conn.commit()
-        except sqlite3.Error as db_err:
-            print(f"[X] Database Logging Error: {db_err}")
-            # We still return the results even if the database logging fails
+        # 6. SAVE TO DATABASE (Updated to include device_ip)
+        with sqlite3.connect(DB_NAME, timeout=10) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;") 
+            conn.execute("""
+                INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, device_ip, isp) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ts, name, conn_type, down, up, ping, wan, device_ip, isp))
+            conn.commit()
             
         return jsonify({"download": down, "upload": up, "ping": ping})
 
     except subprocess.CalledProcessError as e:
-        print(f"[X] Speedtest Execution Error: {e}")
-        return jsonify({"error": "Speedtest CLI failed to execute. Ensure it is installed correctly."})
-    except FileNotFoundError:
-        return jsonify({"error": "Speedtest binary not found. Please run setup.py again."})
+        return jsonify({"error": "Speedtest CLI failed. If pinned, ensure adapter is connected."})
     except Exception as e:
-        print(f"[X] Unexpected Speedtest Error: {e}")
         return jsonify({"error": str(e)})
 
 @app.route('/api/get_last_name')
@@ -1579,9 +1664,14 @@ def clear_history():
 
 @app.route('/api/history/export', methods=['POST'])
 def export_history():
-    """Exports speed test history to CSV."""
+    """
+    Exports speed test history to CSV.
+    Includes the new Device IP column and renames WAN IP.
+    """
     d = request.json
     rows = d.get('rows', [])
+    
+    # If no specific rows were sent from the frontend, fetch all from the DB
     if not rows:
         with sqlite3.connect(DB_NAME) as conn:
             conn.row_factory = sqlite3.Row
@@ -1589,11 +1679,29 @@ def export_history():
     
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(['Timestamp', 'Network Name', 'Type', 'Download', 'Upload', 'Ping', 'WAN IP', 'ISP'])
-    for r in rows: 
-        writer.writerow([r.get('timestamp'), r.get('network_name'), r.get('connection_type'), r.get('download'), r.get('upload'), r.get('ping'), r.get('wan_ip'), r.get('isp')])
     
-    return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": "attachment; filename=history.csv"})
+    # Updated Header Row with Device IP and WAN IP
+    writer.writerow(['Timestamp', 'Network Name', 'Type', 'Download', 'Upload', 'Ping', 'Device IP', 'WAN IP', 'ISP'])
+    
+    # Write Data Rows
+    for r in rows: 
+        writer.writerow([
+            r.get('timestamp'), 
+            r.get('network_name'), 
+            r.get('connection_type'), 
+            r.get('download'), 
+            r.get('upload'), 
+            r.get('ping'), 
+            r.get('device_ip', '-'), # New Device IP field
+            r.get('wan_ip', '-'),    # Maps to WAN IP header
+            r.get('isp', '-')
+        ])
+    
+    return Response(
+        out.getvalue(), 
+        mimetype="text/csv", 
+        headers={"Content-disposition": "attachment; filename=history.csv"}
+    )
 
 @app.route('/api/devices/export', methods=['POST'])
 def export_devices():
@@ -1614,6 +1722,102 @@ def export_devices():
             writer.writerow([r.get(h) for h in headers])
             
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": "attachment; filename=devices.csv"})
+
+@app.route('/api/system/export_db')
+def export_database():
+    """Downloads the entire database file."""
+    return send_file(DB_NAME, as_attachment=True)
+
+@app.route('/api/system/import_db', methods=['POST'])
+def import_database():
+    """
+    Imports data from another database file and merges it.
+    Uses 'IS' for NULL-safe comparisons and updates device metadata.
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    
+    uploaded_file = request.files['file']
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        uploaded_file.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        conn_local = sqlite3.connect(DB_NAME)
+        conn_remote = sqlite3.connect(tmp_path)
+        conn_remote.row_factory = sqlite3.Row
+        
+        cursor_l = conn_local.cursor()
+        cursor_r = conn_remote.cursor()
+
+        # 1. Merge Networks (ID Mapping)
+        network_map = {} 
+        remote_networks = cursor_r.execute("SELECT * FROM networks").fetchall()
+        for net in remote_networks:
+            # Use 'IS' to handle cases where Gateway MAC/IP might be NULL
+            cursor_l.execute("SELECT id FROM networks WHERE gateway_mac IS ? AND gateway_ip IS ?", 
+                             (net['gateway_mac'], net['gateway_ip']))
+            exists = cursor_l.fetchone()
+            if exists:
+                network_map[net['id']] = exists[0]
+            else:
+                cursor_l.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip) VALUES (?, ?, ?, ?)",
+                                 (net['gateway_mac'], net['name'], net['last_scan'], net['gateway_ip']))
+                network_map[net['id']] = cursor_l.lastrowid
+
+        # 2. Merge Devices (Updating metadata)
+        remote_devices = cursor_r.execute("SELECT * FROM devices").fetchall()
+        for dev in remote_devices:
+            new_net_id = network_map.get(dev['network_id'])
+            if new_net_id:
+                cursor_l.execute("""
+                    INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, last_seen, services, is_online)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(mac_address, network_id) DO UPDATE SET
+                    hostname = COALESCE(excluded.hostname, devices.hostname),
+                    custom_name = CASE 
+                        WHEN excluded.custom_name IS NOT NULL AND excluded.custom_name != '' THEN excluded.custom_name 
+                        ELSE devices.custom_name 
+                    END,
+                    last_seen = MAX(last_seen, excluded.last_seen),
+                    is_online = MAX(is_online, excluded.is_online)
+                """, (dev['mac_address'], new_net_id, dev['hostname'], dev['custom_name'], 
+                      dev['ip_address'], dev['last_seen'], dev['services'], dev['is_online']))
+
+        # 3. Merge Logs (History, Ping, DNS)
+        tables_to_append = {
+            'history': ['timestamp', 'network_name', 'connection_type', 'download', 'upload', 'ping', 'wan_ip', 'device_ip', 'isp'],
+            'dns_logs': ['timestamp', 'domain', 'result_ip', 'record_type', 'status', 'router_ip', 'network_name', 'lan_ip'],
+            'ping_logs': ['timestamp', 'target', 'status', 'latency', 'packet_loss', 'network_context', 'router_ip', 'network_name', 'lan_ip'],
+            'wifi_history': ['timestamp', 'scan_name', 'comments', 'results_json']
+        }
+
+        for table, cols in tables_to_append.items():
+            remote_data = cursor_r.execute(f"SELECT * FROM {table}").fetchall()
+            for row in remote_data:
+                # NULL-safe duplicate check using 'IS'
+                placeholders = " AND ".join([f"{c} IS ?" for c in cols])
+                cursor_l.execute(f"SELECT 1 FROM {table} WHERE {placeholders}", [row[c] for c in cols])
+                if not cursor_l.fetchone():
+                    col_str = ", ".join(cols)
+                    val_placeholders = ", ".join(["?" for _ in cols])
+                    cursor_l.execute(f"INSERT INTO {table} ({col_str}) VALUES ({val_placeholders})", [row[c] for c in cols])
+
+        # 4. Global Settings
+        remote_global = cursor_r.execute("SELECT * FROM global_device_names").fetchall()
+        for g in remote_global:
+            cursor_l.execute("INSERT OR REPLACE INTO global_device_names (mac_address, custom_name) VALUES (?, ?)", 
+                             (g['mac_address'], g['custom_name']))
+
+        conn_local.commit()
+        conn_local.close()
+        conn_remote.close()
+        os.remove(tmp_path)
+        return jsonify({"status": "success", "message": "Database merged successfully!"})
+
+    except Exception as e:
+        if os.path.exists(tmp_path): os.remove(tmp_path)
+        return jsonify({"error": str(e)}), 500
 
 # --- Updater (GitHub Integration) ---
 

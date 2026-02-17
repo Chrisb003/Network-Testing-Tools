@@ -1,4 +1,4 @@
-<!-- Version number 0.6.9 -->
+<!-- Version number 0.7.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -108,6 +108,7 @@
         <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('wifi-history', this)">Wi-Fi History</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">Speed Test History</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('system', this)">System</a></li>
     </ul>
 
     <div id="adapters" class="page-section">
@@ -128,22 +129,27 @@
         </div>
     </div>
 
-    <div id="devices" class="page-section hidden">
-        <div class="card shadow-sm">
-            <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-                <h5 class="mb-0 text-nowrap me-3" id="device-tab-title">Connected Devices</h5>
-                <div class="d-flex gap-2 align-items-center">
-                    <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
-                    <button class="btn btn-success btn-sm text-nowrap" id="btn-scan-devices" onclick="scanDevices()">Scan</button>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <table class="table table-striped mb-0 small align-middle">
-                    <thead><tr><th>Hostname</th><th>Name</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th></tr></thead>
-                    <tbody id="device-list"><tr><td colspan="7" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
-                </table>
+   <div id="devices" class="page-section hidden">
+    <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
+            <h5 class="mb-0 text-nowrap me-3" id="device-tab-title">Connected Devices</h5>
+            <div class="d-flex gap-2 align-items-center">
+                <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevicesCSV()">
+                    <i class="bi bi-download"></i> Export CSV
+                </button>
+                <button class="btn btn-success btn-sm text-nowrap" id="btn-scan-devices" onclick="scanDevices()">
+                    <i class="bi bi-search"></i> Scan
+                </button>
             </div>
         </div>
+        <div class="card-body p-0">
+            <table class="table table-striped mb-0 small align-middle">
+                <thead><tr><th>Hostname</th><th>Name</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th></tr></thead>
+                <tbody id="device-list"><tr><td colspan="6" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
+            </table>
+        </div>
+    </div>
     </div>
 
     <div id="networks" class="page-section hidden">
@@ -242,7 +248,17 @@
             </div>
             <div class="card-body p-0">
                 <table class="table table-hover mb-0 small align-middle">
-                    <thead><tr><th>Date</th><th>Name</th><th>ISP</th><th>Type</th><th>Down</th><th>Up</th><th>Ping</th><th>IP</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Name</th>
+                            <th>ISP</th>
+                            <th>Type</th>
+                            <th>Down</th>
+                            <th>Up</th>
+                            <th>Ping</th>
+                            <th>Device IP</th> <th>WAN IP</th>    </tr>
+                    </thead>
                     <tbody id="history-table"></tbody>
                 </table>
             </div>
@@ -298,6 +314,50 @@
                 </thead>
                 <tbody id="wifi-history-table"></tbody>
             </table>
+        </div>
+    </div>
+</div>
+<div id="system" class="page-section hidden">
+    <div class="row">
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-primary-subtle text-primary">
+                    <h5 class="mb-0"><i class="bi bi-database-fill-gear"></i> Backup & Migration</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">Export your entire database to a file or merge data from another device.</p>
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-outline-primary" onclick="location.href='/api/system/export_db'">
+                            <i class="bi bi-cloud-download"></i> Export Database (.db)
+                        </button>
+                        <input type="file" id="db-import-input" class="hidden" accept=".db" onchange="handleImport(this)">
+                        <button class="btn btn-outline-warning" onclick="document.getElementById('db-import-input').click()">
+                            <i class="bi bi-cloud-upload"></i> Import/Merge Database
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100 border-warning">
+                <div class="card-header bg-warning-subtle text-warning-emphasis">
+                    <h5 class="mb-0"><i class="bi bi-trash3-fill"></i> Database Maintenance</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">Remove old logs to save space and improve performance.</p>
+                    <div class="d-grid gap-2">
+                        <div class="btn-group w-100">
+                            <button class="btn btn-outline-secondary" onclick="runCleanup(7)">Old > 7 Days</button>
+                            <button class="btn btn-outline-secondary" onclick="runCleanup(30)">Old > 30 Days</button>
+                            <button class="btn btn-outline-secondary" onclick="runCleanup(365)">Old > 1 Year</button>
+                        </div>
+                        <button class="btn btn-danger mt-2" onclick="runCleanup('all')">
+                            <i class="bi bi-exclamation-octagon"></i> Clear Database Completely
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -407,6 +467,58 @@
         if (typeof verifyUpdateStatus === "function") verifyUpdateStatus();
     });
 
+    // Function to handle database cleanup with confirmation prompts
+async function runCleanup(interval) {
+    let warning = `Are you sure you want to delete data older than ${interval} days?`;
+    if (interval === 'all') {
+        warning = "CRITICAL WARNING: This will delete ALL networks, devices, settings, and logs. This cannot be undone. Proceed?";
+    }
+
+    if (!confirm(warning)) return;
+
+    const btn = event.target;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Cleaning...';
+
+    try {
+        const response = await fetch('/api/system/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days: interval })
+        });
+        const result = await response.json();
+        
+        if (result.status === "success") {
+            alert(result.message);
+            location.reload(); 
+        } else {
+            alert("Cleanup failed: " + result.message);
+        }
+    } catch (err) {
+        alert("Error: " + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
+// Ensure the showPage function handles the new 'system' page
+function showPage(id, link) {
+    document.querySelectorAll('.page-section').forEach(p => p.classList.add('hidden'));
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    document.getElementById(id).classList.remove('hidden'); 
+    link.classList.add('active');
+    
+    // Refresh data based on page
+    if(id === 'history') fetchHistory();
+    if(id === 'networks') loadNetworks();
+    if(id === 'dns-tool') fetchToolLogs('dns');
+    if(id === 'ping-tool') fetchToolLogs('ping');
+    if(id === 'wifi-history') loadWifiHistory();
+    // System page doesn't need auto-refresh on load
+}
+
     // --- Core UI Helpers ---
     function toggleTheme() {
         const next = document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark';
@@ -433,6 +545,44 @@
         console.warn("Fast poll failed, skipping update.");
     }
     }
+
+    async function handleImport(input) {
+    if (!input.files || !input.files[0]) return;
+    
+    if (!confirm("This will merge data from the selected file into your current database. Existing data will not be deleted. Continue?")) {
+        input.value = "";
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', input.files[0]);
+
+    const btn = input.nextElementSibling;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Merging...';
+
+    try {
+        const response = await fetch('/api/system/import_db', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        
+        if (result.status === "success") {
+            alert(result.message);
+            location.reload(); // Reload to show new data
+        } else {
+            alert("Error: " + result.error);
+        }
+    } catch (err) {
+        alert("Upload failed: " + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        input.value = "";
+    }
+}
 
 async function refreshNetworkInfo() {
     isManualRefreshing = true;
@@ -594,25 +744,74 @@ async function saveAdapterSettings() {
 }
 
     // --- Saved Networks & Device Logic ---
-    function loadNetworks() {
-        fetch('/api/networks').then(r=>r.json()).then(d => {
-            const tb = document.getElementById('network-list');
-            if(!tb) return;
-            tb.innerHTML = d.length ? d.map(n => `
-                <tr>
-                    <td><strong>${n.name}</strong></td>
-                    <td class="font-monospace small">${n.gateway_mac}</td>
-                    <td>${n.gateway_ip}</td>
-                    <td><span class="badge bg-secondary">${n.device_count}</span></td>
-                    <td><small>${n.last_scan}</small></td>
-                    <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${n.name}')">Load</button> 
-                        <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${n.name}')"><i class="bi bi-pencil"></i></button> 
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})"><i class="bi bi-trash"></i></button>
-                    </td>
-                </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted p-4">No saved networks found.</td></tr>';
-        });
-    }
+function loadNetworks() {
+    fetch('/api/networks').then(r=>r.json()).then(d => {
+        allNetworks = d; 
+        const tb = document.getElementById('network-list');
+        if(!tb) return;
+        tb.innerHTML = d.length ? d.map(n => `
+            <tr>
+                <td><strong>${n.name}</strong></td>
+                <td class="font-monospace small">${n.gateway_mac}</td>
+                <td>${n.gateway_ip}</td>
+                <td><span class="badge bg-secondary">${n.device_count}</span></td>
+                <td><small>${n.last_scan}</small></td>
+                <td>
+                    <div class="btn-group">
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${n.name}')" title="View Devices">
+                            <i class="bi bi-eye"></i> Load
+                        </button> 
+                        <button class="btn btn-sm btn-outline-secondary" onclick="exportSpecificNetwork(${n.id}, '${n.name}')" title="Export Devices CSV">
+                            <i class="bi bi-download"></i>
+                        </button> 
+                        <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${n.name}')" title="Rename">
+                            <i class="bi bi-pencil"></i>
+                        </button> 
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})" title="Delete">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted p-4">No saved networks found.</td></tr>';
+    });
+}
+
+function exportSpecificNetwork(id, name) {
+    // 1. Fetch the devices for this specific network
+    fetch(`/api/networks/${id}/devices`)
+        .then(r => r.json())
+        .then(devices => {
+            if (!devices.length) return alert("This network has no devices to export.");
+
+            // 2. Format data for the existing CSV export tool
+            const rows = devices.map(d => ({
+                "Hostname": d.hostname || "Unknown",
+                "Custom Name": d.custom_name || "",
+                "IP Address": d.ip_address || "0.0.0.0",
+                "MAC Address": d.mac_address || "Unknown",
+                "Status": d.is_online ? "Online" : "Offline",
+                "Services": d.services || "None"
+            }));
+
+            // 3. Trigger the CSV download
+            fetch('/api/devices/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rows: rows })
+            })
+            .then(r => r.blob())
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `devices_${name.replace(/\s+/g, '_')}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            });
+        })
+        .catch(err => alert("Export failed: " + err.message));
+}
 
     function loadNetworkDevices(id, name) {
         currentNetworkId = id; 
@@ -977,20 +1176,21 @@ async function saveAdapterSettings() {
     }
 
     function renderHistory(d) { 
-        const tbody = document.getElementById('history-table');
-        if (!tbody) return;
-        tbody.innerHTML = d.length ? d.map(x => `
-            <tr>
-                <td><small>${x.timestamp}</small></td>
-                <td onclick="editHistory(${x.id},'${x.network_name}')" style="cursor:pointer"><strong>${x.network_name}</strong> <i class="bi bi-pencil small text-muted"></i></td>
-                <td>${x.isp || '-'}</td>
-                <td><span class="badge bg-light text-dark border">${x.connection_type}</span></td>
-                <td class="text-primary fw-bold">${x.download}</td>
-                <td class="text-success fw-bold">${x.upload}</td>
-                <td>${x.ping}</td>
-                <td class="text-muted small">${x.wan_ip || '-'}</td>
-            </tr>`).join('') : '<tr><td colspan="8" class="text-center p-4">No history.</td></tr>';
-    }
+    const tbody = document.getElementById('history-table');
+    if (!tbody) return;
+    tbody.innerHTML = d.length ? d.map(x => `
+        <tr>
+            <td><small>${x.timestamp}</small></td>
+            <td onclick="editHistory(${x.id},'${x.network_name}')" style="cursor:pointer">
+                <strong>${x.network_name}</strong> <i class="bi bi-pencil small text-muted"></i>
+            </td>
+            <td>${x.isp || '-'}</td>
+            <td><span class="badge bg-light text-dark border">${x.connection_type}</span></td>
+            <td class="text-primary fw-bold">${x.download}</td>
+            <td class="text-success fw-bold">${x.upload}</td>
+            <td>${x.ping}</td>
+            <td class="text-muted small">${x.device_ip || '-'}</td> <td class="text-muted small">${x.wan_ip || '-'}</td>    </tr>`).join('') : '<tr><td colspan="9" class="text-center p-4">No history.</td></tr>';
+}
     
     // --- MISSING HISTORY ACTIONS ADDED HERE ---
     function editHistory(id, old) { 
@@ -1166,7 +1366,7 @@ function openUpdateModal() {
 }
 
 function exportWifiCSV(id) {
-    // Directly point to the download endpoint
+    // Points directly to the backend CSV endpoint for the specific scan ID
     window.location.href = `/api/wifi/export/${id}`;
 }
 
@@ -1261,13 +1461,13 @@ function renderWifiHistoryTable(data) {
                     <button class="btn btn-sm btn-outline-primary" onclick="viewPastWifi(${h.id})" title="View Results">
                         <i class="bi bi-eye"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="editWifiHistory(${h.id}, '${safeName}', '${safeComment}')" title="Edit Name/Comment">
-                        <i class="bi bi-pencil"></i>
-                    </button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="exportWifiCSV(${h.id})" title="Export CSV">
                         <i class="bi bi-download"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteWifiScan(${h.id})">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="editWifiHistory(${h.id}, '${safeName}', '${safeComment}')" title="Edit Name/Comment">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteWifiScan(${h.id})" title="Delete">
                         <i class="bi bi-trash"></i>
                     </button>
                 </div>
