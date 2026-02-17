@@ -295,10 +295,13 @@ def get_linux_dns(interface_name):
         return "Unknown"
 
 def restart_server():
-    """Restarts the current Python script."""
-    print("[*] Triggering application restart...")
-    time.sleep(1)  # Give the server a moment to flush the HTTP response
+    """Restarts the current Python script robustly on Windows, Linux, and macOS."""
+    print("[*] Triggering application restart in 2 seconds...")
+    time.sleep(2)  # Allow the HTTP response to finish sending
+    
     python = sys.executable
+    # os.execl replaces the current process with a new one
+    # compatible with Windows (creates new process) and Unix (replaces process)
     os.execl(python, python, *sys.argv)
 
 def get_extended_iface_info():
@@ -1040,100 +1043,109 @@ def get_network_devices(net_id):
 @app.route('/api/system/update', methods=['POST'])
 def update_software():
     """
-    Downloads the latest code from GitHub, handles Windows file locking,
-    updates the files, and restarts the application.
+    Cross-Platform Update Mechanism:
+    1. Downloads the repo zip to RAM.
+    2. Extracts to a temporary directory (Safe Zone).
+    3. Smart-Copies files to the app directory:
+       - On Windows: Renames locked files (like app.py) to .old before replacing.
+       - On Linux/Mac: Overwrites normally (inode swapping).
+    4. Restarts the server.
     """
     try:
-        # Ensure GITHUB_SETTINGS is available (defined at top of app.py)
+        # Ensure GitHub settings are loaded
         if 'GITHUB_SETTINGS' not in globals():
             return jsonify({"error": "GitHub settings not configured."}), 500
 
-        print("[*] Starting Update Process...")
+        print(f"[*] Starting Update Process on {platform.system()}...")
         
-        # 1. Download the ZIP from Private Repo
+        # 1. Download ZIP from GitHub
         zip_url = f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}"
         req = urllib.request.Request(zip_url)
-        req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
-        req.add_header("Accept", "application/vnd.github.v3+json")
-
-        # Buffer the download in memory
-        with urllib.request.urlopen(req) as response:
-            zip_data = io.BytesIO(response.read())
-
-        base_dir = app.root_path
-
-        # 2. Extract and Overwrite
-        with zipfile.ZipFile(zip_data) as zip_ref:
-            # GitHub zips have a dynamic top-level folder (e.g. 'Pancool-Repo-a1b2c')
-            # We need to find it and strip it.
-            root_folder = zip_ref.namelist()[0]
-            
-            for member in zip_ref.infolist():
-                # Skip the root folder itself
-                if member.filename == root_folder:
-                    continue
-                
-                # Strip the root folder from the path
-                # Example: 'Pancool-Repo-123/templates/index.html' -> 'templates/index.html'
-                rel_path = member.filename[len(root_folder):]
-                
-                # Security check: Don't allow climbing up directories
-                if ".." in rel_path or not rel_path:
-                    continue
-
-                target_path = os.path.join(base_dir, rel_path)
-
-                # Handle Directories
-                if member.is_dir():
-                    os.makedirs(target_path, exist_ok=True)
-                    continue
-
-                # Handle Files
-                # Ensure the parent directory exists
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-
-                try:
-                    # Attempt standard overwrite
-                    with zip_ref.open(member) as source, open(target_path, "wb") as target:
-                        shutil.copyfileobj(source, target)
-                        
-                except PermissionError:
-                    # WINDOWS FIX: File is locked (likely app.py)
-                    if platform.system() == "Windows":
-                        print(f"[!] File locked: {rel_path}. Attempting rename-and-replace...")
-                        try:
-                            # Rename the running file to .old (Windows allows this)
-                            old_backup = target_path + ".old"
-                            if os.path.exists(old_backup):
-                                os.remove(old_backup) # Remove previous backup if exists
-                            
-                            os.replace(target_path, old_backup)
-                            
-                            # Now write the new file to the original name
-                            with zip_ref.open(member) as source, open(target_path, "wb") as target:
-                                shutil.copyfileobj(source, target)
-                            print(f"[✓] Successfully patched locked file: {rel_path}")
-                        except Exception as rename_err:
-                            print(f"[X] Critical Update Error for {rel_path}: {rename_err}")
-                            return jsonify({"error": f"Failed to update locked file {rel_path}"}), 500
-                    else:
-                        # Linux/Mac usually allow overwriting running files, so this is a real permission issue
-                        print(f"[X] Permission Denied: {rel_path}")
-                        return jsonify({"error": f"Permission denied for {rel_path}"}), 500
-
-        print("[✓] Update extracted successfully.")
+        if GITHUB_SETTINGS.get('token'):
+            req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
         
-        # 3. Trigger Background Restart
-        # We start a thread to restart the server AFTER this function returns 200 OK
+        try:
+            with urllib.request.urlopen(req) as response:
+                zip_data = io.BytesIO(response.read())
+        except Exception as dl_err:
+            return jsonify({"error": f"Download failed: {str(dl_err)}"}), 500
+
+        # 2. Extract and Apply Updates
+        import tempfile
+        base_dir = app.root_path
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            print(f"[*] Staging update in: {temp_dir}")
+            
+            with zipfile.ZipFile(zip_data) as zip_ref:
+                # GitHub zips have a root folder (e.g., "Repo-main-xyz"). Detect it.
+                root_name = zip_ref.namelist()[0].split('/')[0]
+                zip_ref.extractall(temp_dir)
+                
+                source_root = os.path.join(temp_dir, root_name)
+                
+                # Walk through the temp folder and copy to real folder
+                for root, dirs, files in os.walk(source_root):
+                    # Calculate relative path to mirror structure
+                    rel_path = os.path.relpath(root, source_root)
+                    dest_dir = os.path.join(base_dir, rel_path)
+                    
+                    if not os.path.exists(dest_dir):
+                        os.makedirs(dest_dir)
+                    
+                    for file in files:
+                        src_file = os.path.join(root, file)
+                        dest_file = os.path.join(dest_dir, file)
+                        
+                        # --- EXCLUSIONS ---
+                        # Never overwrite the database or virtual env
+                        if file == DB_NAME or file.endswith(".db") or "venv" in dest_file:
+                            continue
+
+                        try:
+                            # --- WINDOWS LOCKING FIX ---
+                            if os.path.exists(dest_file):
+                                try:
+                                    # Try standard replace first (Works on Linux/Mac)
+                                    os.replace(src_file, dest_file)
+                                except OSError:
+                                    # If that fails (Windows Locked File), rename old file first
+                                    if platform.system() == "Windows":
+                                        try:
+                                            # Rename running file to .old_timestamp
+                                            backup_name = dest_file + f".old_{int(time.time())}"
+                                            if os.path.exists(backup_name):
+                                                os.remove(backup_name)
+                                            os.rename(dest_file, backup_name)
+                                            
+                                            # Now we can move the new file in
+                                            shutil.move(src_file, dest_file)
+                                            print(f"[!] Locked file patched: {file}")
+                                        except Exception as win_err:
+                                            print(f"[X] Could not patch locked file {file}: {win_err}")
+                                    else:
+                                        # Actual permission error on Linux/Mac
+                                        print(f"[X] Permission denied: {file}")
+                            else:
+                                # File doesn't exist, just move it in
+                                shutil.move(src_file, dest_file)
+                                
+                        except Exception as copy_err:
+                            print(f"[!] Warning: Failed to copy {file}: {copy_err}")
+
+        print("[✓] Update applied. Restarting...")
+        
+        # 4. Trigger Background Restart
+        # Using a thread allows this request to return '200 OK' to the browser first
         threading.Thread(target=restart_server).start()
 
         return jsonify({
             "status": "success", 
-            "message": "Update installed. Server restarting..."
+            "message": "Update successful. Server is restarting..."
         })
 
     except Exception as e:
-        print(f"[X] Update Failed: {e}")
+        print(f"[X] Critical Update Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/scan_network')

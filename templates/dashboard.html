@@ -292,6 +292,33 @@
         </div>
     </div>
 </div>
+<div class="modal fade" id="updateFailedModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content border-danger">
+            <div class="modal-header bg-danger-subtle text-danger">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill"></i> Update Failed</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>The automatic update could not be applied. This is usually due to file permission issues or a server restart failure.</p>
+                <div class="alert alert-secondary">
+                    <strong>Target Version:</strong> <span id="failed-target-ver">Unknown</span><br>
+                    <strong>Current Version:</strong> {{ global_version }}
+                </div>
+                <p class="mb-2">Please download the latest version manually and replace the files:</p>
+                <a href="https://github.com/Pancool/Network-Testing-Tools" target="_blank" class="btn btn-primary w-100">
+                    <i class="bi bi-github"></i> Open GitHub Repository
+                </a>
+                <small class="text-muted d-block mt-2 text-center">
+                    (Login required if repository is private)
+                </small>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 <div id="wifi-history" class="page-section hidden">
     <div class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -329,9 +356,10 @@
     let currentScanResults = [];
     let allWifiHistory = [];
     let activeScanComment = "";
+    let pendingRemoteVersion = null;
 
     document.addEventListener("DOMContentLoaded", () => {
-        setTheme(localStorage.getItem('theme') || 'dark');
+setTheme(localStorage.getItem('theme') || 'dark');
         updateModal = new bootstrap.Modal(document.getElementById('updateModal'));
         adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
         
@@ -340,6 +368,16 @@
             if(d.last_name) document.getElementById('st-network-name').value = d.last_name;
             document.getElementById('header-wan-ip').innerText = d.wan_ip;
             document.getElementById('header-isp').innerText = d.isp;
+        });
+
+        // Start Loops
+        setInterval(updateLiveRatesOnly, 3000); 
+        fetchAdapters(); 
+        checkUpdates(); 
+        loadNetworks();
+        
+        // Run the new verification check
+        verifyUpdateStatus();
         });
 
         // Start Loops
@@ -957,6 +995,7 @@ async function saveAdapterSettings() {
     function checkUpdates() {
         fetch('/api/update/check').then(r => r.json()).then(d => {
             if (d.status === 'success' && isVersionHigher(d.remote_version, '{{ global_version }}')) {
+                pendingRemoteVersion = d.remote_version; // Store for later use
                 const t = document.getElementById('ver-global');
                 if (t) {
                     t.classList.add('ver-update');
@@ -993,8 +1032,55 @@ async function saveAdapterSettings() {
     }
 
     function applyUpdate() { 
-        if(confirm("Update system?")) fetch('/api/update/apply', {method: 'POST'}).then(r => r.json()).then(d => { alert(d.message); location.reload(); }); 
+        if(!confirm("Update system? The server will restart.")) return;
+        
+        // Save the version we EXPECT to be on after reload
+        if(pendingRemoteVersion) {
+            localStorage.setItem('expected_version', pendingRemoteVersion);
+        }
+
+        const btn = document.getElementById('btn-apply');
+        btn.disabled = true; 
+        btn.innerText = "Installing...";
+
+        fetch('/api/update/apply', {method: 'POST'})
+            .then(r => r.json())
+            .then(d => { 
+                alert(d.message); 
+                // Wait longer for the server to actually restart before reloading
+                setTimeout(() => location.reload(), 5000); 
+            })
+            .catch(err => {
+                alert("Connection lost. The server is likely restarting. Page will reload.");
+                setTimeout(() => location.reload(), 5000); 
+            }); 
     }
+
+    function verifyUpdateStatus() {
+        const expected = localStorage.getItem('expected_version');
+        const current = '{{ global_version }}';
+
+        if (expected) {
+            // Clear the flag so we don't nag them forever
+            localStorage.removeItem('expected_version');
+
+            if (isVersionHigher(expected, current)) {
+                // FAILURE: We expected a higher version but we are still on the old one
+                const modalEl = document.getElementById('updateFailedModal');
+                const verSpan = document.getElementById('failed-target-ver');
+                if(modalEl && verSpan) {
+                    verSpan.innerText = expected;
+                    const failedModal = new bootstrap.Modal(modalEl);
+                    failedModal.show();
+                }
+            } else {
+                // SUCCESS: We made it!
+                // Optional: Show a "Update Successful" toast here if you like
+                console.log("Update validated successfully.");
+            }
+        }
+    }
+
     function renderWifiResults(data, isHistory = false) {
     const container = document.getElementById('wifi-list');
     currentScanResults = data;
