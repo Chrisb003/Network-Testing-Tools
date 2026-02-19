@@ -1,5 +1,4 @@
 ::This is for making sure python is installed then running the setup script which should do the rest.
-
 @echo off
 SETLOCAL EnableDelayedExpansion
 TITLE Network Diagnostics Installer
@@ -20,46 +19,43 @@ echo   NETWORK DIAGNOSTICS - ONE-CLICK INSTALLER
 echo ========================================================
 
 :: ---------------------------------------------------------
-:: 2. CHECK FOR PYTHON
+:: 2. CHECK FOR PYTHON (LOOP UNTIL FOUND)
 :: ---------------------------------------------------------
+:CHECK_PYTHON
 python --version >nul 2>&1
 IF %ERRORLEVEL% EQU 0 (
-    echo [✓] Python is already installed.
-    GOTO :RUN_SETUP
+    echo [✓] Python is detected.
+    GOTO :PRE_SETUP_TASKS
 )
 
-echo [*] Python not found. Downloading Python 3.12...
+echo.
+echo [!] Python was not found on this system.
+echo [*] Opening Microsoft Store to Python 3.12 Page...
+echo.
+
+:: Opens the Microsoft Store directly to the Python 3.12 product page
+start ms-windows-store://pdp/?ProductId=9NCVDN91XZQP
+
+echo ========================================================
+echo   PLEASE INSTALL PYTHON FROM THE WINDOWS STORE WINDOW
+echo ========================================================
+echo   1. Click "Get" or "Install" in the Microsoft Store.
+echo   2. Wait for the download and installation to finish.
+echo   3. Once finished, press any key in this window to continue.
+echo ========================================================
+pause
+
+:: Re-check after user says they are done
+goto :CHECK_PYTHON
 
 :: ---------------------------------------------------------
-:: 3. DOWNLOAD AND INSTALL PYTHON SILENTLY
+:: 3. PRE-SETUP TASKS (CERTS)
 :: ---------------------------------------------------------
-:: Define URL and Target
-SET "PYTHON_URL=https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe"
-SET "INSTALLER=python_installer.exe"
-
-:: Download using PowerShell
-powershell -Command "Invoke-WebRequest -Uri '!PYTHON_URL!' -OutFile '!INSTALLER!'"
-
-echo [*] Installing Python (this may take a minute)...
-:: Install silently, add to PATH, install pip, and associate .py files
-start /wait "" "!INSTALLER!" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
-
-:: Cleanup Installer
-del "!INSTALLER!"
-
-:: Refresh Environment Variables without restarting CMD
-call :REFRESH_ENV
-
-:: Verify Installation
-python --version >nul 2>&1
-IF %ERRORLEVEL% NEQ 0 (
-    echo [X] Python installation failed or PATH not updated.
-    echo     Please restart your computer and run this script again.
-    pause
-    exit /b
-)
-
-echo [✓] Python installed successfully.
+:PRE_SETUP_TASKS
+echo.
+echo [*] Installing system certificates (pip-system-certs)...
+:: This fixes common SSL errors in corporate environments
+pip install pip-system-certs
 
 :: ---------------------------------------------------------
 :: 4. RUN THE SETUP SCRIPT
@@ -68,9 +64,6 @@ echo [✓] Python installed successfully.
 echo.
 echo [*] Launching Setup Script...
 python setup_env.py
-
-pause
-exit /b
 
 :: ---------------------------------------------------------
 :: SUBROUTINE: REFRESH ENVIRONMENT VARIABLES

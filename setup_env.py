@@ -10,10 +10,13 @@ import tarfile  # Added for Linux .tgz support
 import io
 import ctypes
 import stat
+import socket
+import time
+import webbrowser
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.7.1"
+SETUP_VERSION = "0.7.2"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
 APP_FILENAME = "app.py"
@@ -72,16 +75,16 @@ def install_git():
 
     try:
         if system == "Windows":
-            if shutil.which("choco"):
+            # Call our new Chocolatey installer
+            if install_chocolatey():
                 subprocess.run(["choco", "install", "git", "-y"], check=True)
             else:
-                print("[!] Chocolatey not found. Please install Git manually.")
+                print("[!] Chocolatey installation failed. Please install Git manually.")
                 return False
         elif system == "Darwin": # macOS
             if install_homebrew():
                 subprocess.run(["brew", "install", "git"], check=True)
         elif system == "Linux":
-            # Already handled in ensure_linux_prerequisites
             subprocess.run(["sudo", "apt-get", "install", "-y", "git"], check=True)
         
         print("[✓] Git successfully installed.")
@@ -263,16 +266,20 @@ def install_npcap_windows():
     
     sys_root = os.environ.get('SystemRoot', 'C:\\Windows')
     if not os.path.exists(os.path.join(sys_root, "System32", "Npcap")):
-        print("[*] Npcap missing. Installing via Chocolatey...")
-        if shutil.which("choco"):
+        print("[*] Npcap missing. Attempting installation via Chocolatey...")
+        
+        # Call our new Chocolatey installer
+        if install_chocolatey():
             try:
                 subprocess.run(["choco", "install", "npcap", "-y"], check=True)
-            except: print("[!] Npcap install failed.")
+                print("[✓] Npcap successfully installed.")
+            except Exception as e: 
+                print(f"[!] Npcap install failed: {e}")
         else:
             print("[!] Please manually install Npcap from https://npcap.com/")
 
 def run_application(base_dir, venv_python):
-    """Launches the main app."""
+    """Launches the main app and waits for the server to be ready before opening the browser."""
     app_path = base_dir / APP_FILENAME
     print("\n" + "="*60)
     print(f"   LAUNCHING DASHBOARD (Setup v{SETUP_VERSION})")
@@ -286,7 +293,31 @@ def run_application(base_dir, venv_python):
         cmd = ["sudo"] + cmd
         
     try:
-        subprocess.run(cmd)
+        # Start the app as a subprocess so we can monitor it
+        process = subprocess.Popen(cmd)
+        
+        print("[*] Waiting for the server to spin up...")
+        
+        # Check if port 81 is open, trying once per second for up to 60 seconds
+        server_ready = False
+        for _ in range(60):
+            try:
+                # Attempt to connect to the local port
+                with socket.create_connection(("127.0.0.1", 81), timeout=1):
+                    server_ready = True
+                    break
+            except (ConnectionRefusedError, TimeoutError, OSError):
+                time.sleep(1)
+        
+        if server_ready:
+            print("[✓] Server is ready! Opening browser...")
+            webbrowser.open("http://127.0.0.1:81")
+        else:
+            print("[!] Could not verify server status. You can try opening http://127.0.0.1:81 manually.")
+
+        # Keep this setup script open as long as the dashboard is running
+        process.wait()
+        
     except KeyboardInterrupt:
         print("\n[!] Dashboard stopped by user.")
 
@@ -305,6 +336,35 @@ def fix_permissions(path):
             os.chmod(path, 0o777)
             return True
     except:
+        return False
+
+def install_chocolatey():
+    """Installs Chocolatey on Windows if not present and updates the current PATH."""
+    if platform.system() != "Windows":
+        return True
+        
+    if shutil.which("choco"):
+        return True
+        
+    print("[*] Chocolatey not found. Installing Chocolatey...")
+    try:
+        # Standard Chocolatey PowerShell installation command
+        ps_command = (
+            "Set-ExecutionPolicy Bypass -Scope Process -Force; "
+            "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; "
+            "iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_command], check=True)
+        
+        # Add Chocolatey bin to the current Python process PATH so it can be used immediately
+        choco_path = os.path.join(os.environ.get('ALLUSERSPROFILE', 'C:\\ProgramData'), 'chocolatey', 'bin')
+        if choco_path not in os.environ["PATH"]:
+            os.environ["PATH"] = choco_path + os.pathsep + os.environ["PATH"]
+            
+        print("[✓] Chocolatey successfully installed.")
+        return True
+    except Exception as e:
+        print(f"[X] Failed to install Chocolatey: {e}")
         return False
 
 def main():
