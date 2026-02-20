@@ -16,7 +16,7 @@ import webbrowser
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.7.2"
+SETUP_VERSION = "0.7.3"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
 APP_FILENAME = "app.py"
@@ -367,71 +367,73 @@ def install_chocolatey():
         print(f"[X] Failed to install Chocolatey: {e}")
         return False
 
+def has_internet():
+    """Checks for internet connectivity by attempting to reach Google DNS."""
+    try:
+        # Timeout set to 2 seconds to avoid long hangs
+        socket.create_connection(("8.8.8.8", 53), timeout=2)
+        return True
+    except OSError:
+        return False
+
 def main():
     base_dir = Path(__file__).parent.resolve()
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
 
-    # 1. LINUX PRE-REQUISITES
-    ensure_linux_prerequisites()
-
-    # 2. WINDOWS ADMIN CHECK
+    # 1. INTERNET CONNECTIVITY CHECK
+    online = has_internet()
+    if not online:
+        print("\n" + "!" * 60)
+        print("[!] No Internet: Requirements and dependency checks skipped.")
+        print("    If this is the first time launching this, connect to the")
+        print("    internet and run again to ensure all components are installed.")
+        print("!" * 60 + "\n")
+    
+    # 2. WINDOWS ADMIN CHECK (Run always for permission management)
     if platform.system() == "Windows" and not is_admin():
         print("[*] Requesting Administrative privileges...")
         params = ' '.join([os.path.abspath(__file__)] + sys.argv[1:])
         ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
         sys.exit(0)
 
-    # 3. GIT & FILES
-    install_git()
-    if not (base_dir / APP_FILENAME).exists():
-        fetch_latest_from_github(base_dir)
+    # 3. RUN ONLINE-ONLY TASKS
+    if online:
+        ensure_linux_prerequisites()
+        install_git()
+        if not (base_dir / APP_FILENAME).exists():
+            fetch_latest_from_github(base_dir)
     
-    # 4. ENVIRONMENT SETUP
+    # 4. ENVIRONMENT SETUP (Check for existing local environment)
+    venv_path = base_dir / VENV_DIR_NAME
+    if not venv_path.exists() and not online:
+        print("[X] ERROR: No virtual environment found and no internet to create one.")
+        print("    Please connect to the internet for the initial setup.")
+        sys.exit(1)
+        
     venv_path = create_venv(base_dir)
     paths = get_venv_paths(venv_path)
     
-    # 5. INSTALLATION
-    install_requirements(paths["python"])
+    # 5. INSTALLATION (Only if online)
+    if online:
+        install_requirements(paths["python"])
+        if platform.system() == "Windows":
+            install_npcap_windows()
+        install_speedtest_cli(paths["bin_dir"])
     
-    if platform.system() == "Windows":
-        install_npcap_windows()
-    
-    install_speedtest_cli(paths["bin_dir"])
-
-    # 6. FINAL PERMISSION FIX (Filtered and Silent)
-    # 6. FINAL PERMISSION FIX (Last step before launch)
+    # 6. FINAL PERMISSION FIX (Run always to ensure local R/W access)
     print("[*] Verifying file system permissions for all users...")
-    
     success_count = 0
     fail_count = 0
-
     for root, dirs, files in os.walk(base_dir):
-        # Skip internal Git folder
-        if ".git" in dirs:
-            dirs.remove(".git")
-
-        # Process Directories
+        if ".git" in dirs: dirs.remove(".git")
         for d in dirs:
-            dir_path = os.path.join(root, d)
-            if fix_permissions(dir_path):
-                success_count += 1
-            else:
-                fail_count += 1
-            
-        # Process Files
+            if fix_permissions(os.path.join(root, d)): success_count += 1
+            else: fail_count += 1
         for f in files:
-            file_path = os.path.join(root, f)
-            
-            # EXCLUSION LOGIC: Skip sensitive system/db files
-            if any(x in f for x in [".db-shm", ".db-wal", "python3", "python.exe"]):
-                continue
-            
-            if fix_permissions(file_path):
-                success_count += 1
+            if any(x in f for x in [".db-shm", ".db-wal", "python3", "python.exe"]): continue
+            if fix_permissions(os.path.join(root, f)): success_count += 1
             else:
-                # We only print failures for non-system files to keep it clean
-                if not f.startswith("."):
-                    print(f"[!] Warning: Could not set permissions for {f}")
+                if not f.startswith("."): print(f"[!] Warning: Could not set permissions for {f}")
                 fail_count += 1
 
     if fail_count == 0:

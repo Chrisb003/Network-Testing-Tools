@@ -1,3 +1,5 @@
+0.7.7 Fix to Windows launcher bat file to fix issue with starting when offline. Fix to setup script to fix issues when starting when offline
+
 0.7.6 Slightly updated setup script to launch web browser when ready.
 
 0.7.5 - Inital Tests show it now should be stable. Switch from flask debug mode to using waitress. Version number are - Setup 0.7.1, app 0.7.3, dashboard 0.7.1. No plans to update past this point unless I find bugs to fix. Once I am happy it is stable will be bumped to 0.9.0 as the final beta version before 1.0
