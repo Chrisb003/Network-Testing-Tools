@@ -194,7 +194,7 @@
             <div class="card-body">
                 <div class="input-group">
                     <input type="text" id="dns-input" class="form-control" placeholder="Enter domain (e.g. google.com)">
-                    <button class="btn btn-primary" onclick="runDNS()">Lookup</button>
+                    <button class="btn btn-primary" id="btn-dns" onclick="runDNS()">Lookup</button>
                 </div>
             </div>
         </div>
@@ -1072,8 +1072,25 @@ function exportSpecificNetwork(id, name) {
     function runDNS() {
         const d = document.getElementById('dns-input').value;
         if(!d) return;
-        fetch('/api/dns/lookup', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({domain:d})})
-        .then(() => fetchToolLogs('dns'));
+        
+        // 1. Grab the button and set it to a loading state
+        const btn = document.getElementById('btn-dns');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Looking up...';
+
+        // 2. Perform the fetch
+        fetch('/api/dns/lookup', {
+            method:'POST', 
+            headers:{'Content-Type':'application/json'}, 
+            body:JSON.stringify({domain:d})
+        })
+        .then(() => fetchToolLogs('dns'))
+        .finally(() => {
+            // 3. Always restore the button, even if the request fails
+            btn.disabled = false; 
+            btn.innerHTML = originalText;
+        });
     }
     
     function runPing() {
@@ -1210,8 +1227,9 @@ function fetchToolLogs(type) {
                             
                             <div class="row g-0 mt-3 border-top pt-2">
                                 <div class="col-12 mb-2">
-                                    <small class="text-muted d-block">Detected Bands</small>
-                                    <span class="fw-bold text-info">${n.band}</span>
+                                    <small class="text-muted d-block">Detected Bands & MACs</small>
+                                    <span class="fw-bold text-info me-2">${n.band}</span>
+                                    <span class="font-monospace small text-muted" style="font-size: 0.7rem;">${n.mac || ''}</span>
                                 </div>
                                 <div class="col-6 mb-2">
                                     <small class="text-muted d-block">Signal Strength(s)</small>
@@ -1437,7 +1455,7 @@ function openUpdateModal() {
         }
     }
 
-    function renderWifiResults(data, isHistory = false) {
+function renderWifiResults(data, isHistory = false) {
     const container = document.getElementById('wifi-list');
     currentScanResults = data;
     
@@ -1456,6 +1474,7 @@ function openUpdateModal() {
                     </div>
                     <div class="mt-2 small">
                         <div class="text-info fw-bold">${n.band}</div>
+                        <div class="font-monospace small text-muted mb-1" style="font-size: 0.75rem;">${n.mac || 'No MAC'}</div>
                         <div class="text-muted">Signal: ${n.signal} | Auth: ${n.auth}</div>
                     </div>
                 </div>

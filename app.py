@@ -1462,8 +1462,8 @@ from flask import jsonify
 @app.route('/api/wifi')
 def get_wifi_networks():
     """
-    Returns detailed Wi-Fi data grouped by SSID and automatically
-    logs every successful scan to the database history.
+    Returns detailed Wi-Fi data grouped by SSID, now including BSSID (MAC).
+    Automatically logs every successful scan to the database history.
     """
     networks_dict = {}
     sys_plat = platform.system()
@@ -1495,12 +1495,17 @@ def get_wifi_networks():
                     parts = line.split(":", 1)
                     current_ssid = parts[1].strip() if len(parts) > 1 else "Hidden Network"
                     if current_ssid not in networks_dict:
-                        networks_dict[current_ssid] = {"ssid": current_ssid, "signal": [], "channel": [], "auth": "Unknown", "band": []}
+                        networks_dict[current_ssid] = {"ssid": current_ssid, "mac": [], "signal": [], "channel": [], "auth": "Unknown", "band": []}
 
                 elif current_ssid:
                     if "authentication" in line.lower():
                         networks_dict[current_ssid]["auth"] = line.split(":", 1)[1].strip()
                     
+                    elif line.lower().startswith("bssid"):
+                        mac = line.split(":", 1)[1].strip()
+                        if mac not in networks_dict[current_ssid]["mac"]:
+                            networks_dict[current_ssid]["mac"].append(mac)
+                            
                     elif "signal" in line.lower():
                         sig = line.split(":", 1)[1].strip()
                         if sig not in networks_dict[current_ssid]["signal"]:
@@ -1522,16 +1527,23 @@ def get_wifi_networks():
                                 networks_dict[current_ssid]["band"].append(band_label)
 
         elif sys_plat == "Linux":
-            output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,SIGNAL,CHAN,SECURITY", "dev", "wifi"], text=True)
+            # Added BSSID to the format list
+            output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,SECURITY", "dev", "wifi"], text=True)
             for line in output.strip().split('\n'):
-                parts = line.split(":")
-                if len(parts) >= 4:
+                # Split on colons NOT preceded by a backslash (Handles escaped MACs safely)
+                parts = re.split(r'(?<!\\):', line)
+                parts = [p.replace('\\:', ':') for p in parts] # Clean escapes
+                
+                if len(parts) >= 5:
                     ssid = parts[0] or "Hidden Network"
-                    ch = int(parts[2]) if parts[2].isdigit() else 0
-                    if ssid not in networks_dict:
-                        networks_dict[ssid] = {"ssid": ssid, "signal": [], "channel": [], "auth": parts[3], "band": []}
+                    mac = parts[1]
+                    ch = int(parts[3]) if parts[3].isdigit() else 0
                     
-                    if f"{parts[1]}%" not in networks_dict[ssid]["signal"]: networks_dict[ssid]["signal"].append(f"{parts[1]}%")
+                    if ssid not in networks_dict:
+                        networks_dict[ssid] = {"ssid": ssid, "mac": [], "signal": [], "channel": [], "auth": parts[4], "band": []}
+                    
+                    if mac and mac not in networks_dict[ssid]["mac"]: networks_dict[ssid]["mac"].append(mac)
+                    if f"{parts[2]}%" not in networks_dict[ssid]["signal"]: networks_dict[ssid]["signal"].append(f"{parts[2]}%")
                     if str(ch) not in networks_dict[ssid]["channel"]: networks_dict[ssid]["channel"].append(str(ch))
                     
                     b = "2.4GHz" if ch <= 14 else "5GHz" if ch <= 177 else "6GHz"
@@ -1548,6 +1560,7 @@ def get_wifi_networks():
         
         final_networks.append({
             "ssid": net["ssid"],
+            "mac": ", ".join(net["mac"]),
             "signal": ", ".join(net["signal"]),
             "channel": ", ".join(net["channel"]),
             "auth": net["auth"],
@@ -1560,11 +1573,9 @@ def get_wifi_networks():
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             auto_name = f"Auto-Scan {timestamp}"
             
-            # Inside @app.route('/api/wifi') ...
             with sqlite3.connect(DB_NAME) as conn:
                 conn.execute("PRAGMA busy_timeout = 3000")
                 c = conn.cursor()
-                # Ensure the column names match your init_db (scan_name, comments, results_json)
                 c.execute(
                     "INSERT INTO wifi_history (scan_name, comments, results_json) VALUES (?, ?, ?)",
                     (auto_name, "Automatically logged", json.dumps(final_networks))
@@ -1803,10 +1814,10 @@ def bulk_export_wifi():
                 
                 csv_out = io.StringIO()
                 writer = csv.writer(csv_out)
-                writer.writerow(["SSID", "Signal", "Channel(s)", "Band(s)", "Authentication"])
+                writer.writerow(["SSID", "MAC(s)", "Signal", "Channel(s)", "Band(s)", "Authentication"])
                 for net in results:
-                    writer.writerow([net.get('ssid',''), net.get('signal',''), net.get('channel',''), net.get('band',''), net.get('auth','')])
-                
+                    writer.writerow([net.get('ssid',''), net.get('mac', ''), net.get('signal',''), net.get('channel',''), net.get('band',''), net.get('auth','')])
+
                 zf.writestr(f"wifi_scan_{scan_id}_{scan_name}.csv", csv_out.getvalue())
     
     memory_file.seek(0)
@@ -2232,12 +2243,12 @@ def export_wifi_csv(scan_id):
         writer = csv.writer(output)
         
         # Header Row
-        writer.writerow(["SSID", "Signal", "Channel(s)", "Band(s)", "Authentication"])
-        
-        # Data Rows
+
+        writer.writerow(["SSID", "MAC(s)", "Signal", "Channel(s)", "Band(s)", "Authentication"])
         for net in results:
             writer.writerow([
                 net.get('ssid', 'Unknown'),
+                net.get('mac', '-'),
                 net.get('signal', '-'),
                 net.get('channel', '-'),
                 net.get('band', '-'),
@@ -2269,11 +2280,11 @@ def export_active_wifi_csv():
         
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["SSID", "Signal", "Channel(s)", "Band(s)", "Authentication"])
-        
+        writer.writerow(["SSID", "MAC(s)", "Signal", "Channel(s)", "Band(s)", "Authentication"])
         for net in results:
             writer.writerow([
                 net.get('ssid', 'Unknown'),
+                net.get('mac', '-'),
                 net.get('signal', '-'),
                 net.get('channel', '-'),
                 net.get('band', '-'),
