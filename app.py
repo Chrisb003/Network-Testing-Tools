@@ -30,7 +30,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.7.3"
+APP_VERSION = "0.7.4"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -308,7 +308,7 @@ def restart_server():
 def get_extended_iface_info():
     """
     Fetches Gateway, DNS, and MAC information.
-    - Windows: Parses ipconfig (primary) -> PowerShell (fallback).
+    - Windows: Parses ipconfig (primary) -> PowerShell (fallback for missing DNS/GW).
     - macOS: Parses networksetup/ipconfig (Fixes missing MACs & secondary Gateways).
     - Linux: Parses ip route/resolv.conf.
     """
@@ -345,22 +345,33 @@ def get_extended_iface_info():
             except Exception as e:
                 print(f"ipconfig failed: {e}")
 
-            # --- FALLBACK: PowerShell ---
-            if not info:
-                try:
-                    cmd = "Get-NetIPConfiguration | Select-Object InterfaceAlias, @{Name='G';Expression={$_.IPv4DefaultGateway.NextHop}}, @{Name='D';Expression={$_.DNSServer.ServerAddresses}} | ConvertTo-Json"
-                    out = subprocess.check_output(["powershell", "-Command", cmd], text=True, timeout=5)
-                    data = json.loads(out)
-                    adapters = [data] if isinstance(data, dict) else data
-                    for item in adapters:
-                        name = item.get('InterfaceAlias')
-                        if not name: continue
-                        gw_raw = item.get('G', "-")
-                        gw = str(gw_raw[0]) if isinstance(gw_raw, list) and len(gw_raw) > 0 else str(gw_raw)
-                        dns_raw = item.get('D', [])
-                        dns_list = [str(d) for d in (dns_raw if isinstance(dns_raw, list) else [dns_raw]) if d and ":" not in str(d) and "MSFT_" not in str(d)]
-                        info[name] = {"gateway": gw if (gw != "None" and ":" not in gw) else "-", "dns": ", ".join(dns_list) if dns_list else "-"}
-                except: pass
+            # --- IMPROVED FALLBACK: Targeted PowerShell ---
+            # This fills in the gaps if ipconfig missed the DNS or Gateway
+            try:
+                ps_cmd = "Get-NetIPConfiguration | Select-Object InterfaceAlias, @{Name='G';Expression={$_.IPv4DefaultGateway.NextHop}}, @{Name='D';Expression={$_.DNSServer.ServerAddresses}} | ConvertTo-Json"
+                out = subprocess.check_output(["powershell", "-Command", ps_cmd], text=True, timeout=5)
+                data = json.loads(out)
+                adapters = [data] if isinstance(data, dict) else data
+                
+                for item in adapters:
+                    name = item.get('InterfaceAlias')
+                    if not name: continue
+                    
+                    # If ipconfig missed it entirely, or it's currently "-", use PowerShell's data
+                    if name not in info: info[name] = {"gateway": "-", "dns": "-"}
+                    
+                    # Resolve Gateway
+                    gw_raw = item.get('G')
+                    if gw_raw and info[name]["gateway"] == "-":
+                        info[name]["gateway"] = str(gw_raw)
+                    
+                    # Resolve DNS
+                    dns_raw = item.get('D', [])
+                    if dns_raw and info[name]["dns"] == "-":
+                        dns_list = [str(d) for d in (dns_raw if isinstance(dns_raw, list) else [dns_raw]) if "." in str(d)]
+                        if dns_list:
+                            info[name]["dns"] = ", ".join(dns_list)
+            except: pass
 
         elif system == "Darwin": # macOS
             try:
@@ -1164,12 +1175,8 @@ def get_network_devices(net_id):
 @app.route('/api/scan_network')
 def scan_network():
     """
-    Robust Pinned-First Network Scan:
-    1. Checks for a user-pinned adapter in the database.
-    2. Locates the system interface/IP matching that pinned MAC.
-    3. Falls back to default active interface if no pin exists.
-    4. Runs ARP scan on the calculated subnet.
-    5. Syncs results with robust VLAN and Global Name logic.
+    Robust Pinned-First Network Scan for Windows/macOS/Linux.
+    Improved: Checks scan results for Gateway MAC to avoid redundant ARP failures.
     """
     pinned_mac = None
     target_iface = None
@@ -1185,32 +1192,24 @@ def scan_network():
     if pinned_mac:
         interfaces = psutil.net_if_addrs()
         for name, addrs in interfaces.items():
-            current_mac = None
-            current_ip = None
+            current_mac, current_ip = None, None
             for a in addrs:
-                if a.family == psutil.AF_LINK:
-                    current_mac = a.address
-                elif a.family == socket.AF_INET:
-                    current_ip = a.address
+                if a.family == psutil.AF_LINK: current_mac = a.address
+                elif a.family == socket.AF_INET: current_ip = a.address
             
             if current_mac == pinned_mac:
-                target_iface = name
-                target_ip_val = current_ip
+                target_iface, target_ip_val = name, current_ip
                 break
 
-    # 3. Fallback to Active Interface if no pin is found
+    # 3. Fallback to Active Interface
     if not target_iface or not target_ip_val:
         target_iface = get_active_interface_name()
         target_ip_val = get_local_ip()
 
-    # 4. Prepare Scan Parameters
     if not target_ip_val or target_ip_val == "127.0.0.1":
         return jsonify({"error": "Could not determine local IP subnet."})
 
-    # Calculate Subnet (e.g. 192.168.1.0/24)
     target_subnet = f"{target_ip_val.rsplit('.', 1)[0]}.0/24"
-    
-    # Force Scapy to use the selected interface
     if target_iface:
         conf.iface = target_iface
 
@@ -1218,35 +1217,40 @@ def scan_network():
     scanned_results = []
 
     try:
-        # 5. Physical Scan (ARP)
+        # 4. Physical Scan (ARP)
+        # IMPROVEMENT: Increased timeout and added retry for Windows reliability
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                     timeout=2, verbose=0, inter=0.02)
+                     timeout=3, retry=1, verbose=0, inter=0.02)
         
-        # Parallel Processing for Hostname and Port resolution
         with ThreadPoolExecutor(max_workers=30) as executor:
             futures = [executor.submit(process_device_info, received) for _, received in ans]
-            for future in futures: 
-                scanned_results.append(future.result())
+            for future in futures: scanned_results.append(future.result())
             
     except Exception as e: 
-        print(f"SCAN ERROR: {e}")
         return jsonify({"error": f"Scan failed: {str(e)}"})
 
     try:
-        # 6. Database Write (Robust Sync Logic)
-        # Identify Gateway for VLAN support
+        # 5. Database Write (Robust Sync Logic)
         ext_info = get_extended_iface_info()
         spec_info = ext_info.get(target_iface, {})
         gateway_ip = spec_info.get("gateway", "-")
-        gateway_mac = get_gateway_mac(gateway_ip) if gateway_ip != "-" else None
+        
+        # IMPROVEMENT: Check if we already found the router MAC during the scan
+        gateway_mac = None
+        for device in scanned_results:
+            if device["ip"] == gateway_ip:
+                gateway_mac = device["mac"]
+                break
+        
+        # Only call resolve if it wasn't in the device list
+        if not gateway_mac and gateway_ip != "-":
+            gateway_mac = get_gateway_mac(gateway_ip)
         
         if not gateway_mac:
             gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
 
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
-            
-            # Upsert Network (VLAN Aware)
             cursor.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
             row = cursor.fetchone()
             
@@ -1254,18 +1258,16 @@ def scan_network():
                 network_id = row[0]
                 cursor.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
             else:
-                default_name = f"Unknown Network ({current_time})" if "NO_MAC_" in gateway_mac else f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                default_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
                 cursor.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip) VALUES (?, ?, ?, ?)", 
                                (gateway_mac, default_name, current_time, gateway_ip))
                 network_id = cursor.lastrowid
 
-            # Mark all offline for this network ID
             cursor.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
 
             for device in scanned_results:
                 # Name sync logic (Local -> Global)
-                cursor.execute("SELECT custom_name FROM devices WHERE mac_address=? AND network_id=?", 
-                               (device["mac"], network_id))
+                cursor.execute("SELECT custom_name FROM devices WHERE mac_address=? AND network_id=?", (device["mac"], network_id))
                 existing = cursor.fetchone()
                 final_name = existing[0] if existing and existing[0] else ""
                 
@@ -1274,40 +1276,20 @@ def scan_network():
                     glob = cursor.fetchone()
                     if glob: final_name = glob[0]
 
-                # Upsert Device with all robust fields
                 cursor.execute("""
                     INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, last_seen, services, is_online)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                     ON CONFLICT(mac_address, network_id) DO UPDATE SET
-                    hostname=excluded.hostname,
-                    ip_address=excluded.ip_address,
-                    last_seen=excluded.last_seen,
-                    services=excluded.services,
-                    custom_name=COALESCE(?, devices.custom_name),
-                    is_online=1
-                """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], 
-                      current_time, device["services"], final_name))
+                    hostname=excluded.hostname, ip_address=excluded.ip_address, last_seen=excluded.last_seen,
+                    services=excluded.services, custom_name=COALESCE(?, devices.custom_name), is_online=1
+                """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], current_time, device["services"], final_name))
             
             conn.commit()
-            
-            # 7. Fetch & Return Sorted List
-            cursor.row_factory = sqlite3.Row
-            devices = cursor.execute("SELECT * FROM devices WHERE network_id=?", (network_id,)).fetchall()
-            cursor.execute("SELECT name FROM networks WHERE id=?", (network_id,))
-            net_name_row = cursor.fetchone()
-            net_name = net_name_row[0] if net_name_row else "Unknown Network"
-
-            dev_list = [dict(d) for d in devices]
-            try: 
-                dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
-            except: 
-                pass
-
-            return jsonify({"network_id": network_id, "network_name": net_name, "devices": dev_list})
+            return jsonify({"network_id": network_id, "network_name": "Success", "devices": scanned_results})
             
     except Exception as e: 
         return jsonify({"error": f"DB Error: {str(e)}"})
-
+    
 # --- NEW TOOLS: DNS & Ping ---
 
 @app.route('/api/dns/lookup', methods=['POST'])
@@ -1600,17 +1582,20 @@ def run_speedtest():
     Executes an Ookla Speedtest.
     - Windows: Uses --ip with the local IP.
     - macOS/Linux: Uses --interface with the hardware name (e.g., en0).
+    Provides specific UI error messages if a pinned adapter fails.
     """
     d = request.json
     target_iface_name = None
     device_ip = "-" 
+    pinned_mac = None
 
     # 1. Identify the Adapter and its IP
     try:
         with sqlite3.connect(DB_NAME) as conn:
             # Check for Pinned Adapter first
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
-            pinned_mac = row[0] if row else None
+            if row:
+                pinned_mac = row[0]
             
             interfaces = psutil.net_if_addrs()
             
@@ -1629,7 +1614,6 @@ def run_speedtest():
                 elif not pinned_mac and temp_ip == get_local_ip():
                     target_iface_name = name
                     device_ip = temp_ip
-                    # Don't break yet in case we find a pinned one later in loop
     except Exception as e:
         print(f"[*] Speedtest adapter lookup failed: {e}")
 
@@ -1640,7 +1624,8 @@ def run_speedtest():
         cmd_path = st_path if os.path.exists(st_path) else "speedtest"
         
         # 3. Build Command
-        cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
+        base_cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
+        cmd = list(base_cmd)
         
         # 4. Apply OS-Specific Binding
         if platform.system() == "Windows":
@@ -1651,9 +1636,31 @@ def run_speedtest():
             if target_iface_name:
                 cmd.extend(["--interface", target_iface_name])
         
-        res = json.loads(subprocess.check_output(cmd, text=True))
+        # 5. Execute with Fallback Logic
+        try:
+            # Capture stderr so we can read the actual Ookla error
+            raw_out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+            res = json.loads(raw_out)
+        except subprocess.CalledProcessError as e:
+            # If an adapter is specifically pinned, do NOT fallback to a global route
+            if pinned_mac:
+                raise e
+                
+            print(f"[*] Speedtest strict bind failed (Exit {e.returncode}). Retrying globally...")
+            # Fallback: Try without --ip or --interface if no pin is set
+            raw_out = subprocess.check_output(base_cmd, stderr=subprocess.STDOUT, text=True)
+            res = json.loads(raw_out)
+            # Reset device_ip since we used the global default route
+            device_ip = get_local_ip()
+            
+        # 6. Check for internal Ookla JSON errors
+        if "error" in res:
+            print(f"\n[!] SPEEDTEST INTERNAL ERROR: {res.get('error')}\n")
+            if pinned_mac:
+                return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
+            return jsonify({"error": "Speedtest Failed try again later"})
         
-        # 5. Format and Save Results
+        # 7. Format and Save Results
         down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
@@ -1673,8 +1680,28 @@ def run_speedtest():
             
         return jsonify({"download": down, "upload": up, "ping": ping})
 
+    except subprocess.CalledProcessError as e:
+        # Print the actual error output directly to the terminal for debugging
+        print(f"\n[!] SPEEDTEST CLI FAILED (Exit Code: {e.returncode})")
+        print(f"[!] Raw Error Output:\n{e.output}\n")
+        
+        # If pinned, strictly show the pinned error message
+        if pinned_mac:
+            return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
+        
+        # Determine if the error is related to no internet / configuration for unpinned tests
+        err_text = str(e.output).lower()
+        if e.returncode == 2 or "configuration" in err_text or "network unreachable" in err_text or "cannot retrieve" in err_text:
+            return jsonify({"error": "Can not Connect to speed test server, check internet connection or retry later."})
+        else:
+            return jsonify({"error": "Speedtest Failed try again later"})
+            
     except Exception as e:
-        return jsonify({"error": f"Speedtest failed: {str(e)}"})
+        # Catch-all for other Python errors (e.g. JSON parsing failure, missing binary)
+        print(f"\n[!] SPEEDTEST EXCEPTION: {str(e)}\n")
+        if pinned_mac:
+            return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
+        return jsonify({"error": "Speedtest Failed try again later"})
 
 @app.route('/api/get_last_name')
 def get_last_name():
@@ -1695,12 +1722,95 @@ def get_history():
 
 @app.route('/api/history/update', methods=['POST'])
 def update_history():
-    """Renames a history entry."""
+    """Renames a history entry and updates its connection type."""
     d = request.json
     with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("UPDATE history SET network_name = ? WHERE id = ?", (d.get('name'), d.get('id')))
+        conn.execute("UPDATE history SET network_name = ?, connection_type = ? WHERE id = ?", 
+                     (d.get('name'), d.get('type'), d.get('id')))
         conn.commit()
     return jsonify({"status": "success"})
+
+@app.route('/api/bulk_delete', methods=['POST'])
+def bulk_delete():
+    """Generic endpoint to bulk delete records across multiple tables."""
+    d = request.json
+    table_map = {
+        'networks': 'networks',
+        'wifi': 'wifi_history',
+        'history': 'history',
+        'dns': 'dns_logs',
+        'ping': 'ping_logs'
+    }
+    table = table_map.get(d.get('type'))
+    ids = d.get('ids', [])
+    
+    if not table or not ids:
+        return jsonify({"error": "Invalid request parameters"}), 400
+        
+    placeholders = ','.join(['?'] * len(ids))
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", ids)
+        # Cascade delete devices if we are deleting networks
+        if table == 'networks':
+            conn.execute(f"DELETE FROM devices WHERE network_id IN ({placeholders})", ids)
+        conn.commit()
+    return jsonify({"status": "success"})
+
+@app.route('/api/networks/bulk_export', methods=['POST'])
+def bulk_export_networks():
+    """Generates a ZIP file containing multiple CSVs for selected Networks."""
+    ids = request.json.get('ids', [])
+    if not ids: return jsonify({"error": "No IDs provided"}), 400
+    
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.row_factory = sqlite3.Row
+            for net_id in ids:
+                net = conn.execute("SELECT name FROM networks WHERE id=?", (net_id,)).fetchone()
+                if not net: continue
+                
+                net_name = net['name'].replace(" ", "_")
+                devices = conn.execute("SELECT hostname, custom_name, ip_address, mac_address, is_online, services FROM devices WHERE network_id=?", (net_id,)).fetchall()
+                
+                csv_out = io.StringIO()
+                writer = csv.writer(csv_out)
+                writer.writerow(['Hostname', 'Custom Name', 'IP Address', 'MAC Address', 'Status', 'Services'])
+                for d in devices:
+                    writer.writerow([d['hostname'], d['custom_name'], d['ip_address'], d['mac_address'], 'Online' if d['is_online'] else 'Offline', d['services']])
+                
+                zf.writestr(f"network_{net_id}_{net_name}.csv", csv_out.getvalue())
+    
+    memory_file.seek(0)
+    return send_file(memory_file, download_name="networks_bulk_export.zip", as_attachment=True)
+
+@app.route('/api/wifi/bulk_export', methods=['POST'])
+def bulk_export_wifi():
+    """Generates a ZIP file containing multiple CSVs for selected Wi-Fi scans."""
+    ids = request.json.get('ids', [])
+    if not ids: return jsonify({"error": "No IDs provided"}), 400
+    
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.row_factory = sqlite3.Row
+            for scan_id in ids:
+                scan = conn.execute("SELECT scan_name, results_json FROM wifi_history WHERE id=?", (scan_id,)).fetchone()
+                if not scan: continue
+                
+                scan_name = scan['scan_name'].replace(" ", "_")
+                results = json.loads(scan['results_json'])
+                
+                csv_out = io.StringIO()
+                writer = csv.writer(csv_out)
+                writer.writerow(["SSID", "Signal", "Channel(s)", "Band(s)", "Authentication"])
+                for net in results:
+                    writer.writerow([net.get('ssid',''), net.get('signal',''), net.get('channel',''), net.get('band',''), net.get('auth','')])
+                
+                zf.writestr(f"wifi_scan_{scan_id}_{scan_name}.csv", csv_out.getvalue())
+    
+    memory_file.seek(0)
+    return send_file(memory_file, download_name="wifi_scans_bulk_export.zip", as_attachment=True)
 
 @app.route('/api/history/clear', methods=['POST'])
 def clear_history():
@@ -2212,7 +2322,7 @@ if __name__ == '__main__':
             print(f"   DASHBOARD ACTIVE: http://0.0.0.0:81")
             print("   (Production WSGI Server - No Warnings)")
             print("="*60 + "\n")
-            serve(app, host='0.0.0.0', port=81, threads=6)
+            serve(app, host='0.0.0.0', port=81, threads=24)
     except ImportError:
        # Fallback to dev server if waitress isn't installed yet
         app.run(debug=True, host='0.0.0.0', port=81)

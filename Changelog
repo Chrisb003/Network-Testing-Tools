@@ -1,3 +1,5 @@
+0.7.8 Fix to reduce time app takes to start. Only fixes permissions of files if it needs to update or if downloading from github if app.py missing. Fixes network scanning issues. Speed test fixes. Added bulk deletion feature and bulk export of network and wifi scan csv.
+
 0.7.7 Fix to Windows launcher bat file to fix issue with starting when offline. Fix to setup script to fix issues when starting when offline
 
 0.7.6 Slightly updated setup script to launch web browser when ready.

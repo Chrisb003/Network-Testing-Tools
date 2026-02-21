@@ -16,7 +16,7 @@ import webbrowser
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.7.3"
+SETUP_VERSION = "0.7.4"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
 APP_FILENAME = "app.py"
@@ -380,6 +380,9 @@ def main():
     base_dir = Path(__file__).parent.resolve()
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
 
+    # Flag to track if we need to run the final permission loop
+    needs_permission_fix = False
+
     # 1. INTERNET CONNECTIVITY CHECK
     online = has_internet()
     if not online:
@@ -389,7 +392,7 @@ def main():
         print("    internet and run again to ensure all components are installed.")
         print("!" * 60 + "\n")
     
-    # 2. WINDOWS ADMIN CHECK (Run always for permission management)
+    # 2. WINDOWS ADMIN CHECK
     if platform.system() == "Windows" and not is_admin():
         print("[*] Requesting Administrative privileges...")
         params = ' '.join([os.path.abspath(__file__)] + sys.argv[1:])
@@ -400,46 +403,51 @@ def main():
     if online:
         ensure_linux_prerequisites()
         install_git()
+        # If the main app file doesn't exist, we download it and trigger the permission flag
         if not (base_dir / APP_FILENAME).exists():
             fetch_latest_from_github(base_dir)
+            needs_permission_fix = True 
     
-    # 4. ENVIRONMENT SETUP (Check for existing local environment)
+    # 4. ENVIRONMENT SETUP
     venv_path = base_dir / VENV_DIR_NAME
     if not venv_path.exists() and not online:
         print("[X] ERROR: No virtual environment found and no internet to create one.")
-        print("    Please connect to the internet for the initial setup.")
         sys.exit(1)
         
     venv_path = create_venv(base_dir)
     paths = get_venv_paths(venv_path)
     
-    # 5. INSTALLATION (Only if online)
+    # 5. INSTALLATION
     if online:
         install_requirements(paths["python"])
         if platform.system() == "Windows":
             install_npcap_windows()
         install_speedtest_cli(paths["bin_dir"])
     
-    # 6. FINAL PERMISSION FIX (Run always to ensure local R/W access)
-    print("[*] Verifying file system permissions for all users...")
-    success_count = 0
-    fail_count = 0
-    for root, dirs, files in os.walk(base_dir):
-        if ".git" in dirs: dirs.remove(".git")
-        for d in dirs:
-            if fix_permissions(os.path.join(root, d)): success_count += 1
-            else: fail_count += 1
-        for f in files:
-            if any(x in f for x in [".db-shm", ".db-wal", "python3", "python.exe"]): continue
-            if fix_permissions(os.path.join(root, f)): success_count += 1
-            else:
-                if not f.startswith("."): print(f"[!] Warning: Could not set permissions for {f}")
-                fail_count += 1
+    # 6. CONDITIONAL PERMISSION FIX
+    # Only runs if files were just downloaded from GitHub
+    if needs_permission_fix:
+        print("[*] New files detected. Verifying file system permissions...")
+        success_count = 0
+        fail_count = 0
+        for root, dirs, files in os.walk(base_dir):
+            if ".git" in dirs: dirs.remove(".git")
+            for d in dirs:
+                if fix_permissions(os.path.join(root, d)): success_count += 1
+                else: fail_count += 1
+            for f in files:
+                if any(x in f for x in [".db-shm", ".db-wal", "python3", "python.exe"]): continue
+                if fix_permissions(os.path.join(root, f)): success_count += 1
+                else:
+                    if not f.startswith("."): print(f"[!] Warning: Could not set permissions for {f}")
+                    fail_count += 1
 
-    if fail_count == 0:
-        print(f"[✓] Permission check complete. All {success_count} items verified.")
+        if fail_count == 0:
+            print(f"[✓] Permission check complete. All {success_count} items verified.")
+        else:
+            print(f"[!] Permission check finished: {success_count} succeeded, {fail_count} skipped/failed.")
     else:
-        print(f"[!] Permission check finished: {success_count} succeeded, {fail_count} skipped/failed.")
+        print("[✓] Skipping permission check (No new files downloaded).")
 
     # 7. LAUNCH
     run_application(base_dir, paths["python"])
