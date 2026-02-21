@@ -1,8 +1,10 @@
-0.7.8 Fix to reduce time app takes to start. Only fixes permissions of files if it needs to update or if downloading from github if app.py missing. Fixes network scanning issues. Speed test fixes. Added bulk deletion feature and bulk export of network and wifi scan csv.
+0.7.9 - Bug fixes for network scan. Now labels Device used for scan as this device and the router as router in the list. If router isnt picked up in scan it will now inject it into the list. Can now press enter after setting name in speedtestbox to run speedtest, after putting in domain in dnslook up and address in ping test. Fix table for speedtest.
 
-0.7.7 Fix to Windows launcher bat file to fix issue with starting when offline. Fix to setup script to fix issues when starting when offline
+0.7.8 - Fix to reduce time app takes to start. Only fixes permissions of files if it needs to update or if downloading from github if app.py missing. Fixes network scanning issues. Speed test fixes. Added bulk deletion feature and bulk export of network and wifi scan csv.
 
-0.7.6 Slightly updated setup script to launch web browser when ready.
+0.7.7 - Fix to Windows launcher bat file to fix issue with starting when offline. Fix to setup script to fix issues when starting when offline
+
+0.7.6 - Slightly updated setup script to launch web browser when ready.
 
 0.7.5 - Inital Tests show it now should be stable. Switch from flask debug mode to using waitress. Version number are - Setup 0.7.1, app 0.7.3, dashboard 0.7.1. No plans to update past this point unless I find bugs to fix. Once I am happy it is stable will be bumped to 0.9.0 as the final beta version before 1.0
 

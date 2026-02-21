@@ -30,7 +30,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.7.5"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -139,6 +139,18 @@ def init_db():
                         comments TEXT,
                         results_json TEXT
                     )''')
+        
+        # 9. Connection Types (For Speed Tests)
+        c.execute('''CREATE TABLE IF NOT EXISTS connection_types (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE
+                    )''')
+        
+        # Pre-populate connection types if the table is empty
+        c.execute("SELECT COUNT(*) FROM connection_types")
+        if c.fetchone()[0] == 0:
+            for t in ["Ethernet", "Wi-Fi", "Mobile data"]:
+                c.execute("INSERT INTO connection_types (name) VALUES (?)", (t,))
         
         # --- MIGRATIONS (Updates existing databases safely) ---
         
@@ -1176,11 +1188,12 @@ def get_network_devices(net_id):
 def scan_network():
     """
     Robust Pinned-First Network Scan for Windows/macOS/Linux.
-    Improved: Checks scan results for Gateway MAC to avoid redundant ARP failures.
+    Improved: Guarantees Router injection even if the router completely blocks ARP.
     """
     pinned_mac = None
     target_iface = None
     target_ip_val = None
+    target_mac_val = None
 
     # 1. Check for Pinned Adapter in Database
     with sqlite3.connect(DB_NAME) as conn:
@@ -1198,13 +1211,17 @@ def scan_network():
                 elif a.family == socket.AF_INET: current_ip = a.address
             
             if current_mac == pinned_mac:
-                target_iface, target_ip_val = name, current_ip
+                target_iface, target_ip_val, target_mac_val = name, current_ip, current_mac
                 break
 
     # 3. Fallback to Active Interface
     if not target_iface or not target_ip_val:
         target_iface = get_active_interface_name()
         target_ip_val = get_local_ip()
+        if target_iface:
+            for a in psutil.net_if_addrs().get(target_iface, []):
+                if a.family == psutil.AF_LINK: 
+                    target_mac_val = a.address
 
     if not target_ip_val or target_ip_val == "127.0.0.1":
         return jsonify({"error": "Could not determine local IP subnet."})
@@ -1218,9 +1235,8 @@ def scan_network():
 
     try:
         # 4. Physical Scan (ARP)
-        # IMPROVEMENT: Increased timeout and added retry for Windows reliability
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                     timeout=3, retry=1, verbose=0, inter=0.02)
+                     timeout=3, retry=2, verbose=0, inter=0.02)
         
         with ThreadPoolExecutor(max_workers=30) as executor:
             futures = [executor.submit(process_device_info, received) for _, received in ans]
@@ -1229,23 +1245,60 @@ def scan_network():
     except Exception as e: 
         return jsonify({"error": f"Scan failed: {str(e)}"})
 
+    # --- INJECT & LABEL LOCAL HOST ---
+    if target_ip_val and target_mac_val and target_ip_val != "127.0.0.1":
+        local_device_found = False
+        for d in scanned_results:
+            if d["ip"] == target_ip_val:
+                local_device_found = True
+                if "(This device)" not in d["hostname"]:
+                    base_name = d["hostname"] if d["hostname"] and d["hostname"] != "Unknown Device" else socket.gethostname()
+                    d["hostname"] = f"{base_name} (This device)"
+                break
+                
+        if not local_device_found:
+            scanned_results.append({
+                "ip": target_ip_val,
+                "mac": target_mac_val,
+                "hostname": f"{socket.gethostname()} (This device)",
+                "services": check_open_ports(target_ip_val)['services']
+            })
+
     try:
         # 5. Database Write (Robust Sync Logic)
         ext_info = get_extended_iface_info()
         spec_info = ext_info.get(target_iface, {})
         gateway_ip = spec_info.get("gateway", "-")
         
-        # IMPROVEMENT: Check if we already found the router MAC during the scan
         gateway_mac = None
+        
+        # Check if the router was already found in the broadcast scan
         for device in scanned_results:
             if device["ip"] == gateway_ip:
                 gateway_mac = device["mac"]
+                # Append a nice label if it was found natively
+                if "(Router)" not in device["hostname"]:
+                    device["hostname"] = f"{device['hostname']} (Router)"
                 break
         
-        # Only call resolve if it wasn't in the device list
-        if not gateway_mac and gateway_ip != "-":
+        # --- INJECT & LABEL ROUTER (Guaranteed) ---
+        if not gateway_mac and gateway_ip != "-" and gateway_ip != "Unknown":
+            # Try targeted ARP as a last resort for the MAC
             gateway_mac = get_gateway_mac(gateway_ip)
+            
+            # If targeted ARP also failed, assign a placeholder MAC so it still saves
+            if not gateway_mac:
+                gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
+            
+            # Unconditionally inject it into the scanned list so it appears in the UI
+            scanned_results.append({
+                "ip": gateway_ip,
+                "mac": gateway_mac,
+                "hostname": f"{resolve_hostname(gateway_ip)} (Router)",
+                "services": check_open_ports(gateway_ip)['services']
+            })
         
+        # Failsafe if there is no gateway IP at all on the system
         if not gateway_mac:
             gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
 
@@ -2322,6 +2375,36 @@ def update_wifi_history():
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/settings/connection_types', methods=['GET'])
+def get_connection_types():
+    """Fetches all connection types for dropdowns and settings."""
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM connection_types ORDER BY id").fetchall()
+        return jsonify([dict(r) for r in rows])
+
+@app.route('/api/settings/connection_types/add', methods=['POST'])
+def add_connection_type():
+    """Adds a new custom connection type."""
+    name = request.json.get('name', '').strip()
+    if not name: return jsonify({"error": "Name required"}), 400
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.execute("INSERT INTO connection_types (name) VALUES (?)", (name,))
+            conn.commit()
+        return jsonify({"status": "success"})
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Type already exists"}), 400
+
+@app.route('/api/settings/connection_types/delete', methods=['POST'])
+def delete_connection_type():
+    """Removes a connection type from the list."""
+    type_id = request.json.get('id')
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("DELETE FROM connection_types WHERE id=?", (type_id,))
+        conn.commit()
+    return jsonify({"status": "success"})
 
 if __name__ == '__main__':
     cleanup_old_files()

@@ -1,4 +1,4 @@
-<!-- Version number 0.7.2 -->
+<!-- Version number 0.7.4 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -100,7 +100,7 @@
         <div class="col-md-6">
             <div class="metric-card shadow-sm text-start" style="padding: 12px 20px;">
                 <div class="row g-2 align-items-center">
-                    <div class="col-6"><input type="text" id="st-network-name" class="form-control form-control-sm" placeholder="Location Name"></div>
+                    <div class="col-6"><input type="text" id="st-network-name" class="form-control form-control-sm" placeholder="Location Name" onkeydown="if(event.key === 'Enter') runSpeedTest()"></div>
                     <div class="col-3"><select id="st-conn-type" class="form-select form-select-sm"><option value="Ethernet">Ethernet</option><option value="Wi-Fi">Wi-Fi</option></select></div>
                     <div class="col-3"><button class="btn btn-primary btn-sm w-100" id="btn-speedtest" onclick="runSpeedTest()">Speed Test</button></div>
                 </div>
@@ -193,7 +193,7 @@
         <div class="card shadow-sm mb-3">
             <div class="card-body">
                 <div class="input-group">
-                    <input type="text" id="dns-input" class="form-control" placeholder="Enter domain (e.g. google.com)">
+                    <input type="text" id="dns-input" class="form-control" placeholder="Enter domain (e.g. google.com)" onkeydown="if(event.key === 'Enter') runDNS()">
                     <button class="btn btn-primary" id="btn-dns" onclick="runDNS()">Lookup</button>
                 </div>
             </div>
@@ -212,7 +212,7 @@
             <thead>
                 <tr>
                     <th><input type="checkbox" onchange="toggleSelectAll(this, 'dns-check')"></th>
-                    <th>Time</th><th>Domain</th><th>Result IP</th><th>Status</th><th>Router</th><th>Network</th><th>LAN IP</th>
+                    <th>Time</th><th>Domain</th><th>Result IP</th><th>Status</th><th>Router</th><th>Network</th><th>LAN IP</th><th class="text-end">Actions</th>
                 </tr>
             </thead>
                 <tbody id="dns-log-list"></tbody>
@@ -225,7 +225,7 @@
         <div class="card shadow-sm mb-3">
             <div class="card-body">
                 <div class="input-group">
-                    <input type="text" id="ping-input" class="form-control" placeholder="Enter IP or Domain (e.g. 8.8.8.8)">
+                    <input type="text" id="ping-input" class="form-control" placeholder="Enter IP or Domain (e.g. 8.8.8.8)" onkeydown="if(event.key === 'Enter') runPing()">
                     <button class="btn btn-primary" id="btn-ping" onclick="runPing()">Ping</button>
                 </div>
                 <div id="ping-status" class="mt-2 small text-muted"></div>
@@ -242,10 +242,10 @@
             </div>
             <div class="card-body p-0 log-container">
                 <table class="table table-sm table-hover mb-0 small">
-                   <thead>
+                    <thead>
                         <tr>
                             <th><input type="checkbox" onchange="toggleSelectAll(this, 'ping-check')"></th>
-                            <th>Time</th><th>Target</th><th>Status</th><th>Latency</th><th>Loss</th><th>Router</th><th>Network</th><th>LAN IP</th>
+                            <th>Time</th><th>Target</th><th>Status</th><th>Latency</th><th>Loss</th><th>Router</th><th>Network</th><th>LAN IP</th><th class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="ping-log-list"></tbody>
@@ -286,12 +286,12 @@
             </div>
             <div class="card-body p-0">
                 <table class="table table-hover mb-0 small align-middle">
-                    <thead>
-                        <tr>
-                            <th><input type="checkbox" onchange="toggleSelectAll(this, 'hist-check')"></th>
-                            <th>Date</th><th>Name</th><th>ISP</th><th>Type</th><th>Down</th><th>Up</th><th>Ping</th><th>Device IP</th><th>WAN IP</th>
-                        </tr>
-                    </thead>
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" onchange="toggleSelectAll(this, 'hist-check')"></th>
+                                <th>Date</th><th>Name</th><th>ISP</th><th>Type</th><th>Down</th><th>Up</th><th>Ping</th><th>Device IP</th><th>WAN IP</th><th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
                     <tbody id="history-table"></tbody>
                 </table>
             </div>
@@ -394,6 +394,22 @@
                 </div>
             </div>
         </div>
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100 border-info">
+                <div class="card-header bg-info-subtle text-info-emphasis">
+                    <h5 class="mb-0"><i class="bi bi-hdd-network-fill"></i> Network Connection Types</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">Manage the connection types available in the Speed Test dropdown.</p>
+                    <ul class="list-group mb-3" id="connection-type-list" style="max-height: 180px; overflow-y: auto;">
+                        </ul>
+                    <div class="input-group">
+                        <input type="text" id="new-conn-type" class="form-control form-control-sm" placeholder="e.g. 5G Home Internet" onkeydown="if(event.key === 'Enter') addConnectionType()">
+                        <button class="btn btn-primary btn-sm" onclick="addConnectionType()">Add Type</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 <div class="modal fade" id="updateFailedModal" tabindex="-1">
@@ -465,9 +481,33 @@
         </div>
     </div>
 </div>
+<div class="modal fade" id="editSpeedTestModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Speed Test Record</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-st-id">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Location Name</label>
+                    <input type="text" id="modal-st-name" class="form-control">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Connection Type</label>
+                    <select id="modal-st-type" class="form-select"></select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveSpeedTestEdit()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    let updateModal, adapterModal, allDevices = [], allHistory = [], currentNetworkId = null;
+    let updateModal, adapterModal, editSpeedTestModal, allDevices = [], allHistory = [], currentNetworkId = null;
     let currentScanResults = [];
     let allWifiHistory = [];
     let activeScanComment = "";
@@ -481,7 +521,8 @@
             updateModal = new bootstrap.Modal(document.getElementById('updateModal'));
         if(document.getElementById('adapterModal'))
             adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
-        
+        if(document.getElementById('editSpeedTestModal'))
+            editSpeedTestModal = new bootstrap.Modal(document.getElementById('editSpeedTestModal'));
         // Initial Header Data Load
         fetch('/api/get_last_name').then(r=>r.json()).then(d => { 
             if(d.last_name && document.getElementById('st-network-name')) 
@@ -497,6 +538,7 @@
         fetchAdapters(); 
         checkUpdates(); 
         loadNetworks();
+        loadConnectionTypes();
         
         // Run the new verification check
         if (typeof verifyUpdateStatus === "function") verifyUpdateStatus();
@@ -577,6 +619,53 @@ async function runCleanup(interval) {
         btn.disabled = false;
         btn.innerHTML = originalText;
     }
+}
+
+function loadConnectionTypes() {
+    fetch('/api/settings/connection_types').then(r=>r.json()).then(d => {
+        const mainSelect = document.getElementById('st-conn-type');
+        const modalSelect = document.getElementById('modal-st-type');
+        const sysList = document.getElementById('connection-type-list');
+        
+        let optionsHtml = '';
+        let listHtml = '';
+        
+        d.forEach(t => {
+            optionsHtml += `<option value="${t.name}">${t.name}</option>`;
+            listHtml += `<li class="list-group-item d-flex justify-content-between align-items-center small py-1">
+                ${t.name}
+                <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteConnectionType(${t.id})"><i class="bi bi-x-lg"></i></button>
+            </li>`;
+        });
+        
+        // Preserve selection on main test box if updating
+        if (mainSelect) {
+            const currentVal = mainSelect.value;
+            mainSelect.innerHTML = optionsHtml;
+            if (currentVal) mainSelect.value = currentVal;
+        }
+        if (modalSelect) modalSelect.innerHTML = optionsHtml;
+        if (sysList) sysList.innerHTML = listHtml;
+    });
+}
+
+function addConnectionType() {
+    const el = document.getElementById('new-conn-type');
+    if(!el.value) return;
+    fetch('/api/settings/connection_types/add', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: el.value})
+    }).then(r=>r.json()).then(d => {
+        if(d.error) alert(d.error);
+        else { el.value = ''; loadConnectionTypes(); }
+    });
+}
+
+function deleteConnectionType(id) {
+    fetch('/api/settings/connection_types/delete', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: id})
+    }).then(loadConnectionTypes);
 }
 
 // Ensure the showPage function handles the new 'system' page
@@ -1124,6 +1213,9 @@ function fetchToolLogs(type) {
                     <td><small>${x.router_ip || '-'}</small></td>
                     <td><small>${x.network_name || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('dns', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
+                    </td>
                 </tr>`).join('');
         } else {
             tbody.innerHTML = d.map(x => `
@@ -1137,9 +1229,22 @@ function fetchToolLogs(type) {
                     <td><small>${x.router_ip || '-'}</small></td>
                     <td><small>${x.network_name || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('ping', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
+                    </td>
                 </tr>`).join('');
         }
     });
+}
+
+function deleteSingleToolLog(type, id) {
+    if(confirm(`Delete this ${type.toUpperCase()} log entry?`)) {
+        fetch('/api/bulk_delete', {
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: type, ids: [id] })
+        }).then(() => fetchToolLogs(type));
+    }
 }
 
     function clearToolLogs(type) {
@@ -1297,21 +1402,30 @@ function fetchToolLogs(type) {
 function renderHistory(d) { 
     const tbody = document.getElementById('history-table');
     if (!tbody) return;
-    tbody.innerHTML = d.length ? d.map(x => `
+    tbody.innerHTML = d.length ? d.map(x => {
+        const safeName = (x.network_name || '').replace(/'/g, "\\'");
+        const safeType = (x.connection_type || '').replace(/'/g, "\\'");
+        
+        return `
         <tr>
             <td onclick="event.stopPropagation()"><input type="checkbox" class="hist-check" value="${x.id}"></td>
             <td><small>${x.timestamp}</small></td>
-            <td onclick="editHistory(${x.id},'${x.network_name}', '${x.connection_type}')" style="cursor:pointer">
-                <strong>${x.network_name}</strong> <i class="bi bi-pencil small text-muted"></i>
-            </td>
+            <td><strong>${x.network_name}</strong></td>
             <td>${x.isp || '-'}</td>
             <td><span class="badge bg-light text-dark border">${x.connection_type}</span></td>
             <td class="text-primary fw-bold">${x.download}</td>
             <td class="text-success fw-bold">${x.upload}</td>
             <td>${x.ping}</td>
             <td class="text-muted small">${x.device_ip || '-'}</td> 
-            <td class="text-muted small">${x.wan_ip || '-'}</td>    
-        </tr>`).join('') : '<tr><td colspan="10" class="text-center p-4">No history.</td></tr>';
+            <td class="text-muted small">${x.wan_ip || '-'}</td>
+            <td class="text-end">
+                <div class="btn-group">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="openEditSpeedTestModal(${x.id}, '${safeName}', '${safeType}')" title="Edit"><i class="bi bi-pencil"></i></button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteSingleSpeedTest(${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
+                </div>
+            </td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="11" class="text-center p-4">No history.</td></tr>';
 }
     
     
@@ -1326,6 +1440,47 @@ function renderHistory(d) {
         fetch('/api/history/export', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rows: allHistory})})
         .then(r => r.blob()).then(b => { const u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = 'history.csv'; a.click(); }); 
     }
+
+function openEditSpeedTestModal(id, name, type) {
+    document.getElementById('modal-st-id').value = id;
+    document.getElementById('modal-st-name').value = name;
+    
+    const typeSelect = document.getElementById('modal-st-type');
+    typeSelect.value = type;
+    
+    // If a type was previously deleted but exists on an old record, temporarily add it to the dropdown so it displays correctly
+    if(typeSelect.selectedIndex === -1) {
+        const opt = document.createElement('option');
+        opt.value = type; opt.text = type; opt.selected = true;
+        typeSelect.add(opt);
+    }
+    
+    editSpeedTestModal.show();
+}
+
+function saveSpeedTestEdit() {
+    const id = document.getElementById('modal-st-id').value;
+    const n = document.getElementById('modal-st-name').value;
+    const t = document.getElementById('modal-st-type').value;
+
+    fetch('/api/history/update', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'}, 
+        body: JSON.stringify({id: id, name: n, type: t})
+    }).then(() => {
+        editSpeedTestModal.hide();
+        fetchHistory(); 
+    }); 
+}
+
+function deleteSingleSpeedTest(id) {
+    if(confirm("Delete this speed test record?")) {
+        fetch('/api/bulk_delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'history', ids: [id] })
+        }).then(fetchHistory);
+    }
+}
 
     // --- Updater Logic (Global Version) ---
     function checkUpdates() {   
