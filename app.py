@@ -30,7 +30,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.7.5"
+APP_VERSION = "0.7.6"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -1681,6 +1681,29 @@ def run_speedtest():
     except Exception as e:
         print(f"[*] Speedtest adapter lookup failed: {e}")
 
+    # --- ENHANCED HELPER TO PARSE OOKLA OUTPUT AND PRINT ERRORS ---
+    def parse_ookla(raw_text):
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError as parse_err:
+            # Print the FULL raw output to the terminal immediately upon error
+            print(f"\n[!] OOKLA JSON PARSE WARNING: {parse_err}")
+            print(f"[!] FULL RAW OUTPUT RECEIVED:\n{'-'*50}\n{raw_text}\n{'-'*50}\n")
+            
+            # Ookla CLI sometimes outputs multiple JSON objects (e.g., logs then results)
+            # or mixes warnings with the JSON. We extract the LAST valid JSON line.
+            for line in reversed(raw_text.strip().split('\n')):
+                line = line.strip()
+                if line.startswith('{') and line.endswith('}'):
+                    try:
+                        recovered_json = json.loads(line)
+                        print("[*] Successfully recovered valid JSON from the last line.")
+                        return recovered_json
+                    except:
+                        pass
+            
+            raise ValueError("Could not extract valid JSON. See terminal for raw output.")
+
     try:
         # 2. Path to the CLI Binary
         base_dir = app.root_path 
@@ -1704,7 +1727,7 @@ def run_speedtest():
         try:
             # Capture stderr so we can read the actual Ookla error
             raw_out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
-            res = json.loads(raw_out)
+            res = parse_ookla(raw_out)
         except subprocess.CalledProcessError as e:
             # If an adapter is specifically pinned, do NOT fallback to a global route
             if pinned_mac:
@@ -1713,7 +1736,7 @@ def run_speedtest():
             print(f"[*] Speedtest strict bind failed (Exit {e.returncode}). Retrying globally...")
             # Fallback: Try without --ip or --interface if no pin is set
             raw_out = subprocess.check_output(base_cmd, stderr=subprocess.STDOUT, text=True)
-            res = json.loads(raw_out)
+            res = parse_ookla(raw_out)
             # Reset device_ip since we used the global default route
             device_ip = get_local_ip()
             
