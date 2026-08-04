@@ -16,14 +16,14 @@ import webbrowser
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.7.4"
+SETUP_VERSION = "0.7.5"
 VENV_DIR_NAME = "venv"
 REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
 APP_FILENAME = "app.py"
 
 # GITHUB PRIVATE REPO CONFIGURATION
 GITHUB_SETTINGS = {
-    "owner": "Pancool",
+    "owner": "Chrisb003",
     "repo": "Network-Testing-Tools",
     "token": "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",
     "branch": "main"

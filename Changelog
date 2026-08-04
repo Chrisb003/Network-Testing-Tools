@@ -1,3 +1,5 @@
+0.7.11 - Updated githun reference in setup script.
+
 0.7.10 - Speed test bug fix.
 
 0.7.9 - Bug fixes for network scan. Now labels Device used for scan as this device and the router as router in the list. If router isnt picked up in scan it will now inject it into the list. Can now press enter after setting name in speedtestbox to run speedtest, after putting in domain in dnslook up and address in ping test. Fix table for speedtest.
