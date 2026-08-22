@@ -1,4 +1,4 @@
-<!-- Version number 0.7.4 -->
+<!-- Version number 0.7.5 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -54,6 +54,32 @@
     font-size: 0.75rem;
 }
 
+/* Touch Screen View Adjustments */
+body.touch-mode .btn {
+    padding: 0.75rem 1.25rem !important;
+    font-size: 1.1rem !important;
+}
+body.touch-mode .nav-link {
+    padding: 1rem 1.5rem;
+    font-size: 1.2rem;
+}
+body.touch-mode .table td, body.touch-mode .table th {
+    padding: 1.25rem 0.75rem;
+    font-size: 1.1rem;
+}
+body.touch-mode .form-control, body.touch-mode .form-select {
+    padding: 0.75rem 1rem;
+    font-size: 1.1rem;
+}
+body.touch-mode .form-check-input {
+    width: 1.75em;
+    height: 1.75em;
+    margin-top: 0.1em;
+}
+body.touch-mode .form-check-label {
+    font-size: 1.1rem;
+    padding-left: 0.25rem;
+}
     </style>
 </head>
 <body>
@@ -68,11 +94,14 @@
     </button>
         <div id="status-dot" class="badge bg-success">Live</div>
         <div style="padding-right: 20px;"></div>
-        <div>
+    <div class="btn-group">
+        <button class="btn btn-outline-secondary" onclick="toggleTouchMode()" id="touch-toggle" title="Toggle Touch View">
+            <i class="bi bi-hand-index-thumb"></i>
+        </button>
         <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="theme-toggle" title="Switch Theme">
             <i class="bi bi-sun-fill"></i>
         </button>
-        </div>
+    </div>
     </div>
 </div>
 <div id="pinned-adapter-alert" class="alert alert-primary shadow-sm py-2 mb-3 hidden">
@@ -539,7 +568,9 @@
         checkUpdates(); 
         loadNetworks();
         loadConnectionTypes();
-        
+        const savedTouchMode = localStorage.getItem('touchMode') === 'true';
+        if (savedTouchMode) document.body.classList.add('touch-mode');
+        updateTouchIcon(savedTouchMode);
         // Run the new verification check
         if (typeof verifyUpdateStatus === "function") verifyUpdateStatus();
     });
@@ -1001,6 +1032,23 @@ function exportSpecificNetwork(id, name) {
         .catch(err => alert("Export failed: " + err.message));
 }
 
+    function toggleTouchMode() {
+    const isTouch = document.body.classList.toggle('touch-mode');
+    localStorage.setItem('touchMode', isTouch ? 'true' : 'false');
+    updateTouchIcon(isTouch);
+}
+
+function updateTouchIcon(isTouch) {
+    const btn = document.getElementById('touch-toggle');
+    if (!btn) return;
+    if (isTouch) {
+        btn.innerHTML = '<i class="bi bi-hand-index-thumb-fill"></i>';
+        btn.classList.replace('btn-outline-secondary', 'btn-secondary');
+    } else {
+        btn.innerHTML = '<i class="bi bi-hand-index-thumb"></i>';
+        btn.classList.replace('btn-secondary', 'btn-outline-secondary');
+    }
+}
     function loadNetworkDevices(id, name) {
         currentNetworkId = id; 
         showPage('devices', document.querySelectorAll('.nav-link')[1]);
