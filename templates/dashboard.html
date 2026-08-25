@@ -1,4 +1,4 @@
-<!-- Version number 0.7.5 -->
+<!-- Version number 0.7.6 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -161,7 +161,15 @@ body.touch-mode .form-check-label {
             <div class="card-body p-0">
                 <table class="table table-striped mb-0 small align-middle">
                     <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>MAC</th><th>IPv4</th><th>Gateway</th><th>DNS</th><th>Speed</th><th></th></tr></thead>
-                    <tbody id="adapter-table"></tbody>
+                    <tbody id="adapter-table">
+                    <tr>
+                        <td colspan="9" class="text-center p-5">
+                            <div class="spinner-border text-primary mb-3"></div>
+                            <h5 class="text-muted">Loading Interfaces...</h5>
+                            <p class="small text-secondary">Gathering network adapter data.</p>
+                        </td>
+                    </tr>
+                </tbody>
                 </table>
             </div>
         </div>

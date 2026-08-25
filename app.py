@@ -30,7 +30,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.7.6"
+APP_VERSION = "0.7.7"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -598,28 +598,99 @@ def get_active_interface_name():
                 return iface_name
     return ""
 
-def resolve_hostname(ip):
-    """Resolves hostname with a strict timeout to avoid Wi-Fi hangs."""
+MAC_VENDOR_CACHE = {}
+
+def get_mac_vendor(mac):
+    """Fetches the manufacturer name based on the MAC address."""
+    if not mac or mac == "-" or mac.startswith("NO_MAC"): return ""
+    
+    mac_prefix = mac[:8].upper() 
+    if mac_prefix in MAC_VENDOR_CACHE:
+        return MAC_VENDOR_CACHE[mac_prefix]
+
+    try:
+        # Queries a free MAC lookup API. Added User-Agent to prevent blocking.
+        req = urllib.request.Request(
+            f"https://api.maclookup.app/v2/macs/{mac_prefix}",
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=2) as url:
+            data = json.loads(url.read().decode())
+            
+            # FIXED: The API returns the vendor under 'company', not 'macCompany'
+            if data.get('success') and data.get('company'):
+                # Clean up long corporate suffixes
+                company = data['company'].replace(' Inc.', '').replace(' Ltd.', '').split(',')[0]
+                MAC_VENDOR_CACHE[mac_prefix] = company
+                return company
+    except Exception: 
+        pass
+    
+    MAC_VENDOR_CACHE[mac_prefix] = ""
+    return ""
+
+def resolve_hostname(ip, mac=None):
+    """Resolves hostname using DNS, ARP cache, NetBIOS, and appends MAC Vendor in brackets."""
+    hostname = "Unknown Device"
+    
+    # 1. Standard DNS (Reverse Lookup)
     try:
         default_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(1) # Strict 1s timeout
+        socket.setdefaulttimeout(1) 
         name = socket.gethostbyaddr(ip)[0]
         socket.setdefaulttimeout(default_timeout)
-        if name and not name.startswith(ip): return name
+        if name and not name.startswith(ip) and name != "?": 
+            hostname = name
     except:
         socket.setdefaulttimeout(default_timeout if 'default_timeout' in locals() else None)
     
-    # macOS/Linux ARP Cache Fallback
-    try:
-        arp_out = subprocess.check_output(["arp", "-a"], text=True)
-        for line in arp_out.split('\n'):
-            if ip in line:
-                match = re.search(r'^(\S+)\s+\(', line)
-                if match:
-                    name = match.group(1)
-                    if name != "?" and name != ip: return name
-    except: pass
-    return "Unknown Device"
+    # 2. macOS/Linux ARP Cache Fallback
+    if hostname == "Unknown Device":
+        try:
+            arp_out = subprocess.check_output(["arp", "-a"], text=True)
+            for line in arp_out.split('\n'):
+                if ip in line:
+                    match = re.search(r'^(\S+)\s+\(', line)
+                    if match:
+                        name = match.group(1)
+                        if name != "?" and name != ip: 
+                            hostname = name
+                            break
+        except: pass
+
+    # 3. NetBIOS Lookup (Great for Windows PCs/NAS devices)
+    if hostname == "Unknown Device" and platform.system() == "Windows":
+        try:
+            out = subprocess.check_output(["nbtstat", "-A", ip], text=True, timeout=2)
+            for line in out.split('\n'):
+                if "<20>" in line and "UNIQUE" in line:
+                    hostname = line.split("<20>")[0].strip()
+                    break
+        except: pass
+
+    # 4. Append MAC Vendor (Always runs if MAC is present)
+    if mac:
+        vendor = get_mac_vendor(mac)
+        if vendor:
+            hostname = f"{hostname} ({vendor})"
+
+    return hostname
+
+def process_device_info(received):
+    """
+    Worker function for threaded scanning. 
+    MUST be defined before scan_network calls it.
+    """
+    # Use fallback mock objects if triggered by ping sweep
+    ip = getattr(received, 'psrc', getattr(received, 'ip', None))
+    mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
+    
+    return {
+        "ip": ip,
+        "mac": mac,
+        "hostname": resolve_hostname(ip, mac),
+        "services": check_open_ports(ip)['services']
+    }
 
 def check_open_ports(ip):
     """
@@ -690,19 +761,6 @@ def get_gateway_mac(gateway_ip):
     
     return None
 
-def process_device_info(received):
-    """
-    Worker function for threaded scanning. 
-    MUST be defined before scan_network calls it.
-    """
-    ip = received.psrc
-    mac = received.hwsrc
-    return {
-        "ip": ip,
-        "mac": mac,
-        "hostname": resolve_hostname(ip),
-        "services": check_open_ports(ip)['services']
-    }
 
 def get_current_network_context():
     """Returns (lan_ip, gateway_ip, network_name) strictly using IPv4."""
@@ -1189,6 +1247,7 @@ def scan_network():
     """
     Robust Pinned-First Network Scan for Windows/macOS/Linux.
     Improved: Guarantees Router injection even if the router completely blocks ARP.
+    Includes an OS-agnostic Ping Sweep fallback for stubborn Wi-Fi adapters.
     """
     pinned_mac = None
     target_iface = None
@@ -1234,14 +1293,70 @@ def scan_network():
     scanned_results = []
 
     try:
-        # 4. Physical Scan (ARP)
+        # 4. Physical Scan (ARP) via Scapy
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                     timeout=3, retry=2, verbose=0, inter=0.02)
+                     timeout=3, retry=2, verbose=0, inter=0.02, 
+                     iface=target_iface, promisc=False)
         
         with ThreadPoolExecutor(max_workers=30) as executor:
             futures = [executor.submit(process_device_info, received) for _, received in ans]
             for future in futures: scanned_results.append(future.result())
+
+        # --- OS-AGNOSTIC PING SWEEP FALLBACK ---
+        if len(scanned_results) <= 2:
+            print("[*] Scapy scan found few devices. Initiating OS Ping Sweep...")
             
+            def fast_ping(ip_str):
+                """Sends a single fast ping with OS-specific arguments."""
+                sys_plat = platform.system().lower()
+                if sys_plat == 'windows':
+                    cmd = ['ping', '-n', '1', '-w', '500', ip_str]
+                elif sys_plat == 'darwin':
+                    cmd = ['ping', '-c', '1', '-W', '500', ip_str] # macOS uses ms for -W
+                else:
+                    cmd = ['ping', '-c', '1', '-W', '1', ip_str]   # Linux uses seconds for -W
+                
+                try:
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except: pass
+
+            # Sweep the subnet concurrently
+            network = ipaddress.IPv4Network(target_subnet, strict=False)
+            with ThreadPoolExecutor(max_workers=50) as executor:
+                for ip in network.hosts():
+                    executor.submit(fast_ping, str(ip))
+            
+            # Read the OS ARP Cache
+            arp_out = subprocess.check_output(["arp", "-a"], text=True)
+            
+            # Parse the ARP cache for MACs and IPs
+            found_ips = [d['ip'] for d in scanned_results]
+            arp_devices = []
+            
+            # Regex designed to match Windows, macOS, and Linux ARP table formats
+            for match in re.finditer(r'(\d{1,3}(?:\.\d{1,3}){3}).*?([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})', arp_out):
+                ip_found, raw_mac = match.groups()
+                
+                # Normalize MAC (macOS/Linux sometimes drop leading zeros)
+                mac_found = ':'.join([p.zfill(2) for p in raw_mac.replace('-', ':').split(':')]).lower()
+                
+                # Filter out multicast MACs, broadcast IPs, and devices we already found
+                if ip_found not in found_ips and not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and ipaddress.IPv4Address(ip_found) in network:
+                    # Robust Mock Object passing both IP and MAC variants
+                    class MockReceived:
+                        ip = ip_found
+                        psrc = ip_found
+                        hwsrc = mac_found
+                        mac = mac_found
+                    arp_devices.append(MockReceived())
+                    found_ips.append(ip_found)
+
+            # Process newly found devices concurrently
+            if arp_devices:
+                with ThreadPoolExecutor(max_workers=30) as executor:
+                    futures = [executor.submit(process_device_info, dev) for dev in arp_devices]
+                    for future in futures: scanned_results.append(future.result())
+                    
     except Exception as e: 
         return jsonify({"error": f"Scan failed: {str(e)}"})
 
@@ -1294,7 +1409,7 @@ def scan_network():
             scanned_results.append({
                 "ip": gateway_ip,
                 "mac": gateway_mac,
-                "hostname": f"{resolve_hostname(gateway_ip)} (Router)",
+                "hostname": f"{resolve_hostname(gateway_ip, gateway_mac)} (Router)",
                 "services": check_open_ports(gateway_ip)['services']
             })
         
@@ -1342,7 +1457,7 @@ def scan_network():
             
     except Exception as e: 
         return jsonify({"error": f"DB Error: {str(e)}"})
-    
+       
 # --- NEW TOOLS: DNS & Ping ---
 
 @app.route('/api/dns/lookup', methods=['POST'])
