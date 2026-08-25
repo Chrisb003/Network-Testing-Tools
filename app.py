@@ -1634,6 +1634,7 @@ def get_wifi_networks():
     Clusters and averages redundant 'Unknown MAC' signals within a 5dBm variance.
     Enforces strict 2.4GHz -> 5GHz -> 6GHz ordering.
     """
+    global re
     networks_dict = {}
     sys_plat = platform.system()
     
@@ -1918,6 +1919,7 @@ def get_wifi_networks():
             pass
 
     return jsonify(final_networks)
+
 
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
