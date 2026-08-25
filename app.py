@@ -1419,16 +1419,18 @@ def scan_network():
 
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
+            # UPDATED: Select both ID and Name to define final_network_name
+            cursor.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
             row = cursor.fetchone()
             
             if row:
                 network_id = row[0]
+                final_network_name = row[1]
                 cursor.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
             else:
-                default_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
                 cursor.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip) VALUES (?, ?, ?, ?)", 
-                               (gateway_mac, default_name, current_time, gateway_ip))
+                               (gateway_mac, final_network_name, current_time, gateway_ip))
                 network_id = cursor.lastrowid
 
             cursor.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
@@ -1452,8 +1454,9 @@ def scan_network():
                     services=excluded.services, custom_name=COALESCE(?, devices.custom_name), is_online=1
                 """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], current_time, device["services"], final_name))
             
+            # FIXED INDENTATION: These run AFTER the loop finishes, not inside it
             conn.commit()
-            return jsonify({"network_id": network_id, "network_name": "Success", "devices": scanned_results})
+            return jsonify({"network_id": network_id, "network_name": final_network_name, "devices": scanned_results})
             
     except Exception as e: 
         return jsonify({"error": f"DB Error: {str(e)}"})

@@ -1,4 +1,4 @@
-<!-- Version number 0.7.6 -->
+<!-- Version number 0.7.7 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -200,12 +200,13 @@ body.touch-mode .form-check-label {
 
     <div id="networks" class="page-section hidden">
         <div class="card shadow-sm">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Saved Networks</h5>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-outline-danger btn-sm" onclick="bulkDelete('networks')">Delete Selected</button>
-                    <button class="btn btn-outline-primary btn-sm" onclick="bulkExport('networks')">Export Selected (ZIP)</button>
-                </div>
+            <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
+                    <h5 class="mb-0 text-nowrap me-3">Saved Networks</h5>
+                    <div class="d-flex gap-2 align-items-center">
+                        <input type="text" id="network-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterNetworks()">
+                        <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('networks')">Delete Selected</button>
+                        <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('networks')">Export (ZIP)</button>
+                    </div>
                 </div>
             <div class="card-body p-0">
                 <table class="table table-hover mb-0 small align-middle">
@@ -373,7 +374,7 @@ body.touch-mode .form-check-label {
     <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
         <input type="text" id="wifi-history-filter" class="form-control form-control-sm w-50" placeholder="Filter..." onkeyup="filterWifiHistory()">
         <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('wifi')">Delete Selected</button>
-        <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('wifi')">Export Selected</button>
+        <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('wifi')">Export</button>
     </div>
 </div>
         <div class="card-body p-0">
@@ -984,29 +985,45 @@ async function saveAdapterSettings() {
 }
 
     // --- Saved Networks & Device Logic ---
+let allNetworks = []; // Global array to hold the network data
+
 function loadNetworks() {
     fetch('/api/networks').then(r=>r.json()).then(d => {
         allNetworks = d; 
-        const tb = document.getElementById('network-list');
-        if(!tb) return;
-        tb.innerHTML = d.length ? d.map(n => `
-            <tr>
-                <td onclick="event.stopPropagation()"><input type="checkbox" class="net-check" value="${n.id}"></td>
-                <td><strong>${n.name}</strong></td>
-                <td class="font-monospace small">${n.gateway_mac}</td>
-                <td>${n.gateway_ip}</td>
-                <td><span class="badge bg-secondary">${n.device_count}</span></td>
-                <td><small>${n.last_scan}</small></td>
-                <td>
-                    <div class="btn-group">
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${n.name}')" title="View Devices"><i class="bi bi-eye"></i> Load</button> 
-                        <button class="btn btn-sm btn-outline-secondary" onclick="exportSpecificNetwork(${n.id}, '${n.name}')" title="Export Devices CSV"><i class="bi bi-download"></i></button> 
-                        <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${n.name}')" title="Rename"><i class="bi bi-pencil"></i></button> 
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})" title="Delete"><i class="bi bi-trash"></i></button>
-                    </div>
-                </td>
-            </tr>`).join('') : '<tr><td colspan="7" class="text-center text-muted p-4">No saved networks found.</td></tr>';
+        renderNetworks(d);
     });
+}
+
+function renderNetworks(d) {
+    const tb = document.getElementById('network-list');
+    if(!tb) return;
+    tb.innerHTML = d.length ? d.map(n => {
+        // Sanitize name for inline onclick handlers
+        const safeName = (n.name || '').replace(/'/g, "\\'");
+        return `
+        <tr>
+            <td onclick="event.stopPropagation()"><input type="checkbox" class="net-check" value="${n.id}"></td>
+            <td><strong>${n.name}</strong></td>
+            <td class="font-monospace small">${n.gateway_mac}</td>
+            <td>${n.gateway_ip}</td>
+            <td><span class="badge bg-secondary">${n.device_count}</span></td>
+            <td><small>${n.last_scan}</small></td>
+            <td>
+                <div class="btn-group">
+                    <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${safeName}')" title="View Devices"><i class="bi bi-eye"></i> Load</button> 
+                    <button class="btn btn-sm btn-outline-secondary" onclick="exportSpecificNetwork(${n.id}, '${safeName}')" title="Export Devices CSV"><i class="bi bi-download"></i></button> 
+                    <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${safeName}')" title="Rename"><i class="bi bi-pencil"></i></button> 
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})" title="Delete"><i class="bi bi-trash"></i></button>
+                </div>
+            </td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="7" class="text-center text-muted p-4">No saved networks found.</td></tr>';
+}
+
+function filterNetworks() {
+    const q = document.getElementById('network-filter').value.toLowerCase();
+    // Filter across all values in the network object (name, IP, MAC, etc.)
+    renderNetworks(allNetworks.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q))));
 }
 
 function exportSpecificNetwork(id, name) {
@@ -1498,10 +1515,40 @@ function renderHistory(d) {
     
     function clearHistory() { if(confirm("Clear history?")) fetch('/api/history/clear', {method: 'POST'}).then(fetchHistory); }
     
-    function exportHistoryCSV() { 
-        fetch('/api/history/export', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rows: allHistory})})
-        .then(r => r.blob()).then(b => { const u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = 'history.csv'; a.click(); }); 
+function exportHistoryCSV() { 
+    // 1. Check for manually ticked boxes first
+    let checkboxes = document.querySelectorAll('.hist-check:checked');
+    
+    // 2. If nothing is checked, grab all visible boxes (respecting the filter)
+    if (checkboxes.length === 0) {
+        checkboxes = document.querySelectorAll('.hist-check');
+        if (checkboxes.length === 0) return alert("No history records available to export.");
+        if (!confirm(`No specific items selected. Export all ${checkboxes.length} visible record(s)?`)) return;
     }
+
+    // 3. Extract the numeric IDs from the checkboxes
+    const idsToExport = Array.from(checkboxes).map(cb => parseInt(cb.value));
+
+    // 4. Filter the global history array to only include these IDs
+    const rowsToExport = allHistory.filter(row => idsToExport.includes(row.id));
+
+    // 5. Send exactly these rows to the backend
+    fetch('/api/history/export', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'}, 
+        body: JSON.stringify({rows: rowsToExport})
+    })
+    .then(r => r.blob())
+    .then(b => { 
+        const u = URL.createObjectURL(b);
+        const a = document.createElement('a'); 
+        a.href = u; 
+        a.download = `speedtest_history_${new Date().getTime()}.csv`; 
+        document.body.appendChild(a);
+        a.click(); 
+        a.remove();
+    }); 
+}
 
 function openEditSpeedTestModal(id, name, type) {
     document.getElementById('modal-st-id').value = id;
@@ -1902,8 +1949,19 @@ async function bulkExport(type) {
         'wifi': { cls: 'wifi-check', endpoint: '/api/wifi/bulk_export', file: 'wifi_scans_bulk_export.zip' }
     };
     
-    const ids = getSelectedIds(config[type].cls);
-    if (!ids.length) return alert("Please select at least one item to export.");
+    // First, try to get manually checked items
+    let ids = getSelectedIds(config[type].cls);
+    
+    // If nothing is checked, grab ALL currently visible items in the filtered table
+    if (!ids.length) {
+        ids = Array.from(document.querySelectorAll(`.${config[type].cls}`)).map(cb => cb.value);
+        
+        // If the table is completely empty (e.g. filter matches nothing)
+        if (!ids.length) return alert("No items available to export.");
+        
+        // Optional: Confirm with the user before downloading a massive list
+        if (!confirm(`No specific items selected. Export all ${ids.length} visible item(s)?`)) return;
+    }
 
     const btn = event.currentTarget;
     const originalHtml = btn.innerHTML;
