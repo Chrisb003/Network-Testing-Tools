@@ -32,7 +32,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -329,6 +329,17 @@ def get_extended_iface_info():
     info = {}
     system = platform.system()
     
+    # Helper to clean and deduplicate gateway strings (e.g., "192.168.1.1, 192.168.1.1" -> "192.168.1.1")
+    def _clean_gw(g_str):
+        if not g_str or g_str == "-": 
+            return "-"
+        parts = [x.strip() for x in re.split(r'[, ]+', g_str) if x.strip()]
+        uniq = []
+        for p in parts:
+            if p not in uniq: 
+                uniq.append(p)
+        return ", ".join(uniq) if uniq else "-"
+
     try:
         if system == "Windows":
             # --- PRIMARY: ipconfig /all (Most stable for static info) ---
@@ -351,7 +362,7 @@ def get_extended_iface_info():
                         if "Default Gateway" in line and ":" in line:
                             gw = line.split(":")[-1].strip()
                             if gw and "." in gw and ":" not in gw:
-                                info[current_iface]["gateway"] = gw
+                                info[current_iface]["gateway"] = _clean_gw(gw)
                         if "DNS Servers" in line and ":" in line:
                             dns = line.split(":")[-1].strip()
                             if dns and "." in dns and ":" not in dns:
@@ -377,7 +388,7 @@ def get_extended_iface_info():
                     # Resolve Gateway
                     gw_raw = item.get('G')
                     if gw_raw and info[name]["gateway"] == "-":
-                        info[name]["gateway"] = str(gw_raw)
+                        info[name]["gateway"] = _clean_gw(str(gw_raw))
                     
                     # Resolve DNS
                     dns_raw = item.get('D', [])
@@ -397,7 +408,7 @@ def get_extended_iface_info():
                 for line in gw_out.split('\n'):
                     parts = line.split()
                     if "default" in parts[0] and len(parts) >= 4:
-                        default_gw = parts[1]
+                        default_gw = _clean_gw(parts[1])
                         primary_iface = parts[-1]
                         break
                 
@@ -440,13 +451,13 @@ def get_extended_iface_info():
                                 raw_dns = match_dns.group(1).replace('\n', '').strip()
                                 dns_val = raw_dns.replace(',', ', ')
                             
-                            # Extract Router (Gateway) - FIX FOR SECONDARY INTERFACES
+                            # Extract Router (Gateway) - FIX FOR SECONDARY INTERFACES & DUPLICATES
                             # Looks for: router (ip_mult): {192.168.1.1}
                             match_gw = re.search(r'router\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
                             if match_gw:
                                 gw_found = match_gw.group(1).replace('\n', '').strip()
                                 if gw_found and gw_found != "0.0.0.0":
-                                    gw_val = gw_found
+                                    gw_val = _clean_gw(gw_found)
 
                         except: pass
 
@@ -469,7 +480,7 @@ def get_extended_iface_info():
             try:
                 # Gateway via ip route
                 gw_out = subprocess.check_output("ip route show default | awk '/default/ {print $3}'", shell=True, text=True)
-                default_gw = gw_out.strip() if ":" not in gw_out else "-"
+                default_gw = _clean_gw(gw_out.strip()) if ":" not in gw_out else "-"
             except: default_gw = "-"
 
             try:
