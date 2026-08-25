@@ -18,7 +18,15 @@ from pathlib import Path
 # --- Configuration ---
 SETUP_VERSION = "0.8"
 VENV_DIR_NAME = "venv"
-REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pyobjc-framework-CoreWLAN"]
+
+BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
+
+# macOS-specific requirement for CoreWLAN Wi-Fi scanning
+if platform.system() == "Darwin":
+    BASE_REQUIREMENTS.append("pyobjc-framework-CoreWLAN")
+
+REQUIREMENTS = BASE_REQUIREMENTS
+
 APP_FILENAME = "app.py"
 
 # GITHUB PRIVATE REPO CONFIGURATION
@@ -181,6 +189,11 @@ def install_requirements(python_path):
     print("[*] Installing Python dependencies...")
     try:
         subprocess.check_call([str(python_path), "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
+        
+        # Log what we are installing
+        if platform.system() == "Darwin":
+            print("[*] macOS detected: Including CoreWLAN framework bindings.")
+            
         subprocess.check_call([str(python_path), "-m", "pip", "install"] + REQUIREMENTS)
         print("[✓] Dependencies installed.")
     except subprocess.CalledProcessError as e:
