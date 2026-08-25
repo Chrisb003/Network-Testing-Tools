@@ -30,7 +30,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.7.7"
+APP_VERSION = "0.8"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -1624,29 +1624,92 @@ import subprocess
 import time
 from flask import jsonify
 
-import re
-import platform
-import subprocess
-import time
-from flask import jsonify
-
 @app.route('/api/wifi')
 def get_wifi_networks():
     """
-    Returns detailed Wi-Fi data grouped by SSID, now including BSSID (MAC).
-    Automatically logs every successful scan to the database history.
+    Returns detailed Wi-Fi data grouped by SSID.
+    Locks Band and MAC on the same line to fix HTML desync.
+    Clusters and averages redundant 'Unknown MAC' signals within a 5dBm variance.
+    Enforces strict 2.4GHz -> 5GHz -> 6GHz ordering.
     """
     networks_dict = {}
     sys_plat = platform.system()
     
     try:
+        # ==========================================
+        # 1. macOS Implementation (CoreWLAN)
+        # ==========================================
         if sys_plat == "Darwin":
-            return jsonify({"error": "Incompatible", "message": "macOS location privacy locks Wi-Fi scanning."})
+            try:
+                import CoreWLAN
+                import re
+                
+                wifi_interface = CoreWLAN.CWInterface.interface()
+                if not wifi_interface:
+                    return jsonify({"error": "Interface Error", "message": "Could not find a Wi-Fi interface."})
+                
+                active_networks, error = wifi_interface.scanForNetworksWithName_error_(None, None)
+                cached_networks = wifi_interface.cachedScanResults()
+                
+                all_networks = []
+                if active_networks:
+                    for n in active_networks: all_networks.append(n)
+                if cached_networks:
+                    for n in cached_networks: all_networks.append(n)
+                    
+                if all_networks:
+                    for i in all_networks:
+                        ssid = str(i.ssid()) if i.ssid() else "Hidden Network"
+                        
+                        # Guarantee unique keys for missing MACs to collect all signals
+                        mac_val = i.bssid()
+                        mac = str(mac_val) if mac_val else f"Unknown_MAC_{id(i)}"
+                        
+                        sig = f"{i.rssiValue()} dBm" if i.rssiValue() else ""
+                        
+                        ch_obj = i.wlanChannel()
+                        ch = str(ch_obj.channelNumber()) if ch_obj else "0"
+                        
+                        band_val = ch_obj.channelBand() if ch_obj else 0
+                        if band_val == 1: b = "2.4GHz"
+                        elif band_val == 2: b = "5GHz"
+                        elif band_val == 3: b = "6GHz"
+                        else:
+                            try:
+                                c = int(ch)
+                                if c <= 14: b = "2.4GHz"
+                                elif 36 <= c <= 177: b = "5GHz"
+                                elif c >= 190: b = "6GHz"
+                                else: b = "Unknown"
+                            except: b = "Unknown"
+                        
+                        sec_match = re.search(r'security=(.*?),', str(i))
+                        auth = sec_match.group(1) if sec_match else "Unknown"
+                        
+                        if ssid not in networks_dict:
+                            networks_dict[ssid] = {"ssid": ssid, "auth": auth, "bssids": {}}
+                        
+                        if auth != "Unknown" and networks_dict[ssid]["auth"] == "Unknown":
+                            networks_dict[ssid]["auth"] = auth
+                            
+                        if mac not in networks_dict[ssid]["bssids"]:
+                            networks_dict[ssid]["bssids"][mac] = {"signal": sig, "channel": ch, "band": b}
+                        else:
+                            if sig: networks_dict[ssid]["bssids"][mac]["signal"] = sig
+                            if ch != "0": networks_dict[ssid]["bssids"][mac]["channel"] = ch
+                            if b != "Unknown": networks_dict[ssid]["bssids"][mac]["band"] = b
 
+            except ImportError:
+                return jsonify({"error": "Missing Library", "message": "Run: pip install pyobjc-framework-CoreWLAN"})
+            except Exception as e:
+                return jsonify({"error": "macOS Scan Failed", "message": str(e)})
+
+        # ==========================================
+        # 2. Windows Implementation (netsh)
+        # ==========================================
         elif sys_plat == "Windows":
-            # Force hardware refresh (Requires Admin)
             subprocess.run(["powershell", "-Command", "Get-NetAdapter | Where-Object {$_.MediaType -eq 'Native 802.11'} | Restart-NetAdapter"], capture_output=True)
-            time.sleep(4) 
+            time.sleep(3) 
 
             process = subprocess.Popen(
                 "netsh wlan show networks mode=bssid", 
@@ -1656,7 +1719,7 @@ def get_wifi_networks():
             stdout, _ = process.communicate(timeout=15)
 
             current_ssid = None
-            current_ch = None 
+            current_mac = None
             
             for line in stdout.split('\n'):
                 line = line.strip()
@@ -1665,80 +1728,177 @@ def get_wifi_networks():
                 if line.lower().startswith("ssid"):
                     parts = line.split(":", 1)
                     current_ssid = parts[1].strip() if len(parts) > 1 else "Hidden Network"
+                    current_mac = None 
                     if current_ssid not in networks_dict:
-                        networks_dict[current_ssid] = {"ssid": current_ssid, "mac": [], "signal": [], "channel": [], "auth": "Unknown", "band": []}
+                        networks_dict[current_ssid] = {"ssid": current_ssid, "auth": "Unknown", "bssids": {}}
 
                 elif current_ssid:
                     if "authentication" in line.lower():
                         networks_dict[current_ssid]["auth"] = line.split(":", 1)[1].strip()
                     
                     elif line.lower().startswith("bssid"):
-                        mac = line.split(":", 1)[1].strip()
-                        if mac not in networks_dict[current_ssid]["mac"]:
-                            networks_dict[current_ssid]["mac"].append(mac)
+                        raw_mac = line.split(":", 1)[1].strip()
+                        current_mac = raw_mac if raw_mac else f"Unknown_MAC_{time.time()}"
+                        if current_mac not in networks_dict[current_ssid]["bssids"]:
+                            networks_dict[current_ssid]["bssids"][current_mac] = {"signal": "", "channel": "0", "band": "Unknown"}
                             
-                    elif "signal" in line.lower():
+                    elif current_mac and "signal" in line.lower():
                         sig = line.split(":", 1)[1].strip()
-                        if sig not in networks_dict[current_ssid]["signal"]:
-                            networks_dict[current_ssid]["signal"].append(sig)
+                        networks_dict[current_ssid]["bssids"][current_mac]["signal"] = sig
                     
-                    elif "channel" in line.lower():
+                    elif current_mac and "channel" in line.lower():
                         ch = line.split(":", 1)[1].strip()
                         if re.match(r"^\d{1,3}$", ch):
-                            current_ch = int(ch)
-                            if ch not in networks_dict[current_ssid]["channel"]:
-                                networks_dict[current_ssid]["channel"].append(ch)
+                            networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
                             
-                            band_label = ""
-                            if 1 <= current_ch <= 14: band_label = "2.4GHz"
-                            elif 32 <= current_ch <= 177: band_label = "5GHz"
-                            elif current_ch >= 190: band_label = "6GHz"
-                            
-                            if band_label and band_label not in networks_dict[current_ssid]["band"]:
-                                networks_dict[current_ssid]["band"].append(band_label)
+                    elif current_mac and "band" in line.lower():
+                        raw_band = line.split(":", 1)[1].strip().replace(" ", "")
+                        if "2.4" in raw_band: b = "2.4GHz"
+                        elif "5" in raw_band: b = "5GHz"
+                        elif "6" in raw_band: b = "6GHz"
+                        else: b = raw_band
+                        networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
 
+        # ==========================================
+        # 3. Linux Implementation (nmcli)
+        # ==========================================
         elif sys_plat == "Linux":
-            # Added BSSID to the format list
-            output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,SECURITY", "dev", "wifi"], text=True)
+            output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi"], text=True)
             for line in output.strip().split('\n'):
-                # Split on colons NOT preceded by a backslash (Handles escaped MACs safely)
                 parts = re.split(r'(?<!\\):', line)
-                parts = [p.replace('\\:', ':') for p in parts] # Clean escapes
+                parts = [p.replace('\\:', ':') for p in parts]
                 
-                if len(parts) >= 5:
+                if len(parts) >= 6:
                     ssid = parts[0] or "Hidden Network"
-                    mac = parts[1]
-                    ch = int(parts[3]) if parts[3].isdigit() else 0
+                    mac = parts[1].strip() if parts[1] else f"Unknown_MAC_{time.time()}"
+                    sig = f"{parts[2]}%" if parts[2] else ""
+                    ch = parts[3] if parts[3].isdigit() else "0"
                     
+                    freq_digits = ''.join(filter(str.isdigit, parts[4]))
+                    freq = int(freq_digits) if freq_digits else 0
+                    
+                    if 2400 <= freq <= 2500: b = "2.4GHz"
+                    elif 5150 <= freq <= 5895: b = "5GHz"
+                    elif freq >= 5925: b = "6GHz"
+                    else: b = "Unknown"
+
                     if ssid not in networks_dict:
-                        networks_dict[ssid] = {"ssid": ssid, "mac": [], "signal": [], "channel": [], "auth": parts[4], "band": []}
+                        networks_dict[ssid] = {"ssid": ssid, "auth": parts[5], "bssids": {}}
                     
-                    if mac and mac not in networks_dict[ssid]["mac"]: networks_dict[ssid]["mac"].append(mac)
-                    if f"{parts[2]}%" not in networks_dict[ssid]["signal"]: networks_dict[ssid]["signal"].append(f"{parts[2]}%")
-                    if str(ch) not in networks_dict[ssid]["channel"]: networks_dict[ssid]["channel"].append(str(ch))
-                    
-                    b = "2.4GHz" if ch <= 14 else "5GHz" if ch <= 177 else "6GHz"
-                    if b not in networks_dict[ssid]["band"]: networks_dict[ssid]["band"].append(b)
+                    if parts[5] != "Unknown" and networks_dict[ssid]["auth"] == "Unknown":
+                        networks_dict[ssid]["auth"] = parts[5]
+                        
+                    networks_dict[ssid]["bssids"][mac] = {"signal": sig, "channel": ch, "band": b}
 
     except Exception as e: 
         return jsonify({"error": "Critical Error", "message": str(e)})
 
-    # Final result processing
+    # ==========================================
+    # 4. Sorting, Merging & HTML Formatting
+    # ==========================================
     final_networks = []
+    
+    def get_band_weight(band_str):
+        if "2.4" in band_str: return 1
+        if "5" in band_str: return 2
+        if "6" in band_str: return 3
+        return 4
+
+    import re
+    def extract_dbm(s):
+        m = re.search(r'(-?\d+)', s)
+        return int(m.group(1)) if m else -100
+
     for net in networks_dict.values():
-        net["channel"].sort(key=int)
-        net["band"].sort()
+        bands_dict = {}
+        
+        # 1. Bucket all MACs and signals by Band
+        for mac, data in net["bssids"].items():
+            b = data.get("band", "Unknown")
+            sig = data.get("signal", "")
+            ch = data.get("channel", "0")
+            
+            if b not in bands_dict:
+                bands_dict[b] = {"known_macs": [], "unknown_signals": [], "channels": set()}
+            
+            if ch and ch != "0":
+                bands_dict[b]["channels"].add(ch)
+            
+            if mac.startswith("Unknown_MAC_"):
+                if sig: bands_dict[b]["unknown_signals"].append(sig)
+            else:
+                bands_dict[b]["known_macs"].append({"mac": mac, "signal": sig})
+        
+        display_bands = []
+        display_signals = []
+        display_channels = set()
+        
+        sorted_bands = sorted(bands_dict.keys(), key=get_band_weight)
+        
+        # 2. Build the output formatting
+        for b in sorted_bands:
+            data = bands_dict[b]
+            
+            # --- Unknown MACs: Apply 5dBm Clustering ---
+            if data["unknown_signals"]:
+                display_bands.append(f"{b} (Unknown MAC)")
+                
+                clusters = []
+                for sig in data["unknown_signals"]:
+                    sig_match = re.search(r'(-?\d+)', sig)
+                    if not sig_match:
+                        clusters.append({"signals": [], "raw_sig": sig})
+                        continue
+                        
+                    sig_val = int(sig_match.group(1))
+                    placed = False
+                    
+                    for cluster in clusters:
+                        if cluster["signals"]:
+                            avg_sig = sum(cluster["signals"]) / len(cluster["signals"])
+                            if abs(sig_val - avg_sig) <= 5:
+                                cluster["signals"].append(sig_val)
+                                placed = True
+                                break
+                    
+                    if not placed:
+                        clusters.append({"signals": [sig_val], "raw_sig": sig})
+                
+                # Format averaged signals
+                averaged_sigs = []
+                for c in clusters:
+                    if c["signals"]:
+                        avg = int(round(sum(c["signals"]) / len(c["signals"])))
+                        averaged_sigs.append(f"{avg} dBm")
+                    else:
+                        averaged_sigs.append(c.get("raw_sig", ""))
+                
+                # Sort from strongest to weakest
+                sorted_sigs = sorted(averaged_sigs, key=extract_dbm, reverse=True)
+                for sig in sorted_sigs:
+                    display_signals.append(f"{sig} ({b})" if b != "Unknown" else sig)
+                    
+            # --- Known MACs: Kept individual ---
+            for kmac in data["known_macs"]:
+                display_bands.append(f"{b} ({kmac['mac']})")
+                sig = kmac["signal"]
+                if sig:
+                    display_signals.append(f"{sig} ({b})" if b != "Unknown" else sig)
+                    
+            display_channels.update(data["channels"])
+            
+        sorted_channels = sorted(list(display_channels), key=lambda x: int(x) if str(x).isdigit() else 0)
         
         final_networks.append({
             "ssid": net["ssid"],
-            "mac": ", ".join(net["mac"]),
-            "signal": ", ".join(net["signal"]),
-            "channel": ", ".join(net["channel"]),
+            "mac": "", # Left intentionally empty because it is now cleanly merged into the band column
+            "signal": "<br>".join(display_signals),
+            "channel": ", ".join(sorted_channels),
             "auth": net["auth"],
-            "band": ", ".join(net["band"])
+            "band": "<br>".join(display_bands)
         })
 
-    # --- AUTOMATIC HISTORY LOGGING ---
+    # Auto-log scan to database
     if final_networks:
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1752,9 +1912,8 @@ def get_wifi_networks():
                     (auto_name, "Automatically logged", json.dumps(final_networks))
                 )
                 conn.commit()
-            print(f"[✓] Wi-Fi scan auto-logged: {auto_name}")
-        except Exception as db_err:
-            print(f"[!] Database Auto-log Error: {db_err}")
+        except Exception:
+            pass
 
     return jsonify(final_networks)
 

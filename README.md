@@ -16,7 +16,7 @@ There is also a bat file for windows to install python and then start the setup 
 
 Fully seems to works with Windows 11 haven’t verified with previous versions. Just need to have python installed and run the setup script it should install the rest of the requirements. Or run the bat file and it will install python for you and run the app. In order for the network scanning to work you need to make sure location services are enabled and the script needs to run as admin.
 
-Works with Mac OS. Just install python and run the script it should install the rest. WIFI network scanning does not function due to limitations with Mac OS but all other features work. Network scanning requires admin permissions.
+Works with Mac OS. Just install python and run the script it should install the rest. WIFI network scanning will require you allowing location permissions. Network scanning requires admin permissions.
 
 Linux, Tested with Linux Mint. Everything functions as far as I can tell. Speed test should download on its own but if it fails you may need to download it separately. Ran as sudo due to need to setup packages but unsure if can run without. Can’t be sure it will run on every distro but I have tested with Linux mint and setup script uses apt-get to install requirements so using a distro that doesn’t have that will mean you will need to install the required packages manually.
 It may work on a raspberry pi to but this has not been tested.

@@ -1351,11 +1351,9 @@ function deleteSingleToolLog(type, id) {
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
     }
     
-    // Disable action buttons until new data arrives
     if(exportBtn) exportBtn.disabled = true;
     if(commentBtn) commentBtn.disabled = true;
     
-    // Reset active scan metadata
     activeScanComment = "";
     const metaDiv = document.getElementById('active-scan-meta');
     if(metaDiv) metaDiv.innerText = "";
@@ -1374,7 +1372,6 @@ function deleteSingleToolLog(type, id) {
             return r.json();
         })
         .then(data => {
-            // Handle Backend-specific Errors (e.g., macOS Incompatibility)
             if (data.error) {
                 container.innerHTML = `
                     <div class="col-12">
@@ -1386,49 +1383,17 @@ function deleteSingleToolLog(type, id) {
                 return;
             }
 
-            // Handle Empty Results
             if (!data || data.length === 0) {
                 container.innerHTML = '<div class="col-12 text-center p-5 text-muted">No networks detected in range.</div>';
                 return;
             }
 
-            // 3. Update Global State for History & Exporting
-            currentScanResults = data; // Populates the global variable for saving/exporting
-            
-            // Enable action buttons now that we have data
             if(exportBtn) exportBtn.disabled = false;
             if(commentBtn) commentBtn.disabled = false;
 
-            // 4. Render Results with Multi-Band Support
-            container.innerHTML = data.map(n => `
-                <div class="col-md-4 mb-3">
-                    <div class="card shadow-sm h-100 border-0 bg-body-tertiary">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start mb-2">
-                                <strong class="text-truncate" title="${n.ssid}" style="max-width: 60%;">${n.ssid}</strong>
-                                <span class="badge bg-primary">Ch: ${n.channel}</span>
-                            </div>
-                            
-                            <div class="row g-0 mt-3 border-top pt-2">
-                                <div class="col-12 mb-2">
-                                    <small class="text-muted d-block">Detected Bands & MACs</small>
-                                    <span class="fw-bold text-info me-2">${n.band}</span>
-                                    <span class="font-monospace small text-muted" style="font-size: 0.7rem;">${n.mac || ''}</span>
-                                </div>
-                                <div class="col-6 mb-2">
-                                    <small class="text-muted d-block">Signal Strength(s)</small>
-                                    <span class="small">${n.signal}</span>
-                                </div>
-                                <div class="col-6 mb-2 text-end">
-                                    <small class="text-muted d-block">Security</small>
-                                    <span class="small">${n.auth}</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>`).join('');
+            // 3. Hand the data off to our newly unified rendering function!
+            renderWifiResults(data, false);
         })
-        // 5. Critical Error Handling
         .catch(err => {
             console.error("Scan Failed:", err);
             container.innerHTML = `
@@ -1448,7 +1413,7 @@ function deleteSingleToolLog(type, id) {
                 btn.innerHTML = '<i class="bi bi-search"></i> Scan Wi-Fi';
             }
         });
-}
+    }
 
     function runSpeedTest() { 
         const btn = document.getElementById('btn-speedtest');
@@ -1732,14 +1697,25 @@ function renderWifiResults(data, isHistory = false) {
         <div class="col-md-4 mb-3">
             <div class="card shadow-sm h-100 border-0 bg-body-tertiary">
                 <div class="card-body">
-                    <div class="d-flex justify-content-between">
-                        <strong>${n.ssid}</strong>
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <strong class="text-truncate" title="${n.ssid}" style="max-width: 60%;">${n.ssid}</strong>
                         <span class="badge bg-primary">Ch: ${n.channel}</span>
                     </div>
-                    <div class="mt-2 small">
-                        <div class="text-info fw-bold">${n.band}</div>
-                        <div class="font-monospace small text-muted mb-1" style="font-size: 0.75rem;">${n.mac || 'No MAC'}</div>
-                        <div class="text-muted">Signal: ${n.signal} | Auth: ${n.auth}</div>
+                    
+                    <div class="row g-0 mt-3 border-top pt-2">
+                        <div class="col-12 mb-2">
+                            <small class="text-muted d-block">Detected Bands & MACs</small>
+                            <span class="fw-bold text-info me-2">${n.band}</span>
+                            <span class="font-monospace small text-muted" style="font-size: 0.7rem;">${n.mac || ''}</span>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <small class="text-muted d-block">Signal Strength(s)</small>
+                            <span class="small">${n.signal}</span>
+                        </div>
+                        <div class="col-6 mb-2 text-end">
+                            <small class="text-muted d-block">Security</small>
+                            <span class="small">${n.auth}</span>
+                        </div>
                     </div>
                 </div>
             </div>

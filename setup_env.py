@@ -16,9 +16,9 @@ import webbrowser
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.7.5"
+SETUP_VERSION = "0.8"
 VENV_DIR_NAME = "venv"
-REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
+REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pyobjc-framework-CoreWLAN"]
 APP_FILENAME = "app.py"
 
 # GITHUB PRIVATE REPO CONFIGURATION
