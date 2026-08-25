@@ -32,7 +32,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.8.3"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -536,14 +536,15 @@ def get_html_version():
 def get_bandwidth():
     """
     Calculates network throughput. 
-    Prioritizes the Pinned Adapter's traffic if one is set.
+    Prioritizes the Pinned Adapter's traffic if one is set[cite: 1].
+    Includes protection against negative values caused by interface counter resets.
     """
     global last_received, last_sent, last_time
     
     target_iface = None
     pinned_mac = None
 
-    # 1. Identify if an adapter is pinned
+    # 1. Identify if an adapter is pinned[cite: 1]
     try:
         with sqlite3.connect(DB_NAME) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
@@ -552,23 +553,23 @@ def get_bandwidth():
     except: 
         pass
 
-    # 2. Map Pinned MAC to system interface name
+    # 2. Map Pinned MAC to system interface name[cite: 1]
     if pinned_mac:
         for name, addrs in psutil.net_if_addrs().items():
             if any(a.family == psutil.AF_LINK and a.address == pinned_mac for a in addrs):
                 target_iface = name
                 break
 
-    # 3. Get IO Counters
+    # 3. Get IO Counters[cite: 1]
     if target_iface:
-        # Get stats ONLY for the pinned adapter
+        # Get stats ONLY for the pinned adapter[cite: 1]
         try:
             io = psutil.net_io_counters(pernic=True)[target_iface]
         except KeyError:
-            # Fallback to global if adapter was unplugged
+            # Fallback to global if adapter was unplugged[cite: 1]
             io = psutil.net_io_counters()
     else:
-        # Use global sum if no pin is set
+        # Use global sum if no pin is set[cite: 1]
         io = psutil.net_io_counters()
 
     curr_recv = io.bytes_recv
@@ -581,7 +582,11 @@ def get_bandwidth():
     down = (curr_recv - last_received) / delta
     up = (curr_sent - last_sent) / delta
     
-    # Update global tracking variables for the next poll
+    # GUARD: If network counters reset (e.g., reconnect/VPN), delta is negative. Clamp to 0.
+    if down < 0: down = 0.0
+    if up < 0: up = 0.0
+    
+    # Update global tracking variables for the next poll[cite: 1]
     last_received, last_sent, last_time = curr_recv, curr_sent, curr_time
     
     return {
@@ -905,27 +910,24 @@ def get_adapters():
     Fetches all network adapters with:
     1. Stable IPv4 data from ipconfig.
     2. Pinned Adapter logic (Header locks to user choice).
-    3. Hardware link speeds with a fallback to 'Not Available' if idle.
+    3. Hardware link speeds with a fallback to 'Not Available' if idle or invalid.
     4. Real-time Wi-Fi rates only when active traffic exists.
     5. OS-Specific DNS handling (Fixes Ubuntu 127.0.0.53 issue).
     6. macOS MAC Address Fallback (Fixes missing adapters).
-    7. ADDED: Real-time global bandwidth for dashboard metric cards.
+    7. Real-time global bandwidth for dashboard metric cards.
     """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     
-    # Fetch stable system info (Gateway/DNS) and Wi-Fi rates
     ext_info = get_extended_iface_info()
     wifi_rates = get_wifi_rates()
     
-    # Identify the primary active interface or the user-pinned interface
     active_iface_name = get_active_interface_name()
     primary_gw = "Unknown"
     primary_dns = "Unknown"
     pinned_mac = None
 
-    # Load user settings (Names, Visibility, and Pinned status)
     settings = {}
     try:
         with sqlite3.connect(DB_NAME) as conn:
@@ -943,7 +945,6 @@ def get_adapters():
     for name, addrs in interfaces.items():
         st = stats.get(name)
         
-        # Filter out virtual/loopback clutter
         if "Loopback" in name or "vEthernet" in name: 
             continue
         
@@ -954,34 +955,28 @@ def get_adapters():
             elif a.family == psutil.AF_LINK: 
                 mac = a.address
 
-        # Get stable Gateway and DNS from the default parser
         spec_info = ext_info.get(name, {})
         
-        # Windows Cross-reference (Handle alias vs full name)
         if not spec_info and platform.system() == "Windows":
              for k, v in ext_info.items():
                  if k in name or name in k:
                      spec_info = v
                      break
 
-        # macOS MAC Address Fallback
         if mac == "-" and spec_info.get("mac"):
             mac = spec_info.get("mac")
 
-        # Extract values and filter for IPv4
         gw = spec_info.get("gateway", "-")
         if ":" in gw: gw = "-"
         
         dns = spec_info.get("dns", "-")
         if ":" in dns: dns = "-"
 
-        # Linux Specific DNS Fix
         if platform.system() == "Linux":
             real_dns = get_linux_dns(name)
             if real_dns:
                 dns = real_dns
 
-        # HEADER PINNING LOGIC
         is_pinned = (mac == pinned_mac) if pinned_mac else False
         is_active_default = False
         if not pinned_mac and active_iface_name:
@@ -991,25 +986,23 @@ def get_adapters():
              if gw != "-": primary_gw = gw
              if dns != "-": primary_dns = dns
 
-        # SPEED LOGIC
         raw_speed = st.speed if st else 0
         display_speed = "Not Available"
         
-        if raw_speed > 0:
+        if raw_speed and raw_speed > 0:
             if raw_speed >= 1000:
                 display_speed = f"{raw_speed/1000:g} Gbps"
             else:
                 display_speed = f"{raw_speed} Mbps"
         
-        # Real-time Wi-Fi rate override
         for wifi_name, rate_str in wifi_rates.items():
             if wifi_name.lower() in name.lower() or name.lower() in wifi_name.lower():
                 display_speed = rate_str
 
-        if "0 Mbps" in display_speed:
+        # FIX: Use exact matches so we don't accidentally wipe out valid Wi-Fi speeds
+        if display_speed == "0 Mbps" or display_speed == "-1 Mbps" or display_speed == "-":
             display_speed = "Not Available"
 
-        # Apply custom naming and visibility
         user_name = name
         is_vis = True
         key = mac if (mac and mac != "-") else name
@@ -1031,7 +1024,6 @@ def get_adapters():
             "is_primary": is_pinned
         })
 
-    # Global Failsafe for the Header
     if primary_gw == "Unknown" or ":" in primary_gw:
         primary_gw = "-"
         for v in ext_info.values():
@@ -1042,15 +1034,13 @@ def get_adapters():
                     primary_dns = v.get("dns", "-")
                 break
     
-    # --- THE LIVE SPEED FIX ---
-    # Call the existing helper to get live throughput
     live_traffic = get_bandwidth()
         
     return jsonify({
         "adapters": adapters_data, 
         "primary_router": primary_gw, 
         "primary_dns": primary_dns,
-        "global_speed": live_traffic  # This powers 'live-down' and 'live-up' in the dashboard
+        "global_speed": live_traffic
     })
 
 @app.route('/api/adapter_settings', methods=['POST'])
@@ -1111,7 +1101,7 @@ def update_adapter_settings():
 def get_wifi_rates():
     """
     Safety-first Wi-Fi rate fetching. Handles Windows JSON/NoneType,
-    macOS ipconfig, and Linux sysfs speed attributes.
+    macOS ipconfig, and Linux nmcli/sysfs/iw/iwconfig speed attributes.
     """
     rates = {}
     system = platform.system()
@@ -1141,8 +1131,6 @@ def get_wifi_rates():
                         tx_val = int(raw_tx) if raw_tx is not None else 0
                         rx_val = int(raw_rx) if raw_rx is not None else 0
                         
-                        # Only report if there is actual traffic, otherwise skip
-                        # so the main loop uses the hardware link speed instead.
                         if tx_val > 0 or rx_val > 0:
                             tx_mbps = round(tx_val / 1_000_000, 1)
                             rx_mbps = round(rx_val / 1_000_000, 1)
@@ -1151,17 +1139,13 @@ def get_wifi_rates():
                     
         elif system == "Darwin": # macOS
             try:
-                # 1. Primary Method: Use the 'airport' utility to get the real-time link rate
                 airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
                 if os.path.exists(airport_path):
-                    # -I provides detailed info including the transmit rate
                     out = subprocess.check_output([airport_path, "-I"], text=True)
                     rate_match = re.search(r'lastTxRate:\s+(\d+)', out)
                     if rate_match:
-                        # Map to 'en0' (Standard macOS Wi-Fi interface name)
                         rates["en0"] = f"{rate_match.group(1)} Mbps"
                 
-                # 2. Fallback: Use ipconfig if airport is restricted
                 if "en0" not in rates:
                     out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
                     tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
@@ -1171,29 +1155,60 @@ def get_wifi_rates():
                 print(f"macOS Wi-Fi rate fetch failed: {e}")    
 
         elif system == "Linux": # Linux
+            # Method 1: NetworkManager CLI (Most reliable, no root required, ignores $PATH issues)
             try:
-                # Iterate through interfaces in /sys/class/net
+                out = subprocess.check_output(["nmcli", "-t", "-f", "IN-USE,DEVICE,RATE", "dev", "wifi"], text=True, stderr=subprocess.DEVNULL)
+                for line in out.strip().split('\n'):
+                    parts = line.split(':')
+                    # The active network is marked with a '*' in the IN-USE column
+                    if len(parts) >= 3 and parts[0].replace('\\', '') == '*':
+                        dev = parts[1]
+                        rate_raw = parts[2]
+                        # Extract ONLY the digits to ensure a clean value
+                        match = re.search(r'([0-9.]+)', rate_raw)
+                        if dev and match and "unknown" not in rate_raw.lower():
+                            rates[dev] = f"{match.group(1)} Mbps"
+            except: pass
+
+            # Method 2-4: Fallbacks for systems without NetworkManager (e.g., Raspberry Pi OS)
+            try:
                 for iface in os.listdir('/sys/class/net/'):
-                    # Check for common Wi-Fi interface prefixes
                     if iface.startswith(('wlan', 'wlp', 'wlo')):
-                        # Method 1: Try using 'iw dev <iface> link' (Standard on modern Linux)
+                        if iface in rates:
+                            continue # Skip if nmcli already got it
+                            
+                        # Method 2: Safely check sysfs speed file (ignoring negative error codes)
                         try:
-                            out = subprocess.check_output(["iw", "dev", iface, "link"], text=True, stderr=subprocess.DEVNULL)
-                            match = re.search(r'tx bitrate:\s+([^\n]+)', out)
-                            if match and "Not connected" not in out:
-                                rates[iface] = match.group(1).strip()
-                                continue
-                        except:
-                            pass
+                            speed_path = f'/sys/class/net/{iface}/speed'
+                            if os.path.exists(speed_path):
+                                with open(speed_path, 'r') as f:
+                                    speed_val = int(f.read().strip())
+                                    if speed_val > 0:
+                                        rates[iface] = f"{speed_val} Mbps"
+                                        continue
+                        except: pass
+
+                        # Method 3: 'iw' with explicit absolute paths mapped for background services
+                        try:
+                            cmd = f"/sbin/iw dev {iface} link 2>/dev/null || /usr/sbin/iw dev {iface} link 2>/dev/null || iw dev {iface} link 2>/dev/null"
+                            out = subprocess.check_output(cmd, shell=True, text=True)
+                            if "Not connected" not in out:
+                                # Extract ONLY the digits to ensure a clean value
+                                match = re.search(r'tx bitrate:\s+([0-9.]+)', out)
+                                if match:
+                                    rates[iface] = f"{match.group(1)} Mbps"
+                                    continue
+                        except: pass
                         
-                        # Method 2: Fallback to 'iwconfig' (For legacy systems using wireless-tools)
+                        # Method 4: Legacy 'iwconfig' with absolute paths
                         try:
-                            out = subprocess.check_output(["iwconfig", iface], text=True, stderr=subprocess.DEVNULL)
-                            match = re.search(r'Bit Rate[=:]\s*([^\s]+ [^\s]+)', out)
+                            cmd = f"/sbin/iwconfig {iface} 2>/dev/null || /usr/sbin/iwconfig {iface} 2>/dev/null || iwconfig {iface} 2>/dev/null"
+                            out = subprocess.check_output(cmd, shell=True, text=True)
+                            # Extract ONLY the digits to ensure a clean value
+                            match = re.search(r'Bit Rate[=:]\s*([0-9.]+)', out)
                             if match:
-                                rates[iface] = match.group(1).strip()
-                        except:
-                            pass
+                                rates[iface] = f"{match.group(1)} Mbps"
+                        except: pass
             except: pass
 
     except Exception as e:
