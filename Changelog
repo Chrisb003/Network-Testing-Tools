@@ -1,3 +1,5 @@
+0.8.1 - Linux wifi speed fix
+
 0.8.0 - Wifi scanning on mac os now posible. This version fixes it and allows that function to work on mac os.
 
 0.7.14 - Minor bug fixes and fixing of export behaviour while filtering results. Now the export button will either export selected items, all items or filtered items depending on if anything is selected or not.

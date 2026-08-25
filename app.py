@@ -32,7 +32,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -1165,15 +1165,24 @@ def get_wifi_rates():
                 for iface in os.listdir('/sys/class/net/'):
                     # Check for common Wi-Fi interface prefixes
                     if iface.startswith(('wlan', 'wlp', 'wlo')):
+                        # Method 1: Try using 'iw dev <iface> link' (Standard on modern Linux)
                         try:
-                            speed_path = f'/sys/class/net/{iface}/speed'
-                            if os.path.exists(speed_path):
-                                with open(speed_path, 'r') as f:
-                                    speed = f.read().strip()
-                                    # -1 often indicates the link is down or speed is unknown
-                                    if speed != "-1":
-                                        rates[iface] = f"{speed} Mbps"
-                        except: continue
+                            out = subprocess.check_output(["iw", "dev", iface, "link"], text=True, stderr=subprocess.DEVNULL)
+                            match = re.search(r'tx bitrate:\s+([^\n]+)', out)
+                            if match and "Not connected" not in out:
+                                rates[iface] = match.group(1).strip()
+                                continue
+                        except:
+                            pass
+                        
+                        # Method 2: Fallback to 'iwconfig' (For legacy systems using wireless-tools)
+                        try:
+                            out = subprocess.check_output(["iwconfig", iface], text=True, stderr=subprocess.DEVNULL)
+                            match = re.search(r'Bit Rate[=:]\s*([^\s]+ [^\s]+)', out)
+                            if match:
+                                rates[iface] = match.group(1).strip()
+                        except:
+                            pass
             except: pass
 
     except Exception as e:
