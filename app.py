@@ -1910,13 +1910,15 @@ def get_wifi_networks():
             with sqlite3.connect(DB_NAME) as conn:
                 conn.execute("PRAGMA busy_timeout = 3000")
                 c = conn.cursor()
+                # ADDED 'timestamp' column and value here:
                 c.execute(
-                    "INSERT INTO wifi_history (scan_name, comments, results_json) VALUES (?, ?, ?)",
-                    (auto_name, "Automatically logged", json.dumps(final_networks))
+                    "INSERT INTO wifi_history (timestamp, scan_name, comments, results_json) VALUES (?, ?, ?, ?)",
+                    (timestamp, auto_name, "Automatically logged", json.dumps(final_networks))
                 )
                 conn.commit()
-        except Exception:
-            pass
+            print(f"[✓] Wi-Fi scan auto-logged: {auto_name}")
+        except Exception as db_err:
+            print(f"[!] Database Auto-log Error: {db_err}")
 
     return jsonify(final_networks)
 
@@ -2529,19 +2531,19 @@ def fix_permissions(path):
 def save_wifi_scan():
     data = request.json
     try:
-        conn = sqlite3.connect('network_data.db')
+        conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         
-        # Determine the name: Use provided name, or fallback to current timestamp
         raw_name = data.get('name', '').strip()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         scan_name = raw_name if raw_name else f"Scan {timestamp}"
-        
-        # Comments can be empty (None or empty string)
         comments = data.get('comments', '').strip()
 
-        c.execute("INSERT INTO wifi_history (scan_name, comments, results_json) VALUES (?, ?, ?)",
-                  (scan_name, comments, json.dumps(data.get('results', []))))
+        # ADDED 'timestamp' column and value here:
+        c.execute(
+            "INSERT INTO wifi_history (timestamp, scan_name, comments, results_json) VALUES (?, ?, ?, ?)",
+            (timestamp, scan_name, comments, json.dumps(data.get('results', [])))
+        )
         conn.commit()
         conn.close()
         return jsonify({"status": "success", "saved_as": scan_name})
