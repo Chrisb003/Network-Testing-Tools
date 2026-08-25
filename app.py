@@ -25,6 +25,8 @@ import threading
 from flask import jsonify
 import logging
 import tempfile
+import re
+import base64
 
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
