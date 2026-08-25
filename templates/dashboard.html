@@ -903,7 +903,11 @@ async function fetchAdapters() {
             // Sanitize strings for the onclick event
             const safeName = (a.name || '').replace(/'/g, "\\'"); 
             const safeId = (a.id || '').replace(/'/g, "\\'");
-            const safeMac = a.mac || '-';
+            const originalMac = a.mac || '-';
+            
+            // Format MAC for display (colons instead of dashes)
+            const displayMac = originalMac.replace(/-/g, ':');
+            
             const isVisible = !!a.visible;
             const isPrimary = !!a.is_primary;
 
@@ -917,17 +921,19 @@ async function fetchAdapters() {
                     <td class="${a.status === 'Active' ? 'status-active' : 'status-inactive'}">
                         ${a.status}
                     </td>
-                    <td class="font-monospace small">${a.mac}</td>
+                    <!-- Added text-nowrap to prevent 2 lines, and used displayMac -->
+                    <td class="font-monospace small text-nowrap">${displayMac}</td>
                     <td>${a.ip4}</td>
                     <td class="text-primary fw-bold">${a.gateway}</td> 
                     <td class="text-info fw-bold">${a.dns}</td>
                     <td class="text-nowrap small fw-bold speed-cell">${a.speed}</td>
                     <td class="text-end">
                         <i class="bi bi-gear" style="cursor: pointer;" 
-                           onclick="openAdapterConfig('${safeMac}', '${safeId}', '${safeName}', ${isVisible}, ${isPrimary})">
+                           onclick="openAdapterConfig('${originalMac}', '${safeId}', '${safeName}', ${isVisible}, ${isPrimary})">
                         </i>
                     </td>
                 </tr>`;
+
         }).join('');
 
     } catch (err) {
