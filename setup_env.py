@@ -16,7 +16,7 @@ import webbrowser
 from pathlib import Path
 
 # --- Configuration ---
-SETUP_VERSION = "0.8"
+SETUP_VERSION = "0.8.0"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]

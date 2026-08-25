@@ -1,4 +1,4 @@
-<!-- Version number 0.7.7 -->
+<!-- Version number 0.8.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -1688,10 +1688,7 @@ function renderWifiResults(data, isHistory = false) {
     const container = document.getElementById('wifi-list');
     currentScanResults = data;
     
-    let html = isHistory ? '' : `
-        <div class="col-12 mb-3 d-flex gap-2">
-            <button class="btn btn-success btn-sm" onclick="promptSaveWifi()">Save this Scan</button>
-        </div>`;
+    let html = '';
 
     html += data.map(n => `
         <div class="col-md-4 mb-3">
