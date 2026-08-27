@@ -57,25 +57,23 @@ fi
 # 3. MACOS INSTALLATION LOGIC
 # ---------------------------------------------------------
 if [ "$machine" == "Mac" ]; then
-    # Check if Python 3 is installed
     if ! command -v python3 &> /dev/null; then
-        echo "[!] Python 3 not found."
+        echo "[!] Python 3 not found. Downloading and installing official Python.org package for macOS..."
         
-        # Check if Homebrew is installed
-        if ! command -v brew &> /dev/null; then
-            echo "[*] Homebrew not found. Installing Homebrew first..."
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            
-            # Add Brew to path for this session
-            if [[ $(uname -m) == 'arm64' ]]; then
-                eval "$(/opt/homebrew/bin/brew shellenv)"
-            else
-                eval "$(/usr/local/bin/brew shellenv)"
-            fi
-        fi
+        # Define the target stable Python version
+        PY_VERSION="3.14.7"
+        PKG_NAME="python-${PY_VERSION}-macos11.pkg"
+        PKG_URL="https://www.python.org/ftp/python/${PY_VERSION}/${PKG_NAME}"
         
-        echo "[*] Installing Python 3 via Homebrew..."
-        brew install python
+        echo "[*] Downloading Python ${PY_VERSION} from python.org..."
+        curl -O "$PKG_URL"
+        
+        echo "[*] Installing Python package (administrator password required)..."
+        sudo installer -pkg "$PKG_NAME" -target /
+        
+        # Clean up installer file
+        rm -f "$PKG_NAME"
+        echo "[✓] Python.org installation completed successfully."
     else
         echo "[✓] Python 3 is already installed."
     fi

@@ -27,9 +27,9 @@ import logging
 import tempfile
 import re
 import base64
-
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
+
 
 # --- Configuration ---
 APP_VERSION = "0.9.0"
@@ -3012,6 +3012,16 @@ def api_wifi_network_details():
         return jsonify({"error": str(e)})
 
 if __name__ == '__main__':
+    if platform.system() == "Darwin":
+            try:
+                import CoreLocation
+                loc_manager = CoreLocation.CLLocationManager.alloc().init()
+                loc_manager.requestAlwaysAuthorization()
+                loc_manager.startUpdatingLocation()
+                print("[*] CoreLocation authorization requested.")
+            except Exception as e:
+                print(f"[!] CoreLocation initialization failed: {e}")
+
     cleanup_old_files()
     
     # Try to use the production-ready Waitress server

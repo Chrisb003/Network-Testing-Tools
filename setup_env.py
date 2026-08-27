@@ -23,7 +23,10 @@ BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
 
 # macOS-specific requirement for CoreWLAN Wi-Fi scanning
 if platform.system() == "Darwin":
-    BASE_REQUIREMENTS.append("pyobjc-framework-CoreWLAN")
+    BASE_REQUIREMENTS.extend([
+        "pyobjc-framework-CoreWLAN",
+        "pyobjc-framework-CoreLocation"
+    ])
 
 REQUIREMENTS = BASE_REQUIREMENTS
 
@@ -153,12 +156,25 @@ def fetch_latest_from_github(base_dir):
         sys.exit(1)
 
 def create_venv(base_dir):
-    """Creates the virtual environment."""
+    """Creates the virtual environment and links standalone macOS libraries."""
     venv_path = base_dir / VENV_DIR_NAME
     if not venv_path.exists():
         print(f"[*] Creating virtual environment (Setup v{SETUP_VERSION})...")
         try:
             venv.create(venv_path, with_pip=True, clear=True)
+            
+            # FIX FOR MACOS STANDALONE PYTHON VENV LINKING
+            if platform.system() == "Darwin":
+                local_lib = base_dir / "local_python" / "lib"
+                venv_lib = venv_path / "lib"
+                if local_lib.exists():
+                    venv_lib.mkdir(parents=True, exist_ok=True)
+                    for file in local_lib.glob("libpython*.dylib"):
+                        dest = venv_lib / file.name
+                        if not dest.exists():
+                            shutil.copy2(file, dest)
+                            print(f"[✓] Linked shared library for macOS standalone python: {file.name}")
+                            
         except Exception as e:
             print(f"[X] Failed to create venv: {e}")
             print("    On Linux, ensure 'python3-venv' is installed.")
