@@ -1875,12 +1875,21 @@ def get_wifi_networks():
 
     for net in networks_dict.values():
         bands_dict = {}
+        raw_bssids = [] # NEW: Hidden list for the CSV exporter
         
         # 1. Bucket all MACs and signals by Band
         for mac, data in net["bssids"].items():
             b = data.get("band", "Unknown")
             sig = data.get("signal", "")
             ch = data.get("channel", "0")
+            
+            # Build the raw list for the CSV export
+            raw_bssids.append({
+                "mac": "Unknown" if mac.startswith("Unknown_MAC_") else mac,
+                "signal": sig,
+                "channel": ch,
+                "band": b
+            })
             
             if b not in bands_dict:
                 bands_dict[b] = {"known_macs": [], "unknown_signals": [], "channels": set()}
@@ -1955,11 +1964,12 @@ def get_wifi_networks():
         
         final_networks.append({
             "ssid": net["ssid"],
-            "mac": "", # Left intentionally empty because it is now cleanly merged into the band column
+            "mac": "", # Left intentionally empty because it is cleanly merged into the band column
             "signal": "<br>".join(display_signals),
             "channel": ", ".join(sorted_channels),
             "auth": net["auth"],
-            "band": "<br>".join(display_bands)
+            "band": "<br>".join(display_bands),
+            "raw_bssids": raw_bssids  # <--- NEW: Hidden array for the CSV export
         })
 
     # Auto-log scan to database
@@ -1971,7 +1981,6 @@ def get_wifi_networks():
             with sqlite3.connect(DB_NAME) as conn:
                 conn.execute("PRAGMA busy_timeout = 3000")
                 c = conn.cursor()
-                # ADDED 'timestamp' column and value here:
                 c.execute(
                     "INSERT INTO wifi_history (timestamp, scan_name, comments, results_json) VALUES (?, ?, ?, ?)",
                     (timestamp, auto_name, "Automatically logged", json.dumps(final_networks))
@@ -1982,7 +1991,6 @@ def get_wifi_networks():
             print(f"[!] Database Auto-log Error: {db_err}")
 
     return jsonify(final_networks)
-
 
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
@@ -2238,9 +2246,14 @@ def bulk_export_wifi():
                 
                 csv_out = io.StringIO()
                 writer = csv.writer(csv_out)
-                writer.writerow(["SSID", "MAC(s)", "Signal", "Channel(s)", "Band(s)", "Authentication"])
+                writer.writerow(["SSID", "MAC", "Signal", "Channel", "Band", "Authentication"])
                 for net in results:
-                    writer.writerow([net.get('ssid',''), net.get('mac', ''), net.get('signal',''), net.get('channel',''), net.get('band',''), net.get('auth','')])
+                    if "raw_bssids" in net and net["raw_bssids"]:
+                        for b in net["raw_bssids"]:
+                            writer.writerow([net.get('ssid',''), b.get('mac', ''), b.get('signal',''), b.get('channel',''), b.get('band',''), net.get('auth','')])
+                    else:
+                        # Legacy fallback
+                        writer.writerow([net.get('ssid',''), net.get('mac', ''), net.get('signal','').replace('<br>', ' | '), net.get('channel',''), net.get('band','').replace('<br>', ' | '), net.get('auth','')])
 
                 zf.writestr(f"wifi_scan_{scan_id}_{scan_name}.csv", csv_out.getvalue())
     
@@ -2665,19 +2678,29 @@ def export_wifi_csv(scan_id):
         # Create CSV in memory
         output = io.StringIO()
         writer = csv.writer(output)
-        
         # Header Row
-
-        writer.writerow(["SSID", "MAC(s)", "Signal", "Channel(s)", "Band(s)", "Authentication"])
+        writer.writerow(["SSID", "MAC", "Signal", "Channel", "Band", "Authentication"])
         for net in results:
-            writer.writerow([
-                net.get('ssid', 'Unknown'),
-                net.get('mac', '-'),
-                net.get('signal', '-'),
-                net.get('channel', '-'),
-                net.get('band', '-'),
-                net.get('auth', '-')
-            ])
+            if "raw_bssids" in net and net["raw_bssids"]:
+                for b in net["raw_bssids"]:
+                    writer.writerow([
+                        net.get('ssid', 'Unknown'),
+                        b.get('mac', '-'),
+                        b.get('signal', '-'),
+                        b.get('channel', '-'),
+                        b.get('band', '-'),
+                        net.get('auth', '-')
+                    ])
+            else:
+                # Legacy fallback
+                writer.writerow([
+                    net.get('ssid', 'Unknown'),
+                    net.get('mac', '-'),
+                    net.get('signal', '-').replace('<br>', ' | '),
+                    net.get('channel', '-'),
+                    net.get('band', '-').replace('<br>', ' | '),
+                    net.get('auth', '-')
+                ])
 
         output.seek(0)
         return Response(
@@ -2704,16 +2727,28 @@ def export_active_wifi_csv():
         
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["SSID", "MAC(s)", "Signal", "Channel(s)", "Band(s)", "Authentication"])
+        writer.writerow(["SSID", "MAC", "Signal", "Channel", "Band", "Authentication"])
         for net in results:
-            writer.writerow([
-                net.get('ssid', 'Unknown'),
-                net.get('mac', '-'),
-                net.get('signal', '-'),
-                net.get('channel', '-'),
-                net.get('band', '-'),
-                net.get('auth', '-')
-            ])
+            if "raw_bssids" in net and net["raw_bssids"]:
+                for b in net["raw_bssids"]:
+                    writer.writerow([
+                        net.get('ssid', 'Unknown'),
+                        b.get('mac', '-'),
+                        b.get('signal', '-'),
+                        b.get('channel', '-'),
+                        b.get('band', '-'),
+                        net.get('auth', '-')
+                    ])
+            else:
+                # Legacy fallback
+                writer.writerow([
+                    net.get('ssid', 'Unknown'),
+                    net.get('mac', '-'),
+                    net.get('signal', '-').replace('<br>', ' | '),
+                    net.get('channel', '-'),
+                    net.get('band', '-').replace('<br>', ' | '),
+                    net.get('auth', '-')
+                ])
 
         return Response(
             output.getvalue(),
@@ -2781,11 +2816,11 @@ def delete_connection_type():
 def api_device_history():
     """Returns the latest state of all unique devices across all networks."""
     try:
-        print("\n[-->] API /device_history called. Connecting to DB...")
+        #print("\n[-->] API /device_history called. Connecting to DB...")
         
         with sqlite3.connect(DB_NAME) as conn:
             conn.row_factory = sqlite3.Row
-            print("[*] DB connected. Executing optimized query...")
+            #print("[*] DB connected. Executing optimized query...")
             
             # OPTIMIZED QUERY: Removed the nested SELECT MAX() subquery.
             # In SQLite, using MAX(last_seen) in a GROUP BY automatically returns the corresponding row's data.
@@ -2805,7 +2840,7 @@ def api_device_history():
             rows = conn.execute(query).fetchall()
             elapsed = time.time() - start_time
             
-            print(f"[*] Query executed in {elapsed:.4f} seconds. Returned {len(rows)} unique devices.")
+        #    print(f"[*] Query executed in {elapsed:.4f} seconds. Returned {len(rows)} unique devices.")
             
             result = []
             for r in rows:
@@ -2827,7 +2862,7 @@ def api_device_history():
                 dev['clean_hostname'] = clean_host
                 result.append(dev)
                 
-            print(f"[<--] Processing complete. Sending JSON back to frontend.")
+           # print(f"[<--] Processing complete. Sending JSON back to frontend.")
             return jsonify(result)
             
     except Exception as e:
