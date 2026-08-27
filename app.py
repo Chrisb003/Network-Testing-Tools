@@ -32,7 +32,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- Configuration ---
-APP_VERSION = "0.8.3"
+APP_VERSION = "0.9.0"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -96,6 +96,9 @@ def init_db():
                         last_seen TEXT,
                         services TEXT, 
                         is_online INTEGER DEFAULT 0,
+                        previous_ip TEXT,
+                        discovery_status TEXT DEFAULT 'New Device',
+                        vendor TEXT,
                         PRIMARY KEY (mac_address, network_id),
                         FOREIGN KEY(network_id) REFERENCES networks(id) ON DELETE CASCADE
                     )''')
@@ -196,6 +199,14 @@ def init_db():
             for col in ['router_ip', 'network_name', 'lan_ip']:
                 try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
                 except sqlite3.OperationalError: pass 
+
+        # Device History Migrations
+        try: c.execute("ALTER TABLE devices ADD COLUMN previous_ip TEXT"); 
+        except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE devices ADD COLUMN discovery_status TEXT DEFAULT 'New Device'"); 
+        except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE devices ADD COLUMN vendor TEXT"); 
+        except sqlite3.OperationalError: pass
 
         conn.commit()
         
@@ -618,7 +629,7 @@ def get_active_interface_name():
 
 MAC_VENDOR_CACHE = {}
 
-def get_mac_vendor(mac):
+def get_mac_vendor(mac, fetch_online=False):
     """Fetches the manufacturer name based on the MAC address."""
     if not mac or mac == "-" or mac.startswith("NO_MAC"): return ""
     
@@ -626,8 +637,21 @@ def get_mac_vendor(mac):
     if mac_prefix in MAC_VENDOR_CACHE:
         return MAC_VENDOR_CACHE[mac_prefix]
 
+    # Check database before making an HTTP request
     try:
-        # Queries a free MAC lookup API. Added User-Agent to prevent blocking.
+        with sqlite3.connect(DB_NAME) as conn:
+            row = conn.execute("SELECT vendor FROM devices WHERE mac_address=? AND vendor IS NOT NULL AND vendor != '' LIMIT 1", (mac,)).fetchone()
+            if row:
+                MAC_VENDOR_CACHE[mac_prefix] = row[0]
+                return row[0]
+    except Exception:
+        pass
+
+    # If we are just scanning locally, skip the slow internet lookup
+    if not fetch_online:
+        return ""
+
+    try:
         req = urllib.request.Request(
             f"https://api.maclookup.app/v2/macs/{mac_prefix}",
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -635,23 +659,19 @@ def get_mac_vendor(mac):
         with urllib.request.urlopen(req, timeout=2) as url:
             data = json.loads(url.read().decode())
             
-            # FIXED: The API returns the vendor under 'company', not 'macCompany'
             if data.get('success') and data.get('company'):
-                # Clean up long corporate suffixes
                 company = data['company'].replace(' Inc.', '').replace(' Ltd.', '').split(',')[0]
                 MAC_VENDOR_CACHE[mac_prefix] = company
                 return company
     except Exception: 
         pass
     
-    MAC_VENDOR_CACHE[mac_prefix] = ""
     return ""
 
 def resolve_hostname(ip, mac=None):
     """Resolves hostname using DNS, ARP cache, NetBIOS, and appends MAC Vendor in brackets."""
     hostname = "Unknown Device"
     
-    # 1. Standard DNS (Reverse Lookup)
     try:
         default_timeout = socket.getdefaulttimeout()
         socket.setdefaulttimeout(1) 
@@ -662,7 +682,6 @@ def resolve_hostname(ip, mac=None):
     except:
         socket.setdefaulttimeout(default_timeout if 'default_timeout' in locals() else None)
     
-    # 2. macOS/Linux ARP Cache Fallback
     if hostname == "Unknown Device":
         try:
             arp_out = subprocess.check_output(["arp", "-a"], text=True)
@@ -676,7 +695,6 @@ def resolve_hostname(ip, mac=None):
                             break
         except: pass
 
-    # 3. NetBIOS Lookup (Great for Windows PCs/NAS devices)
     if hostname == "Unknown Device" and platform.system() == "Windows":
         try:
             out = subprocess.check_output(["nbtstat", "-A", ip], text=True, timeout=2)
@@ -686,20 +704,15 @@ def resolve_hostname(ip, mac=None):
                     break
         except: pass
 
-    # 4. Append MAC Vendor (Always runs if MAC is present)
     if mac:
-        vendor = get_mac_vendor(mac)
+        vendor = get_mac_vendor(mac, fetch_online=False)
         if vendor:
             hostname = f"{hostname} ({vendor})"
 
     return hostname
 
 def process_device_info(received):
-    """
-    Worker function for threaded scanning. 
-    MUST be defined before scan_network calls it.
-    """
-    # Use fallback mock objects if triggered by ping sweep
+    """Worker function for threaded scanning."""
     ip = getattr(received, 'psrc', getattr(received, 'ip', None))
     mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
     
@@ -707,6 +720,7 @@ def process_device_info(received):
         "ip": ip,
         "mac": mac,
         "hostname": resolve_hostname(ip, mac),
+        "vendor": get_mac_vendor(mac, fetch_online=False),
         "services": check_open_ports(ip)['services']
     }
 
@@ -1263,7 +1277,7 @@ def get_network_devices(net_id):
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row  # This is critical for accessing columns by name
         # Explicitly select 'services' to ensure it's not missed
-        query = "SELECT mac_address, hostname, custom_name, ip_address, last_seen, services, is_online FROM devices WHERE network_id=?"
+        query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online FROM devices WHERE network_id=?"
         devices = conn.execute(query, (net_id,)).fetchall()
         
         dev_list = [dict(d) for d in devices]
@@ -1408,11 +1422,12 @@ def scan_network():
                     d["hostname"] = f"{base_name} (This device)"
                 break
                 
-        if not local_device_found:
+    if not local_device_found:
             scanned_results.append({
                 "ip": target_ip_val,
                 "mac": target_mac_val,
                 "hostname": f"{socket.gethostname()} (This device)",
+                "vendor": get_mac_vendor(target_mac_val, fetch_online=False),
                 "services": check_open_ports(target_ip_val)['services']
             })
 
@@ -1447,6 +1462,7 @@ def scan_network():
                 "ip": gateway_ip,
                 "mac": gateway_mac,
                 "hostname": f"{resolve_hostname(gateway_ip, gateway_mac)} (Router)",
+                "vendor": get_mac_vendor(gateway_mac, fetch_online=False),
                 "services": check_open_ports(gateway_ip)['services']
             })
         
@@ -1484,13 +1500,23 @@ def scan_network():
                     if glob: final_name = glob[0]
 
                 cursor.execute("""
-                    INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, last_seen, services, is_online)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                    INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor)
+                    VALUES (?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?)
                     ON CONFLICT(mac_address, network_id) DO UPDATE SET
-                    hostname=excluded.hostname, ip_address=excluded.ip_address, last_seen=excluded.last_seen,
-                    services=excluded.services, custom_name=COALESCE(?, devices.custom_name), is_online=1
-                """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], current_time, device["services"], final_name))
-            
+                    hostname=excluded.hostname, 
+                    custom_name=COALESCE(?, devices.custom_name),
+                    previous_ip = CASE 
+                        WHEN devices.ip_address != excluded.ip_address AND devices.ip_address != '0.0.0.0' THEN devices.ip_address 
+                        ELSE devices.previous_ip 
+                    END,
+                    discovery_status = 'Seen Before',
+                    ip_address=excluded.ip_address, 
+                    last_seen=excluded.last_seen,
+                    services=excluded.services, 
+                    is_online=1,
+                    vendor=excluded.vendor
+                """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], current_time, device["services"], device["vendor"], final_name))
+
             # FIXED INDENTATION: These run AFTER the loop finishes, not inside it
             conn.commit()
             return jsonify({"network_id": network_id, "network_name": final_network_name, "devices": scanned_results})
@@ -2176,14 +2202,18 @@ def bulk_export_networks():
                 if not net: continue
                 
                 net_name = net['name'].replace(" ", "_")
-                devices = conn.execute("SELECT hostname, custom_name, ip_address, mac_address, is_online, services FROM devices WHERE network_id=?", (net_id,)).fetchall()
+               # Replace the inner CSV writing loop in bulk_export_networks:
+                devices = conn.execute("SELECT hostname, custom_name, ip_address, previous_ip, discovery_status, mac_address, is_online, services FROM devices WHERE network_id=?", (net_id,)).fetchall()
                 
                 csv_out = io.StringIO()
                 writer = csv.writer(csv_out)
-                writer.writerow(['Hostname', 'Custom Name', 'IP Address', 'MAC Address', 'Status', 'Services'])
+                writer.writerow(['Hostname', 'Custom Name', 'IP Address', 'MAC Address', 'Status', 'Services', 'History'])
                 for d in devices:
-                    writer.writerow([d['hostname'], d['custom_name'], d['ip_address'], d['mac_address'], 'Online' if d['is_online'] else 'Offline', d['services']])
-                
+                    history_text = d['discovery_status']
+                    if d['previous_ip']: history_text = f"IP Changed ({d['previous_ip']})"
+                    
+                    writer.writerow([d['hostname'], d['custom_name'], d['ip_address'], d['mac_address'], 'Online' if d['is_online'] else 'Offline', d['services'], history_text])
+
                 zf.writestr(f"network_{net_id}_{net_name}.csv", csv_out.getvalue())
     
     memory_file.seek(0)
@@ -2746,6 +2776,96 @@ def delete_connection_type():
         conn.execute("DELETE FROM connection_types WHERE id=?", (type_id,))
         conn.commit()
     return jsonify({"status": "success"})
+
+@app.route('/api/device_history')
+def api_device_history():
+    """Returns the latest state of all unique devices across all networks."""
+    try:
+        print("\n[-->] API /device_history called. Connecting to DB...")
+        
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.row_factory = sqlite3.Row
+            print("[*] DB connected. Executing optimized query...")
+            
+            # OPTIMIZED QUERY: Removed the nested SELECT MAX() subquery.
+            # In SQLite, using MAX(last_seen) in a GROUP BY automatically returns the corresponding row's data.
+            # This turns an O(N^2) query (which freezes the app) into a lightning-fast O(N) query.
+            query = """
+                SELECT d.mac_address, d.hostname, COALESCE(g.custom_name, d.custom_name) as custom_name,
+                       d.ip_address, MAX(d.last_seen) as last_seen, n.name as network_name, d.vendor
+                FROM devices d
+                JOIN networks n ON d.network_id = n.id
+                LEFT JOIN global_device_names g ON d.mac_address = g.mac_address
+                GROUP BY d.mac_address
+                ORDER BY last_seen DESC
+            """
+            
+            # Start timer to log database performance
+            start_time = time.time()
+            rows = conn.execute(query).fetchall()
+            elapsed = time.time() - start_time
+            
+            print(f"[*] Query executed in {elapsed:.4f} seconds. Returned {len(rows)} unique devices.")
+            
+            result = []
+            for r in rows:
+                dev = dict(r)
+                vendor = dev.get('vendor') or ""
+                clean_host = str(dev['hostname']) if dev['hostname'] else "Unknown"
+                
+                # Clean up legacy hostnames if the vendor is attached in brackets
+                if vendor and f"({vendor})" in clean_host:
+                    clean_host = clean_host.replace(f"({vendor})", "").strip()
+                else:
+                    # Failsafe for legacy devices scanned before the vendor column existed
+                    match = re.search(r'\(([^)]+)\)$', clean_host)
+                    if match and match.group(1) not in ["This device", "Router"]:
+                        if not vendor: vendor = match.group(1)
+                        clean_host = clean_host.replace(f"({match.group(1)})", "").strip()
+                        
+                dev['vendor'] = vendor
+                dev['clean_hostname'] = clean_host
+                result.append(dev)
+                
+            print(f"[<--] Processing complete. Sending JSON back to frontend.")
+            return jsonify(result)
+            
+    except Exception as e:
+        print(f"[!!!] CRITICAL ERROR in /api/device_history: {e}")
+        return jsonify({"error": str(e)})
+
+@app.route('/api/device_history/<mac>')
+def api_device_history_detail(mac):
+    """Returns all historical connection records for a specific MAC address."""
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        query = """
+            SELECT d.ip_address, d.last_seen, d.discovery_status, d.previous_ip, n.name as network_name
+            FROM devices d
+            JOIN networks n ON d.network_id = n.id
+            WHERE d.mac_address = ?
+            ORDER BY d.last_seen DESC
+        """
+        rows = conn.execute(query, (mac,)).fetchall()
+        return jsonify([dict(r) for r in rows])
+
+@app.route('/api/vendor/lookup', methods=['POST'])
+def api_vendor_lookup():
+    """Background task to fetch vendor info and save it to the DB permanently."""
+    mac = request.json.get('mac')
+    if not mac: 
+        return jsonify({"vendor": "Unknown"})
+        
+    # Force the internet lookup
+    vendor = get_mac_vendor(mac, fetch_online=True)
+    
+    # Save the result to the DB so we never look it up again
+    if vendor:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.execute("UPDATE devices SET vendor=? WHERE mac_address=?", (vendor, mac))
+            conn.commit()
+            
+    return jsonify({"vendor": vendor or "Unknown"})
 
 if __name__ == '__main__':
     cleanup_old_files()
