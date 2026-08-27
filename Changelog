@@ -1,4 +1,4 @@
-0.9.0 - New device history page allowing you to lookup history of devices found during network scans. Few small bug fixes with mac address vendor lookup. Fixed search and it now remembers selected items between pages.
+0.9.0 - New device history page allowing you to lookup history of devices found during network scans. Also added option to look through wifi networks. Few small bug fixes with mac address vendor lookup. Fixed search and it now remembers selected items between pages.
 
 0.8.1-3 - Linux wifi speed fix
 

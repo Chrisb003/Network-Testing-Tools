@@ -1694,6 +1694,7 @@ def get_wifi_networks():
     Locks Band and MAC on the same line to fix HTML desync.
     Clusters and averages redundant 'Unknown MAC' signals within a 5dBm variance.
     Enforces strict 2.4GHz -> 5GHz -> 6GHz ordering.
+    Standardizes dBm and Percentage separately for all operating systems.
     """
     global re
     networks_dict = {}
@@ -1725,11 +1726,12 @@ def get_wifi_networks():
                     for i in all_networks:
                         ssid = str(i.ssid()) if i.ssid() else "Hidden Network"
                         
-                        # Guarantee unique keys for missing MACs to collect all signals
                         mac_val = i.bssid()
                         mac = str(mac_val) if mac_val else f"Unknown_MAC_{id(i)}"
                         
-                        sig = f"{i.rssiValue()} dBm" if i.rssiValue() else ""
+                        # macOS returns dBm natively. Calculate percentage from dBm.
+                        dbm_val = int(i.rssiValue()) if i.rssiValue() else None
+                        pct_val = max(0, min(100, int((dbm_val + 100) * 2))) if dbm_val is not None else None
                         
                         ch_obj = i.wlanChannel()
                         ch = str(ch_obj.channelNumber()) if ch_obj else "0"
@@ -1757,9 +1759,11 @@ def get_wifi_networks():
                             networks_dict[ssid]["auth"] = auth
                             
                         if mac not in networks_dict[ssid]["bssids"]:
-                            networks_dict[ssid]["bssids"][mac] = {"signal": sig, "channel": ch, "band": b}
+                            networks_dict[ssid]["bssids"][mac] = {"dbm": dbm_val, "percent": pct_val, "channel": ch, "band": b}
                         else:
-                            if sig: networks_dict[ssid]["bssids"][mac]["signal"] = sig
+                            if dbm_val is not None:
+                                networks_dict[ssid]["bssids"][mac]["dbm"] = dbm_val
+                                networks_dict[ssid]["bssids"][mac]["percent"] = pct_val
                             if ch != "0": networks_dict[ssid]["bssids"][mac]["channel"] = ch
                             if b != "Unknown": networks_dict[ssid]["bssids"][mac]["band"] = b
 
@@ -1804,11 +1808,20 @@ def get_wifi_networks():
                         raw_mac = line.split(":", 1)[1].strip()
                         current_mac = raw_mac if raw_mac else f"Unknown_MAC_{time.time()}"
                         if current_mac not in networks_dict[current_ssid]["bssids"]:
-                            networks_dict[current_ssid]["bssids"][current_mac] = {"signal": "", "channel": "0", "band": "Unknown"}
+                            networks_dict[current_ssid]["bssids"][current_mac] = {"dbm": None, "percent": None, "channel": "0", "band": "Unknown"}
                             
                     elif current_mac and "signal" in line.lower():
-                        sig = line.split(":", 1)[1].strip()
-                        networks_dict[current_ssid]["bssids"][current_mac]["signal"] = sig
+                        raw_sig = line.split(":", 1)[1].strip()
+                        try:
+                            # Windows returns percentage natively. Calculate dBm from percentage.
+                            pct_val = int(''.join(filter(str.isdigit, raw_sig)))
+                            dbm_val = int((pct_val / 2) - 100)
+                        except ValueError:
+                            pct_val = None
+                            dbm_val = None
+                            
+                        networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
+                        networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = dbm_val
                     
                     elif current_mac and "channel" in line.lower():
                         ch = line.split(":", 1)[1].strip()
@@ -1835,7 +1848,16 @@ def get_wifi_networks():
                 if len(parts) >= 6:
                     ssid = parts[0] or "Hidden Network"
                     mac = parts[1].strip() if parts[1] else f"Unknown_MAC_{time.time()}"
-                    sig = f"{parts[2]}%" if parts[2] else ""
+                    
+                    # Linux returns percentage natively. Calculate dBm from percentage.
+                    sig_raw = parts[2]
+                    if sig_raw and sig_raw.isdigit():
+                        pct_val = int(sig_raw)
+                        dbm_val = int((pct_val / 2) - 100)
+                    else:
+                        pct_val = None
+                        dbm_val = None
+                        
                     ch = parts[3] if parts[3].isdigit() else "0"
                     
                     freq_digits = ''.join(filter(str.isdigit, parts[4]))
@@ -1852,13 +1874,13 @@ def get_wifi_networks():
                     if parts[5] != "Unknown" and networks_dict[ssid]["auth"] == "Unknown":
                         networks_dict[ssid]["auth"] = parts[5]
                         
-                    networks_dict[ssid]["bssids"][mac] = {"signal": sig, "channel": ch, "band": b}
+                    networks_dict[ssid]["bssids"][mac] = {"dbm": dbm_val, "percent": pct_val, "channel": ch, "band": b}
 
     except Exception as e: 
         return jsonify({"error": "Critical Error", "message": str(e)})
 
     # ==========================================
-    # 4. Sorting, Merging & HTML Formatting
+    # 4. Flattening, Clustering Unknowns, & Formatting
     # ==========================================
     final_networks = []
     
@@ -1868,28 +1890,35 @@ def get_wifi_networks():
         if "6" in band_str: return 3
         return 4
 
-    import re
-    def extract_dbm(s):
-        m = re.search(r'(-?\d+)', s)
-        return int(m.group(1)) if m else -100
-
     for net in networks_dict.values():
         bands_dict = {}
-        raw_bssids = [] # NEW: Hidden list for the CSV exporter
+        raw_bssids = [] # Hidden list for the CSV exporter
         
         # 1. Bucket all MACs and signals by Band
         for mac, data in net["bssids"].items():
             b = data.get("band", "Unknown")
-            sig = data.get("signal", "")
+            dbm_val = data.get("dbm")
+            pct_val = data.get("percent")
             ch = data.get("channel", "0")
             
-            # Build the raw list for the CSV export
+            # Build the raw list for the CSV export containing separated fields
             raw_bssids.append({
                 "mac": "Unknown" if mac.startswith("Unknown_MAC_") else mac,
-                "signal": sig,
+                "dbm": dbm_val if dbm_val is not None else "",
+                "percent": pct_val if pct_val is not None else "",
                 "channel": ch,
                 "band": b
             })
+            
+            # Format string for UI display
+            if dbm_val is not None and pct_val is not None:
+                sig_display = f"{dbm_val} dBm ({pct_val}%)"
+            elif dbm_val is not None:
+                sig_display = f"{dbm_val} dBm"
+            elif pct_val is not None:
+                sig_display = f"{pct_val}%"
+            else:
+                sig_display = ""
             
             if b not in bands_dict:
                 bands_dict[b] = {"known_macs": [], "unknown_signals": [], "channels": set()}
@@ -1898,13 +1927,15 @@ def get_wifi_networks():
                 bands_dict[b]["channels"].add(ch)
             
             if mac.startswith("Unknown_MAC_"):
-                if sig: bands_dict[b]["unknown_signals"].append(sig)
+                if dbm_val is not None:
+                    bands_dict[b]["unknown_signals"].append(dbm_val)
             else:
-                bands_dict[b]["known_macs"].append({"mac": mac, "signal": sig})
+                bands_dict[b]["known_macs"].append({"mac": mac, "signal": sig_display, "dbm": dbm_val if dbm_val is not None else -100})
         
         display_bands = []
         display_signals = []
         display_channels = set()
+        ui_sort_dbm = -100 # Track highest dbm in this SSID for sorting the UI cards
         
         sorted_bands = sorted(bands_dict.keys(), key=get_band_weight)
         
@@ -1912,51 +1943,41 @@ def get_wifi_networks():
         for b in sorted_bands:
             data = bands_dict[b]
             
-            # --- Unknown MACs: Apply 5dBm Clustering ---
+            # --- Unknown MACs: Apply 5dBm Clustering using raw dBm values ---
             if data["unknown_signals"]:
                 display_bands.append(f"{b} (Unknown MAC)")
                 
                 clusters = []
-                for sig in data["unknown_signals"]:
-                    sig_match = re.search(r'(-?\d+)', sig)
-                    if not sig_match:
-                        clusters.append({"signals": [], "raw_sig": sig})
-                        continue
-                        
-                    sig_val = int(sig_match.group(1))
+                for val in data["unknown_signals"]:
                     placed = False
-                    
                     for cluster in clusters:
-                        if cluster["signals"]:
-                            avg_sig = sum(cluster["signals"]) / len(cluster["signals"])
-                            if abs(sig_val - avg_sig) <= 5:
-                                cluster["signals"].append(sig_val)
-                                placed = True
-                                break
-                    
+                        avg_sig = sum(cluster) / len(cluster)
+                        if abs(val - avg_sig) <= 5:
+                            cluster.append(val)
+                            placed = True
+                            break
                     if not placed:
-                        clusters.append({"signals": [sig_val], "raw_sig": sig})
+                        clusters.append([val])
                 
                 # Format averaged signals
                 averaged_sigs = []
                 for c in clusters:
-                    if c["signals"]:
-                        avg = int(round(sum(c["signals"]) / len(c["signals"])))
-                        averaged_sigs.append(f"{avg} dBm")
-                    else:
-                        averaged_sigs.append(c.get("raw_sig", ""))
+                    avg_dbm = int(round(sum(c) / len(c)))
+                    avg_pct = max(0, min(100, int((avg_dbm + 100) * 2)))
+                    averaged_sigs.append({"dbm": avg_dbm, "pct": avg_pct})
+                    if avg_dbm > ui_sort_dbm: ui_sort_dbm = avg_dbm
                 
                 # Sort from strongest to weakest
-                sorted_sigs = sorted(averaged_sigs, key=extract_dbm, reverse=True)
+                sorted_sigs = sorted(averaged_sigs, key=lambda x: x["dbm"], reverse=True)
                 for sig in sorted_sigs:
-                    display_signals.append(f"{sig} ({b})" if b != "Unknown" else sig)
+                    display_signals.append(f"{sig['dbm']} dBm ({sig['pct']}%) ({b})" if b != "Unknown" else f"{sig['dbm']} dBm ({sig['pct']}%)")
                     
             # --- Known MACs: Kept individual ---
             for kmac in data["known_macs"]:
                 display_bands.append(f"{b} ({kmac['mac']})")
-                sig = kmac["signal"]
-                if sig:
-                    display_signals.append(f"{sig} ({b})" if b != "Unknown" else sig)
+                if kmac["signal"]:
+                    display_signals.append(f"{kmac['signal']} ({b})" if b != "Unknown" else kmac["signal"])
+                if kmac["dbm"] > ui_sort_dbm: ui_sort_dbm = kmac["dbm"]
                     
             display_channels.update(data["channels"])
             
@@ -1964,13 +1985,20 @@ def get_wifi_networks():
         
         final_networks.append({
             "ssid": net["ssid"],
-            "mac": "", # Left intentionally empty because it is cleanly merged into the band column
+            "mac": "", # UI layout spacer
             "signal": "<br>".join(display_signals),
             "channel": ", ".join(sorted_channels),
             "auth": net["auth"],
             "band": "<br>".join(display_bands),
-            "raw_bssids": raw_bssids  # <--- NEW: Hidden array for the CSV export
+            "raw_bssids": raw_bssids,
+            "_sort_dbm": ui_sort_dbm # Temporary key for sorting the UI cards
         })
+
+    # Sort the final UI cards by the absolute strongest signal overall
+    final_networks.sort(key=lambda x: x['_sort_dbm'], reverse=True)
+    # Clean up the temporary sort key before saving to DB
+    for n in final_networks:
+        n.pop('_sort_dbm', None)
 
     # Auto-log scan to database
     if final_networks:
@@ -2246,14 +2274,17 @@ def bulk_export_wifi():
                 
                 csv_out = io.StringIO()
                 writer = csv.writer(csv_out)
-                writer.writerow(["SSID", "MAC", "Signal", "Channel", "Band", "Authentication"])
+                
+                writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication"])
                 for net in results:
                     if "raw_bssids" in net and net["raw_bssids"]:
                         for b in net["raw_bssids"]:
-                            writer.writerow([net.get('ssid',''), b.get('mac', ''), b.get('signal',''), b.get('channel',''), b.get('band',''), net.get('auth','')])
+                            if "dbm" in b or "percent" in b:
+                                writer.writerow([net.get('ssid',''), b.get('mac', ''), b.get('dbm',''), b.get('percent',''), b.get('channel',''), b.get('band',''), net.get('auth','')])
+                            else:
+                                writer.writerow([net.get('ssid',''), b.get('mac', ''), b.get('signal',''), "-", b.get('channel',''), b.get('band',''), net.get('auth','')])
                     else:
-                        # Legacy fallback
-                        writer.writerow([net.get('ssid',''), net.get('mac', ''), net.get('signal','').replace('<br>', ' | '), net.get('channel',''), net.get('band','').replace('<br>', ' | '), net.get('auth','')])
+                        writer.writerow([net.get('ssid',''), net.get('mac', ''), net.get('signal','').replace('<br>', ' | '), "-", net.get('channel',''), net.get('band','').replace('<br>', ' | '), net.get('auth','')])
 
                 zf.writestr(f"wifi_scan_{scan_id}_{scan_name}.csv", csv_out.getvalue())
     
@@ -2675,32 +2706,19 @@ def export_wifi_csv(scan_id):
         scan_name = row[0].replace(" ", "_")
         results = json.loads(row[1])
 
-        # Create CSV in memory
         output = io.StringIO()
         writer = csv.writer(output)
-        # Header Row
-        writer.writerow(["SSID", "MAC", "Signal", "Channel", "Band", "Authentication"])
+        
+        writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication"])
         for net in results:
             if "raw_bssids" in net and net["raw_bssids"]:
                 for b in net["raw_bssids"]:
-                    writer.writerow([
-                        net.get('ssid', 'Unknown'),
-                        b.get('mac', '-'),
-                        b.get('signal', '-'),
-                        b.get('channel', '-'),
-                        b.get('band', '-'),
-                        net.get('auth', '-')
-                    ])
+                    if "dbm" in b or "percent" in b:
+                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('dbm', '-'), b.get('percent', '-'), b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-')])
+                    else:
+                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('signal', '-'), "-", b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-')])
             else:
-                # Legacy fallback
-                writer.writerow([
-                    net.get('ssid', 'Unknown'),
-                    net.get('mac', '-'),
-                    net.get('signal', '-').replace('<br>', ' | '),
-                    net.get('channel', '-'),
-                    net.get('band', '-').replace('<br>', ' | '),
-                    net.get('auth', '-')
-                ])
+                writer.writerow([net.get('ssid', 'Unknown'), net.get('mac', '-'), net.get('signal', '-').replace('<br>', ' | '), "-", net.get('channel', '-'), net.get('band', '-').replace('<br>', ' | '), net.get('auth', '-')])
 
         output.seek(0)
         return Response(
@@ -2710,6 +2728,8 @@ def export_wifi_csv(scan_id):
         )
     except Exception as e:
         return str(e), 500
+
+
 
 @app.route('/api/wifi/history/clear_all', methods=['POST'])
 def clear_all_wifi_history():
@@ -2727,28 +2747,17 @@ def export_active_wifi_csv():
         
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["SSID", "MAC", "Signal", "Channel", "Band", "Authentication"])
+        
+        writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication"])
         for net in results:
             if "raw_bssids" in net and net["raw_bssids"]:
                 for b in net["raw_bssids"]:
-                    writer.writerow([
-                        net.get('ssid', 'Unknown'),
-                        b.get('mac', '-'),
-                        b.get('signal', '-'),
-                        b.get('channel', '-'),
-                        b.get('band', '-'),
-                        net.get('auth', '-')
-                    ])
+                    if "dbm" in b or "percent" in b:
+                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('dbm', '-'), b.get('percent', '-'), b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-')])
+                    else:
+                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('signal', '-'), "-", b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-')])
             else:
-                # Legacy fallback
-                writer.writerow([
-                    net.get('ssid', 'Unknown'),
-                    net.get('mac', '-'),
-                    net.get('signal', '-').replace('<br>', ' | '),
-                    net.get('channel', '-'),
-                    net.get('band', '-').replace('<br>', ' | '),
-                    net.get('auth', '-')
-                ])
+                writer.writerow([net.get('ssid', 'Unknown'), net.get('mac', '-'), net.get('signal', '-').replace('<br>', ' | '), "-", net.get('channel', '-'), net.get('band', '-').replace('<br>', ' | '), net.get('auth', '-')])
 
         return Response(
             output.getvalue(),
@@ -2757,7 +2766,7 @@ def export_active_wifi_csv():
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
+
 @app.route('/api/wifi/history/update', methods=['POST'])
 def update_wifi_history():
     """Updates the scan name and comment of a specific Wi-Fi history entry."""
@@ -2901,6 +2910,106 @@ def api_vendor_lookup():
             conn.commit()
             
     return jsonify({"vendor": vendor or "Unknown"})
+
+@app.route('/api/wifi_networks_history')
+def api_wifi_networks_history():
+    """Aggregates all unique Wi-Fi SSIDs seen across all historical scans."""
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.row_factory = sqlite3.Row
+            # Fetch all scans sorted oldest to newest to track first/last seen dates
+            rows = conn.execute("SELECT timestamp, results_json FROM wifi_history ORDER BY timestamp ASC").fetchall()
+            
+            networks = {}
+            for r in rows:
+                scan_ts = r['timestamp']
+                try:
+                    results = json.loads(r['results_json'])
+                    for net in results:
+                        ssid = net.get('ssid', 'Unknown')
+                        if not ssid: continue
+                        
+                        if ssid not in networks:
+                            networks[ssid] = {
+                                "ssid": ssid,
+                                "first_seen": scan_ts,
+                                "last_seen": scan_ts,
+                                "auth": net.get('auth', 'Unknown'),
+                                "macs": set(),
+                                "scan_count": 0
+                            }
+                        
+                        networks[ssid]["last_seen"] = scan_ts
+                        networks[ssid]["scan_count"] += 1
+                        
+                        # Extract unique MACs
+                        if "raw_bssids" in net:
+                            for b in net["raw_bssids"]:
+                                mac = b.get("mac")
+                                if mac and mac != "Unknown MAC":
+                                    networks[ssid]["macs"].add(mac)
+                except:
+                    continue
+            
+            # Format the output
+            result = []
+            for v in networks.values():
+                v["mac_count"] = len(v["macs"])
+                v.pop("macs") # Remove the set so it converts to JSON cleanly
+                result.append(v)
+                
+            # Sort by most recently seen
+            result.sort(key=lambda x: x["last_seen"], reverse=True)
+            return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route('/api/wifi_networks_history/details', methods=['POST'])
+def api_wifi_network_details():
+    """Returns all historical scan records for a specific SSID."""
+    ssid = request.json.get('ssid')
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT id, timestamp, scan_name, results_json FROM wifi_history ORDER BY timestamp DESC").fetchall()
+            
+            details = []
+            for r in rows:
+                scan_ts = r['timestamp']
+                scan_name = r['scan_name']
+                try:
+                    results = json.loads(r['results_json'])
+                    for net in results:
+                        if net.get('ssid') == ssid:
+                            if "raw_bssids" in net and net["raw_bssids"]:
+                                for b in net["raw_bssids"]:
+                                    details.append({
+                                        "scan_name": scan_name,
+                                        "timestamp": scan_ts,
+                                        "mac": b.get("mac", "Unknown"),
+                                        "dbm": b.get("dbm", ""),
+                                        "percent": b.get("percent", ""),
+                                        "channel": b.get("channel", ""),
+                                        "band": b.get("band", ""),
+                                        "auth": net.get("auth", "")
+                                    })
+                            else:
+                                # Legacy fallback for older scans
+                                details.append({
+                                    "scan_name": scan_name,
+                                    "timestamp": scan_ts,
+                                    "mac": net.get("mac", "Unknown"),
+                                    "dbm": "",
+                                    "percent": "",
+                                    "channel": net.get("channel", ""),
+                                    "band": net.get("band", ""),
+                                    "auth": net.get("auth", "")
+                                })
+                except:
+                    continue
+            return jsonify(details)
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 if __name__ == '__main__':
     cleanup_old_files()

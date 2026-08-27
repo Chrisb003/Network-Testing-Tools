@@ -140,12 +140,13 @@ body.touch-mode .form-check-label {
     <ul class="nav nav-pills mb-4 justify-content-center">
         <li class="nav-item"><a class="nav-link active" onclick="showPage('adapters', this)">Interfaces</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('devices', this)">Devices</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('device-history-page', this)">Device History</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('networks', this)">Networks</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('device-history-page', this)">Device History</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi-history', this)">Wi-Fi Scan History</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi-networks-history', this)">Wi-Fi History</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('dns-tool', this)">DNS Lookup</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('ping-tool', this)">Ping Tool</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi-history', this)">Wi-Fi History</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">Speed Test History</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('system', this)">System</a></li>
     </ul>
@@ -533,6 +534,53 @@ body.touch-mode .form-check-label {
     </div>
 </div>
 
+<div id="wifi-networks-history" class="page-section hidden">
+    <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
+            <h5 class="mb-0 text-nowrap me-3">Global Wi-Fi History</h5>
+            <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
+                <input type="text" id="wifiNetHist-filter" class="form-control form-control-sm w-50" placeholder="Filter SSID..." onkeyup="filterWifiNetHist()">
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportWifiNetHistCSV()">
+                    <i class="bi bi-download"></i> Export
+                </button>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0 small align-middle">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" id="wifiNetHist-master-check" onchange="toggleAll('wifiNetHist', this)"></th>
+                        <th>SSID</th>
+                        <th>Authentication</th>
+                        <th>Unique MACs</th>
+                        <th>Times Scanned</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                    </tr>
+                </thead>
+                <tbody id="wifi-net-hist-table">
+                    <tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="card-footer d-flex justify-content-between align-items-center bg-body-tertiary">
+            <div class="d-flex align-items-center gap-2">
+                <span class="small text-muted text-nowrap">Rows per page:</span>
+                <select id="wifiNetHist-per-page" class="form-select form-select-sm w-auto" onchange="changePerPage('wifiNetHist')">
+                    <option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="all">ALL</option>
+                </select>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                <span id="wifiNetHist-page-info" class="small text-muted text-nowrap">Page 1 of 1</span>
+                <div class="btn-group">
+                    <button id="btn-wifiNetHist-prev" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifiNetHist', -1)" disabled><i class="bi bi-chevron-left"></i></button>
+                    <button id="btn-wifiNetHist-next" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifiNetHist', 1)" disabled><i class="bi bi-chevron-right"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="system" class="page-section hidden">
     <div class="row">
         <div class="col-md-6 mb-4">
@@ -659,6 +707,37 @@ body.touch-mode .form-check-label {
                         </tr>
                     </thead>
                     <tbody id="devHistModalBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="wifiNetModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="wifiNetModalTitle">Wi-Fi History</h5>
+                <div class="d-flex gap-2 align-items-center">
+                    <button class="btn btn-sm btn-outline-primary" id="btn-export-wifiNet-modal" style="display:none;">
+                        <i class="bi bi-download"></i> Export
+                    </button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+            </div>
+            <div class="modal-body p-0 log-container">
+                <table class="table table-sm table-striped mb-0 small">
+                    <thead>
+                        <tr>
+                            <th>Scan Date</th>
+                            <th>Scan Name</th>
+                            <th>MAC Address</th>
+                            <th>Band / Ch</th>
+                            <th>Signal</th>
+                            <th>Auth</th>
+                        </tr>
+                    </thead>
+                    <tbody id="wifiNetModalBody"></tbody>
                 </table>
             </div>
         </div>
@@ -903,6 +982,8 @@ function showPage(id, link) {
     if(id === 'ping-tool') fetchToolLogs('ping');
     if(id === 'wifi-history') loadWifiHistory();
     if(id === 'device-history-page') loadDeviceHistory();
+    if(id === 'device-history-page') loadDeviceHistory();
+    if(id === 'wifi-networks-history') loadWifiNetworksHistory();
     // System page doesn't need auto-refresh on load
 }
 
@@ -1496,9 +1577,10 @@ let allNetworks = []; // Global array to hold the network data
         dns: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
         ping: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
         wifi: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
+        wifiNetHist: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() }, // <-- ADDED THIS
         history: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() }
     };
-
+    
     function getPaginatedData(type) {
         const state = tableState[type];
         const totalItems = state.filtered.length;
@@ -1560,6 +1642,7 @@ let allNetworks = []; // Global array to hold the network data
         else if (type === 'dns') renderToolLogs('dns');
         else if (type === 'ping') renderToolLogs('ping');
         else if (type === 'wifi') renderWifiHistoryTable();
+        else if (type === 'wifiNetHist') renderWifiNetworksHistory();
         else if (type === 'history') renderHistory();
     }
 
@@ -2569,10 +2652,6 @@ function getSelectedIds(className) {
     return Array.from(document.querySelectorAll(`.${className}:checked`)).map(cb => cb.value);
 }
 
-
-
-
-
 // --- UPDATED SPEED TEST EDIT LOGIC ---
 function editHistory(id, oldName, oldType) { 
     const n = prompt("Rename Network:", oldName); 
@@ -2587,6 +2666,161 @@ function editHistory(id, oldName, oldType) {
         body: JSON.stringify({id: id, name: n, type: t})
     }).then(fetchHistory); 
 }
+
+let currentModalWifiNetData = [];
+
+    function loadWifiNetworksHistory() {
+        const tb = document.getElementById('wifi-net-hist-table');
+        if (tb) tb.innerHTML = '<tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>';
+
+        fetch('/api/wifi_networks_history')
+            .then(r => r.json())
+            .then(d => {
+                if(d.error) throw new Error(d.error);
+                tableState.wifiNetHist.data = d;
+                tableState.wifiNetHist.filtered = d;
+                tableState.wifiNetHist.page = 1;
+                tableState.wifiNetHist.selected.clear();
+                renderWifiNetworksHistory();
+            })
+            .catch(err => {
+                if (tb) tb.innerHTML = `<tr><td colspan="7" class="text-center p-4 text-danger">Error: ${err.message}</td></tr>`;
+            });
+    }
+
+    function filterWifiNetHist() {
+        const q = document.getElementById('wifiNetHist-filter').value.toLowerCase();
+        tableState.wifiNetHist.filtered = tableState.wifiNetHist.data.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)));
+        tableState.wifiNetHist.page = 1;
+        renderWifiNetworksHistory();
+    }
+
+    function renderWifiNetworksHistory() {
+        const tb = document.getElementById('wifi-net-hist-table');
+        if (!tb) return;
+        const paginatedData = getPaginatedData('wifiNetHist');
+
+        tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
+            const isChecked = tableState.wifiNetHist.selected.has(n.ssid) ? 'checked' : '';
+            const safeSSID = n.ssid.replace(/'/g, "\\'");
+            return `
+            <tr style="cursor: pointer;" onclick="viewWifiNetworkDetails('${safeSSID}')">
+                <td onclick="event.stopPropagation()"><input type="checkbox" class="wifiNetHist-check" value="${n.ssid}" onchange="toggleSelection('wifiNetHist', this)" ${isChecked}></td>
+                <td><strong>${n.ssid}</strong></td>
+                <td>${n.auth}</td>
+                <td><span class="badge bg-info text-dark">${n.mac_count}</span></td>
+                <td><span class="badge bg-secondary">${n.scan_count}</span></td>
+                <td><small class="text-muted">${n.first_seen}</small></td>
+                <td><small>${n.last_seen}</small></td>
+            </tr>`;
+        }).join('') : '<tr><td colspan="7" class="text-center p-4">No Wi-Fi history found.</td></tr>';
+
+        updateMasterCheckbox('wifiNetHist', paginatedData.map(n => n.ssid));
+    }
+
+    function viewWifiNetworkDetails(ssid) {
+        document.getElementById('wifiNetModalTitle').innerText = `History for: ${ssid}`;
+        const tbody = document.getElementById('wifiNetModalBody');
+        const exportBtn = document.getElementById('btn-export-wifiNet-modal');
+        
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
+        exportBtn.style.display = 'none';
+        
+        // Setup Modal (Use singleton to prevent memory leaks if clicked multiple times)
+        let modal = bootstrap.Modal.getInstance(document.getElementById('wifiNetModal'));
+        if (!modal) modal = new bootstrap.Modal(document.getElementById('wifiNetModal'));
+        modal.show();
+
+        fetch('/api/wifi_networks_history/details', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ssid: ssid})
+        })
+        .then(r => r.json())
+        .then(data => {
+            if(data.error) throw new Error(data.error);
+            currentModalWifiNetData = data;
+            exportBtn.style.display = 'block';
+            exportBtn.onclick = () => exportSingleWifiNetworkHistory(ssid);
+
+            tbody.innerHTML = data.length ? data.map(x => {
+                let sig = "";
+                if (x.dbm && x.percent) sig = `${x.dbm} dBm (${x.percent}%)`;
+                else if (x.dbm) sig = `${x.dbm} dBm`;
+                else if (x.percent) sig = `${x.percent}%`;
+                else sig = "-";
+                
+                return `
+                <tr>
+                    <td><small class="text-muted">${x.timestamp}</small></td>
+                    <td>${x.scan_name}</td>
+                    <td class="font-monospace">${x.mac}</td>
+                    <td>${x.band} (Ch ${x.channel})</td>
+                    <td>${sig}</td>
+                    <td>${x.auth}</td>
+                </tr>`;
+            }).join('') : '<tr><td colspan="6" class="text-center p-3">No data available.</td></tr>';
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
+        });
+    }
+
+    function exportSingleWifiNetworkHistory(ssid) {
+        if (!currentModalWifiNetData.length) return;
+        const rows = currentModalWifiNetData.map(x => ({
+            "SSID": ssid,
+            "Scan Date": x.timestamp,
+            "Scan Name": x.scan_name,
+            "MAC Address": x.mac,
+            "Band": x.band,
+            "Channel": x.channel,
+            "Signal (dBm)": x.dbm,
+            "Signal (%)": x.percent,
+            "Authentication": x.auth
+        }));
+        
+        fetch('/api/devices/export', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rows: rows})
+        }).then(r=>r.blob()).then(b=>{
+            const u = URL.createObjectURL(b);
+            const a = document.createElement('a');
+            a.href = u;
+            a.download = `wifi_history_${ssid.replace(/\s+/g, '_')}.csv`;
+            a.click();
+        });
+    }
+
+    function exportWifiNetHistCSV() {
+        let dataToExport = [];
+        if (tableState.wifiNetHist.selected.size > 0) {
+            const selected = Array.from(tableState.wifiNetHist.selected);
+            dataToExport = tableState.wifiNetHist.data.filter(d => selected.includes(d.ssid));
+        } else {
+            dataToExport = tableState.wifiNetHist.filtered;
+            if(!dataToExport.length) return alert("No networks to export.");
+            if(!confirm(`No specific items selected. Export all ${dataToExport.length} visible record(s)?`)) return;
+        }
+
+        const rows = dataToExport.map(d => ({
+            "SSID": d.ssid,
+            "Authentication": d.auth,
+            "Unique MACs": d.mac_count,
+            "Times Scanned": d.scan_count,
+            "First Seen": d.first_seen,
+            "Last Seen": d.last_seen
+        }));
+
+        fetch('/api/devices/export', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rows: rows})
+        }).then(r=>r.blob()).then(b=>{
+            const u = URL.createObjectURL(b);
+            const a = document.createElement('a');
+            a.href = u;
+            a.download = `global_wifi_networks_history_${new Date().getTime()}.csv`;
+            a.click();
+        });
+    }
 
 </script>
 </body>
