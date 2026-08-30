@@ -6,3 +6,9 @@ venv/
 network_data.db-shm
 network_data.db-wal
 network_data.db
+network_data_dev.db-shm
+network_data_dev.db-wal
+network_data_dev.db
+network_data_dev.db-shm.back
+network_data_dev.db-wal.back
+network_data_dev.db.back
