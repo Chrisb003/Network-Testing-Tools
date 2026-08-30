@@ -1,0 +1,82 @@
+        body { padding-bottom: 70px; }
+        .hidden { display: none; }
+        .nav-link { cursor: pointer; }
+        .metric-card { 
+            background-color: var(--bs-card-bg); 
+            border: 1px solid var(--bs-border-color); 
+            border-radius: 12px; padding: 20px; text-align: center; 
+        }
+        .status-active { color: #198754; font-weight: bold; }
+        .status-inactive { color: #dc3545; }
+        .status-offline { color: #6c757d; font-style: italic; }
+        
+        .version-footer { 
+            position: fixed; bottom: 0; left: 0; width: 100%; 
+            background-color: var(--bs-tertiary-bg); color: var(--bs-body-color);
+            border-top: 1px solid var(--bs-border-color); font-size: 0.85em; 
+            padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; z-index: 1000; 
+        }
+        .ver-tag { cursor: pointer; margin-left: 15px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--bs-border-color); transition: 0.2s; }
+        .ver-tag:hover { background-color: var(--bs-secondary-bg); }
+        .ver-update { color: #ffc107; border-color: #ffc107; font-weight: bold; }
+        
+        .log-container { max-height: 400px; overflow-y: auto; }
+        #history-table tr, #network-list tr { cursor: pointer; }
+        /* Wi-Fi History Table Styling */
+.wifi-res-preview { 
+    max-width: 250px; 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+    white-space: nowrap; 
+    display: inline-block; 
+}
+
+#wifi-history-table tr td {
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
+.badge-wifi-count {
+    background-color: var(--bs-primary-bg-subtle);
+    color: var(--bs-primary);
+    border: 1px solid var(--bs-primary-border-subtle);
+    font-size: 0.75rem;
+}
+
+/* Touch Screen View Adjustments */
+body.touch-mode .btn {
+    padding: 0.75rem 1.25rem !important;
+    font-size: 1.1rem !important;
+}
+body.touch-mode .nav-link {
+    padding: 1rem 1.5rem;
+    font-size: 1.2rem;
+}
+body.touch-mode .table td, body.touch-mode .table th {
+    padding: 1.25rem 0.75rem;
+    font-size: 1.1rem;
+}
+body.touch-mode .form-control, body.touch-mode .form-select {
+    padding: 0.75rem 1rem;
+    font-size: 1.1rem;
+}
+body.touch-mode .form-check-input {
+    width: 1.75em;
+    height: 1.75em;
+    margin-top: 0.1em;
+}
+body.touch-mode .form-check-label {
+    font-size: 1.1rem;
+    padding-left: 0.25rem;
+}
+
+/* Expands the main container globally to utilize empty side gaps */
+.container {
+    max-width: 96%; 
+}
+
+/* Forces the navigation menu to stay on a single line at all times */
+.nav-pills {
+    flex-wrap: nowrap;
+    white-space: nowrap;
+}
