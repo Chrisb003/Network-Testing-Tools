@@ -14,9 +14,10 @@ import socket
 import time
 import webbrowser
 from pathlib import Path
+import sqlite3
 
 # --- Configuration ---
-SETUP_VERSION = "0.8.0"
+SETUP_VERSION = "0.9.1"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
@@ -39,6 +40,21 @@ GITHUB_SETTINGS = {
     "token": "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",
     "branch": "main"
 }
+
+GITHUB_SETTINGS_DEV = {
+    "owner": "Chrisb003",
+    "repo": "Network-Testing-Tools",
+    "token": "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",
+    "branch": "dev"
+}
+
+def get_active_github_settings(base_dir):
+    """Checks if a 'dev' file exists to determine which GitHub repo to pull from."""
+    dev_file_path = base_dir / "dev"
+    if dev_file_path.exists():
+        print("[*] 'dev' file detected. Using Development repository.")
+        return GITHUB_SETTINGS_DEV
+    return GITHUB_SETTINGS
 
 def is_admin():
     """Checks if the script is running with administrative privileges."""
@@ -126,13 +142,16 @@ def fetch_latest_from_github(base_dir):
     """Downloads and extracts the private project and sets full permissions."""
     print(f"[*] '{APP_FILENAME}' not found. Initializing private download from GitHub...")
     
-    zip_url = f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}"
+    # Use the dynamic settings instead of hardcoding
+    gh_set = get_active_github_settings(base_dir)
+    
+    zip_url = f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/zipball/{gh_set['branch']}"
     req = urllib.request.Request(zip_url)
-    req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
+    req.add_header("Authorization", f"token {gh_set['token']}")
     req.add_header("Accept", "application/vnd.github.v3+json")
     
     try:
-        print(f"[*] Authorizing and fetching: {GITHUB_SETTINGS['repo']}...")
+        print(f"[*] Authorizing and fetching: {gh_set['repo']}...")
         with urllib.request.urlopen(req) as response:
             with zipfile.ZipFile(io.BytesIO(response.read())) as zip_ref:
                 top_folder = zip_ref.namelist()[0]

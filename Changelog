@@ -1,4 +1,4 @@
-0.9.1 - A few UI fixes and clean up of dashboard code moving styles and scripts to seperate file.
+0.9.1 - A few UI fixes and clean up of dashboard code moving styles and scripts to seperate file. Added option to switch between production and dev environments
 
 0.9.0 - New device history page allowing you to lookup history of devices found during network scans. Also added option to look through wifi networks. Few small bug fixes with mac address vendor lookup. Fixed search and it now remembers selected items between pages.
 

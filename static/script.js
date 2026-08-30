@@ -45,6 +45,10 @@
         updateTouchIcon(savedTouchMode);
         // Run the new verification check
         if (typeof verifyUpdateStatus === "function") verifyUpdateStatus();
+        const channelSelect = document.getElementById('update-channel-select');
+        if (channelSelect && window.APP_CONFIG.updateChannel) {
+            channelSelect.value = window.APP_CONFIG.updateChannel;
+        }
     });
 
     async function unpinAdapter() {
@@ -1556,24 +1560,41 @@ function deleteSingleSpeedTest(id) {
 }
 
     // --- Updater Logic (Global Version) ---
-    function checkUpdates() {   
+function checkUpdates() {   
         fetch('/api/update/check').then(r => r.json()).then(d => {
             if (d.status === 'success') {
                 pendingRemoteVersion = d.remote_version;
-                // Highlight the version tag if a global update is available OR specific files mismatch
-                if (d.update_available || isVersionHigher(d.remote_version, window.APP_CONFIG.globalVersion)) {
+                
+                const local = window.APP_CONFIG.globalVersion || "0.0.0";
+                const remote = d.remote_version || "0.0.0";
+                const channel = window.APP_CONFIG.updateChannel || "stable";
+                
+                const isLocalDev = local.includes('DEV');
+                
+                // Determine if we crossed channels (e.g. from Stable to Dev)
+                let crossChannelUpdate = false;
+                if (channel === 'dev' && !isLocalDev) crossChannelUpdate = true;
+                if (channel === 'stable' && isLocalDev) crossChannelUpdate = true;
+                
+                const isHigher = isVersionHigher(remote, local);
+                
+                // Trigger the alert badge if there is a mismatch OR standard update
+                if (d.update_available || isHigher || crossChannelUpdate) {
                     const t = document.getElementById('ver-global');
                     if (t) {
                         t.classList.add('ver-update');
-                        t.innerHTML = `Global: ${window.APP_CONFIG.globalVersion} <i class="bi bi-exclamation-circle-fill"></i>`;
+                        t.innerHTML = `Global: ${local.replace('DEV', '')} <i class="bi bi-exclamation-circle-fill"></i>`;
                     }
                 }
             }
         });
     }
 
-    function isVersionHigher(v1, v2) {
-        const p1 = v1.split('.').map(Number), p2 = v2.split('.').map(Number);
+function isVersionHigher(v1, v2) {
+        // Automatically strip 'DEV' so it strictly compares the numeric values
+        const cleanV1 = String(v1).replace('DEV', '');
+        const cleanV2 = String(v2).replace('DEV', '');
+        const p1 = cleanV1.split('.').map(Number), p2 = cleanV2.split('.').map(Number);
         for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
             if ((p1[i]||0) > (p2[i]||0)) return true;
             if ((p1[i]||0) < (p2[i]||0)) return false;
@@ -1605,14 +1626,36 @@ function openUpdateModal() {
     fetch('/api/update/check')
         .then(r => r.json())
         .then(d => {
-            const updateFound = d.update_available || isVersionHigher(d.remote_version, window.APP_CONFIG.globalVersion);
+            const local = window.APP_CONFIG.globalVersion || "0.0.0";
+            const remote = d.remote_version || "0.0.0";
+            const channel = window.APP_CONFIG.updateChannel || "stable";
+            
+            const isLocalDev = local.includes('DEV');
+            
+            let crossChannelUpdate = false;
+            if (channel === 'dev' && !isLocalDev) crossChannelUpdate = true;
+            if (channel === 'stable' && isLocalDev) crossChannelUpdate = true;
+            
+            const isHigher = isVersionHigher(remote, local);
+            const updateFound = d.update_available || isHigher || crossChannelUpdate;
             
             if (updateFound) {
-                pendingRemoteVersion = d.remote_version; 
+                pendingRemoteVersion = remote; 
                 msg.className = "alert alert-warning";
-                msg.innerText = d.update_available ? 
-                    `Update Required: File mismatch detected (Remote v${d.remote_version})` : 
-                    `Update Available: v${d.remote_version} (Current: v${window.APP_CONFIG.globalVersion})`;
+                
+                let statusText = "Update Available";
+                let reasonText = `v${remote.replace('DEV', '')} (Current: v${local.replace('DEV', '')})`;
+                
+                // Customize modal text if crossing channels
+                if (crossChannelUpdate) {
+                    statusText = "Channel Switch Required";
+                    reasonText = channel === 'dev' ? "Installing Development Build..." : "Restoring Production Build...";
+                } else if (d.update_available && !isHigher) {
+                    statusText = "Update Required";
+                    reasonText = `File mismatch detected (Remote v${remote.replace('DEV', '')})`;
+                }
+                
+                msg.innerText = `${statusText}: ${reasonText}`;
                 btn.disabled = false;
             } else {
                 msg.className = "alert alert-success"; 
@@ -2024,3 +2067,63 @@ let currentModalWifiNetData = [];
             a.click();
         });
     }
+
+
+function changeUpdateChannel() {
+    const select = document.getElementById('update-channel-select');
+    const newChannel = select.value;
+    const oldChannel = window.APP_CONFIG.updateChannel || 'stable';
+
+    // 1. Display Warnings Based on the Selection
+    if (newChannel === 'dev' && oldChannel !== 'dev') {
+        const devWarning = "The Development version may be unstable or broken. It is used for test with before it is release to the Production version\n\nUse at your own risk.\n\nThe database may be different and not backwards compatible.";
+        if (!confirm(devWarning)) {
+            select.value = oldChannel; // Revert the dropdown
+            return;
+        }
+    } else if (newChannel === 'stable' && oldChannel === 'dev') {
+        const prodWarning = "Are you sure you want to switch back to Production version, database may be incompatible?";
+        if (!confirm(prodWarning)) {
+            select.value = oldChannel; // Revert the dropdown
+            return;
+        }
+    }
+
+    // 2. Proceed with the API call if confirmed
+    select.disabled = true;
+    
+    fetch('/api/settings/channel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: newChannel })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === "success") {
+            window.APP_CONFIG.updateChannel = newChannel;
+            
+            // Instantly update the Footer Badge
+            const badge = document.getElementById('footer-channel-badge');
+            if (badge) {
+                if (newChannel === 'dev') {
+                    badge.innerText = 'Dev';
+                    badge.className = 'badge bg-warning text-dark me-2';
+                } else {
+                    badge.innerText = 'Production';
+                    badge.className = 'badge bg-success me-2';
+                }
+            }
+            
+            // Automatically re-check for updates against the new repository
+            checkUpdates();
+            alert(`Update channel switched to ${newChannel === 'dev' ? 'Development' : 'Production'}.`);
+        }
+    })
+    .catch(err => {
+        alert("Error changing channel: " + err.message);
+        select.value = oldChannel; // Revert the dropdown on error
+    })
+    .finally(() => {
+        select.disabled = false;
+    });
+}

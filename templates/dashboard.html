@@ -534,6 +534,7 @@
 
 <div id="system" class="page-section hidden">
     <div class="row">
+        <!-- Card 1: Backup & Migration -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100">
                 <div class="card-header bg-primary-subtle text-primary">
@@ -554,6 +555,7 @@
             </div>
         </div>
 
+        <!-- Card 2: Database Maintenance -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-warning">
                 <div class="card-header bg-warning-subtle text-warning-emphasis">
@@ -574,6 +576,24 @@
                 </div>
             </div>
         </div>
+
+        <!-- Card 3: Update Channel (Now on the Left) -->
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100 border-secondary">
+                <div class="card-header bg-secondary-subtle text-secondary-emphasis">
+                    <h5 class="mb-0"><i class="bi bi-github"></i> Update Channel</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">Select which repository to receive system updates from.</p>
+                    <select id="update-channel-select" class="form-select mb-3" onchange="changeUpdateChannel()">
+                        <option value="stable">Production (Stable)</option>
+                        <option value="dev">Development (Dev)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 4: Network Connection Types (Now on the Right) -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-info">
                 <div class="card-header bg-info-subtle text-info-emphasis">
@@ -581,8 +601,7 @@
                 </div>
                 <div class="card-body">
                     <p class="small text-muted">Manage the connection types available in the Speed Test dropdown.</p>
-                    <ul class="list-group mb-3" id="connection-type-list" style="max-height: 180px; overflow-y: auto;">
-                        </ul>
+                    <ul class="list-group mb-3" id="connection-type-list" style="max-height: 180px; overflow-y: auto;"></ul>
                     <div class="input-group">
                         <input type="text" id="new-conn-type" class="form-control form-control-sm" placeholder="e.g. 5G Home Internet" onkeydown="if(event.key === 'Enter') addConnectionType()">
                         <button class="btn btn-primary btn-sm" onclick="addConnectionType()">Add Type</button>
@@ -590,8 +609,10 @@
                 </div>
             </div>
         </div>
-    </div>
+        
+    </div> <!-- End of Row -->
 </div>
+
 <div class="modal fade" id="updateFailedModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content border-danger">
@@ -608,7 +629,10 @@
 <div class="version-footer">
     <div>Network Diagnostics <span class="badge bg-secondary">BETA</span></div>
     <div>
-        <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Global: {{ global_version }}</span>
+        <span id="footer-channel-badge" class="badge {% if update_channel == 'dev' %}bg-warning text-dark{% else %}bg-success{% endif %} me-2" style="font-size: 0.9em; vertical-align: middle;">
+            {{ 'Dev' if update_channel == 'dev' else 'Production' }}
+        </span>
+        <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Global: {{ global_version | replace('DEV', '') }}</span>
         <span class="ver-tag" onclick="openUpdateModal()">Setup: {{ setup_version }}</span>
         <span class="ver-tag" onclick="openUpdateModal()">App: {{ app_version }}</span>
         <span class="ver-tag" onclick="openUpdateModal()">Dashboard: {{ html_version }}</span>
@@ -746,14 +770,15 @@
     </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<!-- Pass Jinja variables to JavaScript -->
+<!-- 1. Pass ALL Jinja variables to JavaScript first -->
 <script>
     window.APP_CONFIG = {
-        globalVersion: "{{ global_version }}"
+        globalVersion: "{{ global_version }}",
+        updateChannel: "{{ update_channel }}"
     };
 </script>
 
-<!-- Load external script -->
+<!-- 2. Load external script after variables are defined -->
 <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>

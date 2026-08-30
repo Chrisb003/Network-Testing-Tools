@@ -32,7 +32,7 @@ conf.verb = 0
 
 
 # --- Configuration ---
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -43,8 +43,23 @@ GITHUB_SETTINGS = {
     "branch": "main"
 }
 
+def get_global_version():
+    """Reads the current global version from local version.json."""
+    try:
+        if os.path.exists("version.json"):
+            with open("version.json", "r") as f:
+                return json.load(f).get("version", "0.0.0")
+        return "0.0.0"
+    except:
+        return "Error"
+
 app = Flask(__name__)
-DB_NAME = "network_data.db"
+
+# Dynamically set the database file based on the version tag
+if "DEV" in get_global_version().upper():
+    DB_NAME = "network_data_dev.db"
+else:
+    DB_NAME = "network_data.db"
 
 # --- Database & Migrations ---
 def init_db():
@@ -156,6 +171,13 @@ def init_db():
         if c.fetchone()[0] == 0:
             for t in ["Ethernet", "Wi-Fi", "Mobile data"]:
                 c.execute("INSERT INTO connection_types (name) VALUES (?)", (t,))
+
+        # 10. System Settings
+        c.execute('''CREATE TABLE IF NOT EXISTS system_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )''')
+        c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('update_channel', 'stable')")
         
         # --- MIGRATIONS (Updates existing databases safely) ---
         
@@ -222,16 +244,6 @@ def get_setup_version():
                 match = re.search(r'SETUP_VERSION\s*=\s*["\']([^"\']+)["\']', f.read())
                 return match.group(1) if match else "Unknown"
         return "Not Found"
-    except:
-        return "Error"
-
-def get_global_version():
-    """Reads the current global version from local version.json."""
-    try:
-        if os.path.exists("version.json"):
-            with open("version.json", "r") as f:
-                return json.load(f).get("version", "0.0.0")
-        return "0.0.0"
     except:
         return "Error"
 
@@ -877,6 +889,11 @@ def index():
                 active_dns = v.get("dns")
                 break
 
+# Grab the current channel to pass to the frontend
+    with sqlite3.connect(DB_NAME) as conn:
+        row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
+        current_channel = row[0] if row else 'stable'
+
     return render_template('dashboard.html', 
                            local_ip=get_local_ip(), 
                            wan_ip=info['ip'], 
@@ -886,7 +903,8 @@ def index():
                            global_version=get_global_version(), 
                            setup_version=get_setup_version(), 
                            app_version=APP_VERSION,
-                           html_version=get_html_version())
+                           html_version=get_html_version(),
+                           update_channel=current_channel) # NEW VARIABLE
 
 @app.route('/api/system/cleanup', methods=['POST'])
 def cleanup_database():
@@ -2458,12 +2476,38 @@ def import_database():
 
 # --- Updater (GitHub Integration) ---
 
+def get_update_channel():
+    """Helper to fetch the current update channel from DB."""
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
+            return row[0] if row else 'stable'
+    except:
+        return 'stable'
+
+def get_github_settings():
+    """Routes updates to the Dev repo settings if selected."""
+    channel = get_update_channel()
+    if channel == 'dev':
+        return GITHUB_SETTINGS_DEV
+    return GITHUB_SETTINGS
+
+@app.route('/api/settings/channel', methods=['POST'])
+def handle_update_channel():
+    """API endpoint to switch the update channel."""
+    channel = request.json.get('channel', 'stable')
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('update_channel', ?)", (channel,))
+        conn.commit()
+    return jsonify({"status": "success", "channel": channel})
+
 def fetch_github_file(filename):
     """Fetches raw file content from private GitHub repo."""
-    url = f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/contents/{filename}?ref={GITHUB_SETTINGS['branch']}"
+    gh_set = get_github_settings()
+    url = f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/contents/{filename}?ref={gh_set['branch']}"
     req = urllib.request.Request(url)
-    if GITHUB_SETTINGS["token"]: 
-        req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
+    if gh_set["token"]: 
+        req.add_header("Authorization", f"token {gh_set['token']}")
     try:
         with urllib.request.urlopen(req) as response:
             return base64.b64decode(json.loads(response.read().decode())['content']).decode('utf-8')
@@ -2560,12 +2604,16 @@ def update_software():
     Sets full Read/Write/Execute (777) permissions for all users.
     """
     try:
-        if 'GITHUB_SETTINGS' not in globals(): return jsonify({"error": "No GitHub settings."}), 500
-        print(f"[*] Starting Update on {platform.system()}...")
+        gh_set = get_github_settings() # USE DYNAMIC SETTINGS
+        if not gh_set: return jsonify({"error": "No GitHub settings."}), 500
+        print(f"[*] Starting Update on {platform.system()} from {gh_set['repo']}...")
+        
+        # --- 1. Snapshot the state BEFORE updating ---
+        was_dev = "DEV" in get_global_version().upper()
         
         # 1. Download
-        req = urllib.request.Request(f"https://api.github.com/repos/{GITHUB_SETTINGS['owner']}/{GITHUB_SETTINGS['repo']}/zipball/{GITHUB_SETTINGS['branch']}")
-        if GITHUB_SETTINGS.get('token'): req.add_header("Authorization", f"token {GITHUB_SETTINGS['token']}")
+        req = urllib.request.Request(f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/zipball/{gh_set['branch']}")
+        if gh_set.get('token'): req.add_header("Authorization", f"token {gh_set['token']}")
         
         try:
             with urllib.request.urlopen(req) as response: zip_data = io.BytesIO(response.read())
@@ -2610,6 +2658,26 @@ def update_software():
                             fix_permissions(dest_file)
                             
                         except Exception as e: print(f"[!] Update copy failed for {file}: {e}")
+
+        # --- 2. Database Copy Logic (Post-Extraction) ---
+        is_now_dev = "DEV" in get_global_version().upper()
+        
+        # If we successfully transitioned from a Production version to a Dev version
+        if not was_dev and is_now_dev:
+            prod_db = os.path.join(app.root_path, "network_data.db")
+            dev_db = os.path.join(app.root_path, "network_data_dev.db")
+            bak_db = dev_db + ".back"
+            
+            # Only attempt a copy if a Production database actually exists
+            if os.path.exists(prod_db):
+                # Back up the existing Dev DB if one is found
+                if os.path.exists(dev_db):
+                    if os.path.exists(bak_db):
+                        os.remove(bak_db) # Remove older backup to make room for new one
+                    os.rename(dev_db, bak_db)
+                
+                shutil.copy2(prod_db, dev_db)
+                print("[*] Transitioned to DEV: Copied Production DB to Dev DB.")
 
         print("[✓] Update applied. Permissions set to Read/Write/Execute for all.")
         threading.Thread(target=restart_server).start()
@@ -2662,7 +2730,7 @@ def save_wifi_scan():
 
 @app.route('/api/wifi/history', methods=['GET'])
 def get_wifi_history():
-    conn = sqlite3.connect('network_data.db')
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT id, timestamp, scan_name, comments FROM wifi_history ORDER BY timestamp DESC")
     rows = c.fetchall()
@@ -2672,7 +2740,7 @@ def get_wifi_history():
 
 @app.route('/api/wifi/history/<int:scan_id>', methods=['GET'])
 def load_wifi_scan(scan_id):
-    conn = sqlite3.connect('network_data.db')
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT results_json, scan_name FROM wifi_history WHERE id = ?", (scan_id,))
     row = c.fetchone()
@@ -2684,7 +2752,7 @@ def load_wifi_scan(scan_id):
 @app.route('/api/wifi/delete', methods=['POST'])
 def delete_wifi_scan():
     scan_id = request.json.get('id')
-    conn = sqlite3.connect('network_data.db')
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("DELETE FROM wifi_history WHERE id = ?", (scan_id,))
     conn.commit()
@@ -2694,7 +2762,7 @@ def delete_wifi_scan():
 @app.route('/api/wifi/export/<int:scan_id>')
 def export_wifi_csv(scan_id):
     try:
-        conn = sqlite3.connect('network_data.db')
+        conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("SELECT scan_name, results_json FROM wifi_history WHERE id = ?", (scan_id,))
         row = c.fetchone()
@@ -2780,8 +2848,7 @@ def update_wifi_history():
         new_name = f"Scan {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
     try:
-        # Use 'network_data.db' to match your other wifi_history functions
-        with sqlite3.connect('network_data.db') as conn:
+        with sqlite3.connect(DB_NAME) as conn:
             conn.execute(
                 "UPDATE wifi_history SET scan_name = ?, comments = ? WHERE id = ?",
                 (new_name, new_comment, scan_id)
