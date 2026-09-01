@@ -17,7 +17,7 @@ from pathlib import Path
 import sqlite3
 
 # --- Configuration ---
-SETUP_VERSION = "0.9.1"
+SETUP_VERSION = "0.9.2"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
@@ -65,6 +65,19 @@ def is_admin():
             return os.getuid() == 0
     except:
         return False
+
+def get_autostart_setting(base_dir):
+    """Reads the autostart file, creates it with '1' if missing."""
+    autostart_file = base_dir / "autostart"
+    if not autostart_file.exists():
+        with open(autostart_file, "w") as f:
+            f.write("1")
+        return True
+    try:
+        with open(autostart_file, "r") as f:
+            return f.read().strip() == "1"
+    except:
+        return True
 
 def ensure_linux_prerequisites():
     """
@@ -341,27 +354,32 @@ def run_application(base_dir, venv_python):
         cmd = ["sudo"] + cmd
         
     try:
+        current_port = get_configured_port(base_dir)
+        
         # Start the app as a subprocess so we can monitor it
         process = subprocess.Popen(cmd)
         
-        print("[*] Waiting for the server to spin up...")
+        print(f"[*] Waiting for the server to spin up on port {current_port}...")
         
-        # Check if port 81 is open, trying once per second for up to 60 seconds
+        # Check if the port is open, trying once per second for up to 60 seconds
         server_ready = False
         for _ in range(60):
             try:
                 # Attempt to connect to the local port
-                with socket.create_connection(("127.0.0.1", 81), timeout=1):
+                with socket.create_connection(("127.0.0.1", current_port), timeout=1):
                     server_ready = True
                     break
             except (ConnectionRefusedError, TimeoutError, OSError):
                 time.sleep(1)
         
         if server_ready:
-            print("[✓] Server is ready! Opening browser...")
-            webbrowser.open("http://127.0.0.1:81")
+            if get_autostart_setting(base_dir):
+                print("[✓] Server is ready! Opening browser...")
+                webbrowser.open(f"http://127.0.0.1:{current_port}")
+            else:
+                print(f"[✓] Server is ready! Access remotely via http://<your_device_ip>:{current_port}")
         else:
-            print("[!] Could not verify server status. You can try opening http://127.0.0.1:81 manually.")
+            print(f"[!] Could not verify server status. You can try opening http://127.0.0.1:{current_port} manually.")
 
         # Keep this setup script open as long as the dashboard is running
         process.wait()
@@ -423,6 +441,31 @@ def has_internet():
         return True
     except OSError:
         return False
+
+def get_configured_port(base_dir):
+    """Reads the configured port from the DB or the 'webport' override file, defaulting to 81."""
+    # Check if the override file is waiting to be processed
+    port_file = base_dir / "webport"
+    if port_file.exists():
+        try:
+            with open(port_file, "r") as f:
+                val = f.read().strip()
+                # ADDED STRICT VALIDATION
+                if val.isdigit() and 1 <= int(val) <= 65535: 
+                    return int(val)
+        except: pass
+        
+    # Check the database
+    db_path = base_dir / "network_data.db"
+    if db_path.exists():
+        try:
+            import sqlite3
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
+                if row: return int(row[0])
+        except: pass
+        
+    return 81
 
 def main():
     base_dir = Path(__file__).parent.resolve()

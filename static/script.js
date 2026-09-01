@@ -929,9 +929,10 @@ function renderDeviceHistory() {
 
         const missingVendors = [];
 
-        tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
+tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
             const displayName = d.custom_name || d.clean_hostname || "Unknown";
             const safeName = String(displayName).replace(/'/g, "\\'");
+            const safeVendor = String(d.vendor || '').replace(/'/g, "\\'"); 
             
             let vendorHtml = d.vendor;
             if (!vendorHtml || vendorHtml === 'Unknown') {
@@ -944,7 +945,7 @@ function renderDeviceHistory() {
             const isChecked = selectedDevHistMacs.has(d.mac_address) ? 'checked' : '';
             
             return `
-            <tr style="cursor: pointer;" onclick="viewDeviceDetails('${d.mac_address}', '${safeName}')">
+            <tr style="cursor: pointer;" onclick="viewDeviceDetails('${d.mac_address}', '${safeName}', '${safeVendor}')">
                 <td onclick="event.stopPropagation()">
                     <input type="checkbox" class="dev-hist-check" value="${d.mac_address}" onchange="toggleDevHistSelection(this)" ${isChecked}>
                 </td>
@@ -1012,8 +1013,17 @@ function exportDevHistCSV() {
         }); 
     }
 
-function viewDeviceDetails(mac, name) {
-        document.getElementById('devHistModalTitle').innerText = `History for: ${name} (${mac})`;
+function viewDeviceDetails(mac, name, vendor) {
+        // Build the HTML for the main title
+        let modalTitleHtml = `<span class="fw-bold">${name}</span> <br><span class="text-muted small fs-7 fw-normal">${mac}</span>`;
+        
+        // If a valid vendor exists, add it on a new line with muted, smaller text
+        if (vendor && vendor.trim() !== "" && vendor !== "undefined" && vendor !== "Unknown") {
+            modalTitleHtml += `<br><span class="text-muted small fs-7 fw-normal">Make: ${vendor}</span>`;
+        }
+        
+        // Use .innerHTML instead of .innerText to render the HTML structure
+        document.getElementById('devHistModalTitle').innerHTML = modalTitleHtml;
         const tbody = document.getElementById('devHistModalBody');
         const exportBtn = document.getElementById('btn-export-dev-modal');
         
@@ -1515,8 +1525,6 @@ function deleteSingleToolLog(type, id) {
             }
         }).catch(err => { btn.disabled = false; resultDiv.innerHTML = "Error."; }); 
     }
-    
-
     
 function openEditSpeedTestModal(id, name, type) {
     document.getElementById('modal-st-id').value = id;

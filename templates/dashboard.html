@@ -1,4 +1,4 @@
-<!-- Version number 0.9.1 -->
+<!-- Version number 0.9.2 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -610,6 +610,48 @@
             </div>
         </div>
         
+<!-- Card 5: App Preferences -->
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100 border-success">
+                <div class="card-header bg-success-subtle text-success-emphasis">
+                    <h5 class="mb-0"><i class="bi bi-display"></i> App Preferences</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted mb-2">Manage startup behavior and UI preferences.</p>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="autostart-toggle" onchange="toggleAutostart()">
+                        <label class="form-check-label" for="autostart-toggle">Open Web Browser on Startup</label>
+                    </div>
+                    <hr>
+                    <p class="small text-muted mb-2">Web Server Port</p>
+                    <div class="input-group input-group-sm mb-2">
+                        <span class="input-group-text">Port</span>
+                        <input type="number" id="web-port" class="form-control" placeholder="81" min="1" max="65535" oninput="if(this.value > 65535) this.value = 65535;">
+                        <button class="btn btn-outline-primary" onclick="savePort()">Apply & Restart</button>
+                    </div>
+                    <hr>
+                    <p class="small text-muted mb-2">Access Control</p>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="auth-toggle" onchange="toggleAuthFields()">
+                        <label class="form-check-label fw-bold" for="auth-toggle">Require Login</label>
+                    </div>
+                    
+                    <div id="auth-fields" class="hidden">
+                        <div class="mb-2">
+                            <input type="text" id="auth-user" class="form-control form-control-sm" placeholder="Username">
+                        </div>
+                        <div class="input-group input-group-sm mb-2">
+                            <input type="password" id="auth-pass" class="form-control" placeholder="New Password (leave blank to keep current)">
+                            <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility()">
+                                <i class="bi bi-eye" id="auth-pass-icon"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-success w-100 mt-2" onclick="saveAuthSettings()">Save Access Settings</button>
+                </div>
+            </div>
+        </div>
+
     </div> <!-- End of Row -->
 </div>
 
@@ -776,6 +818,142 @@
         globalVersion: "{{ global_version }}",
         updateChannel: "{{ update_channel }}"
     };
+
+    // 1. Fetch settings as soon as the page loads
+    document.addEventListener("DOMContentLoaded", function() {
+        // Fetch Autostart
+        fetch('/api/settings/autostart')
+            .then(res => res.json())
+            .then(data => {
+                const toggle = document.getElementById('autostart-toggle');
+                if (toggle) toggle.checked = data.autostart;
+            })
+            .catch(err => console.error("Error fetching autostart setting:", err));
+
+        // Fetch Auth Settings
+        fetch('/api/settings/auth')
+            .then(res => res.json())
+            .then(data => {
+                const authToggle = document.getElementById('auth-toggle');
+                if (authToggle) {
+                    authToggle.checked = data.enabled;
+                    document.getElementById('auth-user').value = data.username;
+                    toggleAuthFields();
+                }
+            })
+            .catch(err => console.error("Error fetching auth settings:", err));
+
+        // Fetch Port Setting
+        fetch('/api/settings/port')
+            .then(res => res.json())
+            .then(data => {
+                const portInput = document.getElementById('web-port');
+                if (portInput) {
+                    portInput.value = data.port;
+                    portInput.min = "1";
+                    portInput.max = "65535";
+                }
+            })
+            .catch(err => console.error("Error fetching port setting:", err));
+    });
+
+    // 2. Handle Autostart toggle
+    function toggleAutostart() {
+        const toggle = document.getElementById('autostart-toggle');
+        const isEnabled = toggle.checked;
+        
+        fetch('/api/settings/autostart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enable: isEnabled })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.status !== "success") toggle.checked = !isEnabled;
+        })
+        .catch(err => { toggle.checked = !isEnabled; });
+    }
+
+    // 3. Handle Auth UI Expansion
+    function toggleAuthFields() {
+        const fields = document.getElementById('auth-fields');
+        if (document.getElementById('auth-toggle').checked) {
+            fields.classList.remove('hidden');
+        } else {
+            fields.classList.add('hidden');
+        }
+    }
+
+    // 4. Handle Saving Auth Settings
+    function saveAuthSettings() {
+        const isEnabled = document.getElementById('auth-toggle').checked;
+        const user = document.getElementById('auth-user').value;
+        const pass = document.getElementById('auth-pass').value;
+
+        if (isEnabled && !user) {
+            alert("A username is required to enable login.");
+            return;
+        }
+
+        fetch('/api/settings/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: isEnabled, username: user, password: pass })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === "success") {
+                alert("Access settings saved successfully!");
+                document.getElementById('auth-pass').value = ''; // clear password field for security
+                
+                // If they just enabled it, reload the page to force the login prompt
+                if (isEnabled) location.reload(); 
+            } else {
+                alert("Error saving access settings.");
+            }
+        });
+    }
+
+    // 5. Toggle Password Visibility
+    function togglePasswordVisibility() {
+        const passInput = document.getElementById('auth-pass');
+        const passIcon = document.getElementById('auth-pass-icon');
+        
+        if (passInput.type === "password") {
+            passInput.type = "text";
+            passIcon.classList.replace("bi-eye", "bi-eye-slash");
+        } else {
+            passInput.type = "password";
+            passIcon.classList.replace("bi-eye-slash", "bi-eye");
+        }
+    }
+
+
+// 6. Handle Port Change
+    function savePort() {
+        const newPort = document.getElementById('web-port').value;
+        if (!newPort || isNaN(newPort)) return alert("Please enter a valid port number.");
+        
+        if (!confirm(`Change the web port to ${newPort}? The server will restart instantly.`)) return;
+
+        fetch('/api/settings/port', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ port: newPort })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === "success") {
+                alert(`Port changed to ${newPort}. You will be redirected in 3 seconds.`);
+                setTimeout(() => {
+                    window.location.href = window.location.protocol + "//" + window.location.hostname + ":" + newPort;
+                }, 3000);
+            } else {
+                alert("Error: " + data.message);
+            }
+        })
+        .catch(err => alert("Network error. Server may have already restarted."));
+    }
 </script>
 
 <!-- 2. Load external script after variables are defined -->

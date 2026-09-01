@@ -27,12 +27,13 @@ import logging
 import tempfile
 import re
 import base64
+from werkzeug.security import generate_password_hash, check_password_hash
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 
 # --- Configuration ---
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.2"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -41,6 +42,13 @@ GITHUB_SETTINGS = {
     "repo": "Network-Testing-Tools",
     "token": "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",
     "branch": "main"
+}
+
+GITHUB_SETTINGS_DEV = {
+    "owner": "Chrisb003",
+    "repo": "Network-Testing-Tools",
+    "token": "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",
+    "branch": "dev"
 }
 
 def get_global_version():
@@ -232,8 +240,50 @@ def init_db():
 
         conn.commit()
         
-# Ensure this runs on startup
+def check_clear_database():
+    """Checks for a 'cleardatabase' file to completely wipe the database on startup."""
+    clear_file = os.path.join(app.root_path, "cleardatabase")
+    
+    if os.path.exists(clear_file):
+        print("[*] 'cleardatabase' file detected. Wiping the database completely...")
+        try:
+            # Delete the main DB file and its WAL/SHM temporary files
+            for ext in ["", "-wal", "-shm"]:
+                db_file = os.path.join(app.root_path, f"{DB_NAME}{ext}")
+                if os.path.exists(db_file):
+                    os.remove(db_file)
+            
+            # Delete the trigger file so it doesn't wipe on the next boot
+            os.remove(clear_file)
+            print("[✓] Database completely wiped. 'cleardatabase' file removed.")
+        except Exception as e:
+            print(f"[X] Failed to clear database: {e}")
+
+def check_password_reset():
+    """Checks for a 'passwordreset' file to reset authentication credentials."""
+    reset_file = os.path.join(app.root_path, "passwordreset")
+    
+    if os.path.exists(reset_file):
+        print("[*] 'passwordreset' file detected. Disabling authentication and removing credentials...")
+        try:
+            # We use IF EXISTS logic inherently by just executing the query safely
+            with sqlite3.connect(DB_NAME) as conn:
+                conn.execute("UPDATE system_settings SET value='0' WHERE key='auth_enabled'")
+                conn.execute("DELETE FROM system_settings WHERE key='auth_username'")
+                conn.execute("DELETE FROM system_settings WHERE key='auth_password'")
+                conn.commit()
+            os.remove(reset_file)
+            print("[✓] Authentication reset successfully. 'passwordreset' file removed.")
+        except Exception as e:
+            print(f"[X] Failed to reset authentication: {e}")
+
+# --- Startup Sequence ---
+# 1. Check if we need to wipe the DB first
+check_clear_database()
+# 2. Build or rebuild the tables
 init_db()
+# 3. Check if we need to wipe passwords from the existing DB
+check_password_reset()
 
 # --- Versioning Helpers ---
 def get_setup_version():
@@ -853,6 +903,147 @@ def request_macos_permissions():
                 subprocess.Popen([airport_path, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print("[!] If prompted, please allow 'Location Access' for Wi-Fi scanning to work.")
             except: pass
+
+# --- Authentication Middleware ---
+def authenticate():
+    """Sends a 401 response that enables basic auth"""
+    return Response(
+        'Could not verify your access level for that URL.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Network Dashboard Login Required"'})
+
+@app.before_request
+def require_auth():
+    """Checks every single request to see if authentication is enabled and valid."""
+    # Allow preflight requests to pass without auth
+    if request.method == 'OPTIONS':
+        return
+        
+    with sqlite3.connect(DB_NAME) as conn:
+        try:
+            enabled_row = conn.execute("SELECT value FROM system_settings WHERE key='auth_enabled'").fetchone()
+            if enabled_row and enabled_row[0] == '1':
+                user_row = conn.execute("SELECT value FROM system_settings WHERE key='auth_username'").fetchone()
+                pass_row = conn.execute("SELECT value FROM system_settings WHERE key='auth_password'").fetchone()
+                
+                # ANTI-LOCKOUT: If auth is enabled but no user/pass exists in the DB, safely bypass auth
+                if not user_row or not pass_row:
+                    return 
+                    
+                auth = request.authorization
+                if not auth or not auth.username or not auth.password:
+                    return authenticate()
+                    
+                if auth.username != user_row[0] or not check_password_hash(pass_row[0], auth.password):
+                    return authenticate()
+        except sqlite3.OperationalError:
+            pass # Failsafe if the database hasn't fully initialized yet
+
+# --- Authentication API Routes ---
+@app.route('/api/settings/auth', methods=['GET'])
+def get_auth_settings():
+    """Fetches the current auth state for the UI toggle."""
+    with sqlite3.connect(DB_NAME) as conn:
+        try:
+            enabled = conn.execute("SELECT value FROM system_settings WHERE key='auth_enabled'").fetchone()
+            user = conn.execute("SELECT value FROM system_settings WHERE key='auth_username'").fetchone()
+            return jsonify({
+                "enabled": enabled[0] == '1' if enabled else False,
+                "username": user[0] if user else ""
+            })
+        except sqlite3.OperationalError:
+            return jsonify({"enabled": False, "username": ""})
+
+@app.route('/api/settings/auth', methods=['POST'])
+def set_auth_settings():
+    """Saves the auth state and securely hashes the password."""
+    d = request.json
+    enabled = '1' if d.get('enabled') else '0'
+    username = d.get('username', '').strip()
+    password = d.get('password', '')
+
+    with sqlite3.connect(DB_NAME) as conn:
+        # Check if a password already exists
+        try:
+            pass_row = conn.execute("SELECT value FROM system_settings WHERE key='auth_password'").fetchone()
+        except sqlite3.OperationalError:
+            pass_row = None
+            
+        # Server-side validation to prevent bad states
+        if enabled == '1':
+            if not username:
+                return jsonify({"status": "error", "message": "A username is required."}), 400
+            if not pass_row and not password:
+                return jsonify({"status": "error", "message": "A password is required for the first setup."}), 400
+
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('auth_enabled', ?)", (enabled,))
+        if username:
+            conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('auth_username', ?)", (username,))
+        if password: 
+            hashed_pw = generate_password_hash(password, method='pbkdf2:sha256')
+            conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('auth_password', ?)", (hashed_pw,))
+        conn.commit()
+        
+    return jsonify({"status": "success"})
+
+@app.route('/api/settings/port', methods=['GET'])
+def get_port():
+    """Fetches the current web port."""
+    with sqlite3.connect(DB_NAME) as conn:
+        try:
+            row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
+            port = int(row[0]) if row else 81
+        except:
+            port = 81
+    return jsonify({"port": port})
+
+@app.route('/api/settings/port', methods=['POST'])
+def set_port():
+    """Saves a new port and restarts the server."""
+    new_port = request.json.get('port')
+    
+    # ADDED STRICT VALIDATION
+    if not new_port or not str(new_port).isdigit() or not (1 <= int(new_port) <= 65535):
+        return jsonify({"status": "error", "message": "Invalid port number. Must be between 1 and 65535."}), 400
+    
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(new_port),))
+        conn.commit()
+        
+    # Trigger a restart in the background to apply the new port
+    threading.Thread(target=restart_server).start()
+    return jsonify({"status": "success", "port": new_port})
+
+def check_webport_file():
+    """Checks for a 'webport' file to override the default web port on startup."""
+    port_file = os.path.join(app.root_path, "webport")
+    if os.path.exists(port_file):
+        print("[*] 'webport' file detected. Updating web server port...")
+        try:
+            with open(port_file, "r") as f:
+                new_port = f.read().strip()
+                
+            # ADDED STRICT VALIDATION: Must be numbers AND a valid port range
+            if new_port.isdigit() and 1 <= int(new_port) <= 65535:
+                with sqlite3.connect(DB_NAME) as conn:
+                    conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (new_port,))
+                    conn.commit()
+                print(f"[✓] Web port successfully updated to {new_port}.")
+            else:
+                print(f"[!] Invalid port '{new_port}' in webport file. Ignoring and deleting.")
+                
+            os.remove(port_file)
+        except Exception as e:
+            print(f"[X] Failed to process webport file: {e}")
+
+def get_current_port():
+    """Reads the current port for Waitress to bind to."""
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
+            return int(row[0]) if row else 81
+    except:
+        return 81
 
 # --- Routes ---
 @app.route('/')
@@ -3078,6 +3269,30 @@ def api_wifi_network_details():
     except Exception as e:
         return jsonify({"error": str(e)})
 
+AUTOSTART_FILE = "autostart"
+
+@app.route('/api/settings/autostart', methods=['GET'])
+def get_autostart():
+    if not os.path.exists(AUTOSTART_FILE):
+        with open(AUTOSTART_FILE, "w") as f:
+            f.write("1")
+        return jsonify({"autostart": True})
+    try:
+        with open(AUTOSTART_FILE, "r") as f:
+            return jsonify({"autostart": f.read().strip() == "1"})
+    except:
+        return jsonify({"autostart": True})
+
+@app.route('/api/settings/autostart', methods=['POST'])
+def set_autostart():
+    enable = request.json.get('enable', True)
+    try:
+        with open(AUTOSTART_FILE, "w") as f:
+            f.write("1" if enable else "0")
+        return jsonify({"status": "success", "autostart": enable})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 if __name__ == '__main__':
     if platform.system() == "Darwin":
             try:
@@ -3091,14 +3306,21 @@ if __name__ == '__main__':
 
     cleanup_old_files()
     
+    # --- Startup Sequence ---
+    check_clear_database()
+    init_db()
+    check_password_reset()
+    check_webport_file() # ADD THIS
+    
+    current_port = get_current_port() # ADD THIS
+
     # Try to use the production-ready Waitress server
     try:
             from waitress import serve
             print("\n" + "="*60)
-            print(f"   DASHBOARD ACTIVE: http://0.0.0.0:81")
+            print(f"   DASHBOARD ACTIVE: http://0.0.0.0:{current_port}")
             print("   (Production WSGI Server - No Warnings)")
             print("="*60 + "\n")
-            serve(app, host='0.0.0.0', port=81, threads=24)
+            serve(app, host='0.0.0.0', port=current_port, threads=24)
     except ImportError:
-       # Fallback to dev server if waitress isn't installed yet
-        app.run(debug=True, host='0.0.0.0', port=81)
+        app.run(debug=True, host='0.0.0.0', port=current_port)

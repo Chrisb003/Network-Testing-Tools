@@ -23,3 +23,15 @@ It may work on a raspberry pi to but this has not been tested.
 
 On my list to add/get working. 
 Currently the app functions as I want it. Until I am fully happy with it then it will remain a beta. The only changes that may happen now are general bug fixes. If I choose to release this publicly I will switch to the github being public so I will update the updater script to update from it.
+
+
+There are a few useful bits I have added where you can add files with specific names into the main folder and it will have various actions on startup.
+autostart - This file will be created automatically anyway but if you create it before you first run the application. By have a 0 in the file it will disable the automatic opening to the webpage for the dashboard when the app starts. It can also be changed in the settings but a useful thing if you want to run it on a seperate machine and run it headless.
+
+dev - this will force the setup script to download from the dev branch rather than release. This only does something if you do not have the rest of the files downloaded.
+
+resetpassword - This will disable and reset the user account
+
+cleardatabase - This deletes your entire database
+
+webport - The application defaults to 81 but should you need to change this before opening the app create a file called webport and in the file enter the port number you want it to use.

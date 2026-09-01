@@ -12,3 +12,8 @@ network_data_dev.db
 network_data_dev.db-shm.back
 network_data_dev.db-wal.back
 network_data_dev.db.back
+autostart
+dev
+resetpassword
+cleardatabase
+webport

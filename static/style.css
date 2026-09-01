@@ -60,11 +60,19 @@ body.touch-mode .form-control, body.touch-mode .form-select {
     padding: 0.75rem 1rem;
     font-size: 1.1rem;
 }
+/* Standard checkboxes get larger squares */
 body.touch-mode .form-check-input {
     width: 1.75em;
     height: 1.75em;
     margin-top: 0.1em;
 }
+
+/* Toggle switches need a 2:1 aspect ratio to keep their pill shape */
+body.touch-mode .form-switch .form-check-input {
+    width: 3.5em; 
+    border-radius: 2em;
+}
+
 body.touch-mode .form-check-label {
     font-size: 1.1rem;
     padding-left: 0.25rem;
@@ -75,8 +83,9 @@ body.touch-mode .form-check-label {
     max-width: 96%; 
 }
 
-/* Forces the navigation menu to stay on a single line at all times */
-.nav-pills {
-    flex-wrap: nowrap;
-    white-space: nowrap;
+/* Reduce the horizontal space between navigation menu items */
+.nav-pills .nav-link {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+    margin: 0 0.1rem; /* Optional: adds a tiny gap so the active pill backgrounds don't touch */
 }
