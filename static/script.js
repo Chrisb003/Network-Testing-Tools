@@ -61,6 +61,7 @@
         checkUpdates(); 
         loadNetworks();
         loadConnectionTypes();
+        loadSystemAlerts();
         const savedTouchMode = localStorage.getItem('touchMode') === 'true';
         if (savedTouchMode) document.body.classList.add('touch-mode');
         updateTouchIcon(savedTouchMode);
@@ -572,6 +573,10 @@ let allNetworks = []; // Global array to hold the network data
                 <td class="text-muted small">${x.wan_ip || '-'}</td>
                 <td class="text-end">
                     <div class="btn-group">
+                        <!-- NEW: Lock Button -->
+                        <button class="btn btn-sm ${x.is_protected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('history', ${x.id}, ${x.is_protected})" title="${x.is_protected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                            <i class="bi ${x.is_protected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-secondary" onclick="openEditSpeedTestModal(${x.id}, '${safeName}', '${safeType}')" title="Edit"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger" onclick="deleteSingleSpeedTest(${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </div>
@@ -622,6 +627,10 @@ let allNetworks = []; // Global array to hold the network data
                 <td><small class="text-muted">${escapeHTML(h.comments) || 'No comments'}</small></td>
                 <td class="text-end">
                     <div class="btn-group">
+                        <!-- NEW: Lock Button -->
+                        <button class="btn btn-sm ${h.is_protected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('wifi', ${h.id}, ${h.is_protected})" title="${h.is_protected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                            <i class="bi ${h.is_protected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-primary" onclick="viewPastWifi(${h.id})" title="View Results"><i class="bi bi-eye"></i></button>
                         <button class="btn btn-sm btn-outline-secondary" onclick="exportWifiCSV(${h.id})" title="Export CSV"><i class="bi bi-download"></i></button>
                         <button class="btn btn-sm btn-outline-secondary" onclick="editWifiHistory(${h.id}, '${safeName}', '${safeComment}')" title="Edit Name/Comment"><i class="bi bi-pencil"></i></button>
@@ -1263,39 +1272,49 @@ function updateTouchIcon(isTouch) {
 }
 
 function loadNetworkDevices(id, name) {
-        currentNetworkId = id; 
-        showPage('devices', document.querySelectorAll('.nav-link')[1]);
-        
-        if(name) {
-            document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
-            // Auto-Populate Speed Test Location
-            const locationInput = document.getElementById('st-network-name');
-            if(locationInput) locationInput.value = name;
-        }
-        
-        // Hide the buttons initially while fetching
-        const btnSel = document.getElementById('btn-remove-selected');
-        const btnOff = document.getElementById('btn-remove-offline');
-        if (btnSel) btnSel.classList.add('hidden');
-        if (btnOff) btnOff.classList.add('hidden');
-        
-        fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
-            allDevices = d; 
-            renderDevices(d);
-            
-            // Show the buttons once the devices are successfully loaded
-            if (btnSel) btnSel.classList.remove('hidden');
-            if (btnOff) btnOff.classList.remove('hidden');
-        });
+    currentNetworkId = id; 
+    showPage('devices', document.querySelectorAll('.nav-link')[1]);
+    
+    if(name) {
+        document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
+        // Auto-Populate Speed Test Location
+        const locationInput = document.getElementById('st-network-name');
+        if(locationInput) locationInput.value = name;
     }
+    
+    // Hide the buttons initially while fetching
+    const btnSel = document.getElementById('btn-remove-selected');
+    const btnOff = document.getElementById('btn-remove-offline');
+    if (btnSel) btnSel.classList.add('hidden');
+    if (btnOff) btnOff.classList.add('hidden');
+    
+    fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
+        allDevices = d; 
+        renderDevices(d);
+        
+        // Trigger background lookup for missing vendors
+        resolveMissingVendors(allDevices);
+        
+        // --- FIXED: Only show 'Remove Selected' for old/saved networks ---
+        if (btnSel) btnSel.classList.remove('hidden');
+        if (btnOff) btnOff.classList.add('hidden'); // Explicitly keep 'Remove Offline' hidden
+    });
+}
 
 function scanDevices() {
     const b = document.getElementById('btn-scan-devices'); 
     b.disabled = true; 
     b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
     
+    // --- FIXED: Hide remove buttons during active scan ---
+    const btnSel = document.getElementById('btn-remove-selected');
+    const btnOff = document.getElementById('btn-remove-offline');
+    if (btnSel) btnSel.classList.add('hidden');
+    if (btnOff) btnOff.classList.add('hidden');
+    
     const tb = document.getElementById('device-list');
     if (tb) tb.innerHTML = '<tr><td colspan="9" class="text-center p-4 text-info"><div class="spinner-border spinner-border-sm me-2"></div>Discovering network devices...</td></tr>';    
+    
     allDevices = [];
     let isFirstDevice = true;
 
@@ -1334,29 +1353,33 @@ function scanDevices() {
             renderDevices(allDevices);
         } 
         else if (data.type === 'complete') {
-                    eventSource.close();
-                    b.disabled = false;
-                    b.innerHTML = '<i class="bi bi-search"></i> Scan';
-                    
-                    // --- NEW: Add offline devices to the list ---
-                    if (data.offline_devices && data.offline_devices.length > 0) {
-                        data.offline_devices.forEach(offDev => {
-                            // Prevent duplicates just in case
-                            if (!allDevices.some(d => d.mac_address === offDev.mac_address)) {
-                                allDevices.push(offDev);
-                            }
-                        });
-
-                        // Re-sort so offline devices show up natively based on their last IP
-                        allDevices.sort((a, b) => {
-                            const ipA = a.ip_address || "0.0.0.0";
-                            const ipB = b.ip_address || "0.0.0.0";
-                            const numA = ipA.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
-                            const numB = ipB.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
-                            return numA - numB;
-                        });
-                        renderDevices(allDevices);
+            eventSource.close();
+            b.disabled = false;
+            b.innerHTML = '<i class="bi bi-search"></i> Scan';
+            
+            // --- FIXED: Reveal BOTH buttons because a live scan completed ---
+            if (btnSel) btnSel.classList.remove('hidden');
+            if (btnOff) btnOff.classList.remove('hidden');
+            
+            // Add offline devices to the list
+            if (data.offline_devices && data.offline_devices.length > 0) {
+                data.offline_devices.forEach(offDev => {
+                    // Prevent duplicates just in case
+                    if (!allDevices.some(d => d.mac_address === offDev.mac_address)) {
+                        allDevices.push(offDev);
                     }
+                });
+
+                // Re-sort so offline devices show up natively based on their last IP
+                allDevices.sort((a, b) => {
+                    const ipA = a.ip_address || "0.0.0.0";
+                    const ipB = b.ip_address || "0.0.0.0";
+                    const numA = ipA.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+                    const numB = ipB.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+                    return numA - numB;
+                });
+                renderDevices(allDevices);
+            }
             
             // Trigger asynchronous background vendor lookups for unpopulated entries
             resolveMissingVendors(allDevices);
@@ -1501,9 +1524,9 @@ function resolveMissingVendors(devices) {
         .then(r => r.json())
         .then(res => {
                 dev.vendor = res.vendor || 'Unknown';
-                const targetEl = document.getElementById(`vend-${safeMacId}`);
+                const targetEl = document.getElementById(`vend-${safeMac}`);
                 if (targetEl && !dev.custom_vendor) {
-                    targetEl.outerHTML = `<span id="vend-${safeMacId}">${escapeHTML(dev.vendor)}</span>`;
+                    targetEl.outerHTML = `<span id="vend-${safeMac}">${escapeHTML(dev.vendor)}</span>`;
                 }
             })
         .catch(() => {
@@ -2372,6 +2395,17 @@ function saveWorkerSettings() {
         scan_workers: parseInt(document.getElementById('workers-scan').value),
         ping_workers: parseInt(document.getElementById('workers-ping').value)
     };
+    
+    // --- NEW: Add confirmation prompt ---
+    if (!confirm("Save worker settings? The server will restart instantly to apply changes.")) return;
+
+    // Change button text to show loading
+    const btn = event.currentTarget || document.querySelector('button[onclick="saveWorkerSettings()"]');
+    const originalText = btn ? btn.innerHTML : "Save Worker Settings";
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Restarting...';
+    }
 
     fetch('/api/settings/workers', {
         method: 'POST',
@@ -2381,10 +2415,22 @@ function saveWorkerSettings() {
     .then(r => r.json())
     .then(res => {
         if (res.status === "success") {
-            alert("Worker settings saved to 'workers' file.\n(Note: Server Threads will take effect on the next restart).");
+            // --- NEW: Alert and reload the page ---
+            alert("Worker settings saved. The system is restarting and will reload in 3 seconds.");
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
         } else {
             alert("Error saving workers: " + res.message);
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
         }
+    })
+    .catch(err => {
+        // If the server goes down faster than the fetch finishes, catch the network error and reload anyway
+        setTimeout(() => window.location.reload(), 3000);
     });
 }
 
@@ -2517,5 +2563,47 @@ function deleteOfflineNetworkDevices() {
         } else {
             alert(d.error);
         }
+    });
+}
+
+function loadSystemAlerts() {
+    fetch('/api/system/alerts').then(r=>r.json()).then(alerts => {
+        const container = document.getElementById('system-alerts-container');
+        if(!container) return;
+        
+        if(alerts.length > 0) {
+            container.innerHTML = alerts.map(msg => `
+                <div class="alert alert-danger alert-dismissible fade show shadow-sm" role="alert">
+                    <i class="bi bi-exclamation-octagon-fill me-2"></i>
+                    <strong>System Notice:</strong> ${escapeHTML(msg)}
+                    <button type="button" class="btn-close" onclick="dismissSystemAlert('${escapeJS(msg)}', this)"></button>
+                </div>
+            `).join('');
+        }
+    });
+}
+
+function dismissSystemAlert(msg, btnElement) {
+    // Optimistically remove from UI instantly
+    const alertBox = btnElement.closest('.alert');
+    if(alertBox) alertBox.remove();
+    
+    // Tell the backend to delete it from the JSON file
+    fetch('/api/system/alerts/dismiss', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: msg})
+    });
+}
+
+function toggleProtection(type, id, currentState) {
+    const newState = currentState ? 0 : 1; // Flip the state
+    fetch('/api/system/toggle_protection', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({type: type, id: id, state: newState})
+    }).then(() => {
+        if(type === 'history') fetchHistory();
+        if(type === 'wifi') loadWifiHistory();
     });
 }

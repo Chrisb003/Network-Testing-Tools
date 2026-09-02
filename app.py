@@ -81,7 +81,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.11.0"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -118,12 +118,71 @@ else:
     DB_NAME = "network_data.db"
 
 # --- Database & Migrations ---
+ALERTS_FILE = "system_alerts.json"
+
+def add_system_alert(message):
+    """Saves a system alert to be displayed on the web dashboard and prints to terminal."""
+    print(f"\n[*] SYSTEM ALERT: {message}\n")
+    alerts = []
+    try:
+        if os.path.exists(ALERTS_FILE):
+            with open(ALERTS_FILE, "r") as f:
+                alerts = json.load(f)
+        if message not in alerts:
+            alerts.append(message)
+        with open(ALERTS_FILE, "w") as f:
+            json.dump(alerts, f)
+    except Exception as e:
+        print(f"[!] Failed to save system alert: {e}")
+
+def check_db_integrity():
+    """Checks if the SQLite database is malformed or corrupted."""
+    if not os.path.exists(DB_NAME): return True
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            c = conn.cursor()
+            c.execute("PRAGMA integrity_check;")
+            res = c.fetchone()
+            if res and res[0].lower() != "ok":
+                return False
+        return True
+    except sqlite3.DatabaseError:
+        return False
+
+def check_db_size():
+    """Checks if the DB is over 100MB and warns the user."""
+    try:
+        if os.path.exists(DB_NAME):
+            size_mb = os.path.getsize(DB_NAME) / (1024 * 1024)
+            if size_mb > 100.0:  # 100 MB Threshold
+                add_system_alert(f"Database size is getting large ({size_mb:.1f} MB). Consider using the Database Maintenance tool in the System tab to clear old logs and improve performance.")
+    except Exception as e:
+        print(f"[*] Could not check DB size: {e}")
+
 def init_db():
     """Initializes the database with WAL mode for concurrency and creates all tables."""
-    with sqlite3.connect(DB_NAME) as conn:
+    # Check for corruption and self-heal before touching tables
+    if not check_db_integrity():
+        print("\n[!] DATABASE CORRUPTION DETECTED! Backing up and resetting...")
+        backup_name = f"{DB_NAME}.corrupted_{int(time.time())}.bak"
+        try:
+            shutil.copy2(DB_NAME, backup_name)
+            os.remove(DB_NAME)
+            for ext in ["-wal", "-shm"]:
+                temp_file = f"{DB_NAME}{ext}"
+                if os.path.exists(temp_file): os.remove(temp_file)
+            add_system_alert(f"Database corrupted. Old file backed up to '{backup_name}' and new database created.")
+        except Exception as e:
+            print(f"[X] Failed to backup corrupted database: {e}")
+
+    # --- NEW: Check database size on boot ---
+    check_db_size()
+
+# Ensure connections wait up to 10 seconds instead of immediately crashing on locks
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         c = conn.cursor()
-        # Enable Write-Ahead Logging (Fixes 'database is locked' errors)
         c.execute("PRAGMA journal_mode=WAL;") 
+        c.execute("PRAGMA busy_timeout = 5000;") # Wait up to 5 seconds for locks to clear
         
         # 1. History Table (Speed Tests)
         # Added device_ip to store the local interface IP used for the test
@@ -284,6 +343,16 @@ def init_db():
                 try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
                 except sqlite3.OperationalError: pass 
 
+        # --- NEW: Protection Flags for Cleanup Tool ---
+        try: c.execute("ALTER TABLE history ADD COLUMN is_protected INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE wifi_history ADD COLUMN is_protected INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE dns_logs ADD COLUMN is_protected INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE ping_logs ADD COLUMN is_protected INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+
         # Device History Migrations
         try: c.execute("ALTER TABLE devices ADD COLUMN previous_ip TEXT"); 
         except sqlite3.OperationalError: pass
@@ -323,7 +392,7 @@ def check_password_reset():
         print("[*] 'passwordreset' file detected. Disabling authentication and removing credentials...")
         try:
             # We use IF EXISTS logic inherently by just executing the query safely
-            with sqlite3.connect(DB_NAME) as conn:
+            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                 conn.execute("UPDATE system_settings SET value='0' WHERE key='auth_enabled'")
                 conn.execute("DELETE FROM system_settings WHERE key='auth_username'")
                 conn.execute("DELETE FROM system_settings WHERE key='auth_password'")
@@ -734,7 +803,7 @@ def get_bandwidth():
 
     # 1. Identify if an adapter is pinned[cite: 1]
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
             if row:
                 pinned_mac = row[0]
@@ -808,7 +877,7 @@ def get_active_interface_name():
                 
                 if mac:
                     try:
-                        with sqlite3.connect(DB_NAME) as conn:
+                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                             row = conn.execute("SELECT is_visible FROM adapter_settings WHERE mac_address=?", (mac,)).fetchone()
                             if row and row[0] == 0:
                                 return "" # It is hidden, treat it as unusable
@@ -830,7 +899,7 @@ def get_mac_vendor(mac, fetch_online=False):
 
     # Check database before making an HTTP request
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT vendor FROM devices WHERE mac_address=? AND vendor IS NOT NULL AND vendor != '' LIMIT 1", (mac,)).fetchone()
             if row:
                 MAC_VENDOR_CACHE[mac_prefix] = row[0]
@@ -954,7 +1023,7 @@ def get_gateway_mac(gateway_ip):
 
     # 1. Check for a user-pinned adapter first
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
             if row:
                 pinned_mac = row[0]
@@ -1009,7 +1078,7 @@ def get_current_network_context():
     if gateway_ip != "-":
         gateway_mac = get_gateway_mac(gateway_ip)
         if gateway_mac:
-            with sqlite3.connect(DB_NAME) as conn:
+            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                 row = conn.execute("SELECT name FROM networks WHERE gateway_mac=?", (gateway_mac,)).fetchone()
                 if row: network_name = row[0]
                 
@@ -1052,7 +1121,7 @@ def require_auth():
     if request.method == 'OPTIONS':
         return
         
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         try:
             enabled_row = conn.execute("SELECT value FROM system_settings WHERE key='auth_enabled'").fetchone()
             if enabled_row and enabled_row[0] == '1':
@@ -1076,7 +1145,7 @@ def require_auth():
 @app.route('/api/settings/auth', methods=['GET'])
 def get_auth_settings():
     """Fetches the current auth state for the UI toggle."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         try:
             enabled = conn.execute("SELECT value FROM system_settings WHERE key='auth_enabled'").fetchone()
             user = conn.execute("SELECT value FROM system_settings WHERE key='auth_username'").fetchone()
@@ -1095,7 +1164,7 @@ def set_auth_settings():
     username = str(d.get('username', '')).strip()[:50] # Limit applied
     password = str(d.get('password', ''))[:255] # Limit applied
 
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         # Check if a password already exists
         try:
             pass_row = conn.execute("SELECT value FROM system_settings WHERE key='auth_password'").fetchone()
@@ -1122,7 +1191,7 @@ def set_auth_settings():
 @app.route('/api/settings/port', methods=['GET'])
 def get_port():
     """Fetches the current web port."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         try:
             row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
             port = int(row[0]) if row else 81
@@ -1139,7 +1208,7 @@ def set_port():
     if not new_port or not str(new_port).isdigit() or not (1 <= int(new_port) <= 65535):
         return jsonify({"status": "error", "message": "Invalid port number. Must be between 1 and 65535."}), 400
     
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(new_port),))
         conn.commit()
         
@@ -1158,7 +1227,7 @@ def check_webport_file():
                 
             # ADDED STRICT VALIDATION: Must be numbers AND a valid port range
             if new_port.isdigit() and 1 <= int(new_port) <= 65535:
-                with sqlite3.connect(DB_NAME) as conn:
+                with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                     conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (new_port,))
                     conn.commit()
                 print(f"[✓] Web port successfully updated to {new_port}.")
@@ -1172,7 +1241,7 @@ def check_webport_file():
 def get_current_port():
     """Reads the current port for Waitress to bind to."""
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
             return int(row[0]) if row else 81
     except:
@@ -1214,7 +1283,7 @@ def index():
                 break
 
 # Grab the current channel to pass to the frontend
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
         current_channel = row[0] if row else 'stable'
 
@@ -1240,7 +1309,7 @@ def cleanup_database():
     tables = ['history', 'dns_logs', 'ping_logs', 'wifi_history']
     
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             cursor = conn.cursor()
             
             if days == 'all':
@@ -1248,16 +1317,19 @@ def cleanup_database():
                     cursor.execute(f"DELETE FROM {table}")
                 message = "Database cleared completely."
             else:
-                # --- NEW: Strict Validation to prevent SQL Injection ---
                 if not str(days).isdigit():
                     return jsonify({"status": "error", "message": "Invalid time interval."}), 400
                 
-                # Safe to use f-string now because we force it to an integer
                 for table in tables:
-                    cursor.execute(f"DELETE FROM {table} WHERE timestamp < datetime('now', '-{int(days)} days')")
-                message = f"Data older than {days} days has been removed."
+                    # --- FIXED: Added 'AND is_protected = 0' to protect locked items ---
+                    cursor.execute(f"DELETE FROM {table} WHERE timestamp < datetime('now', '-{int(days)} days') AND is_protected = 0")
+                message = f"Data older than {days} days has been removed. (Protected items were kept)."
             
             conn.commit()
+            
+            # --- NEW: Reclaim physical disk space after deleting rows ---
+            conn.execute("VACUUM")
+            
             return jsonify({"status": "success", "message": message})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -1292,7 +1364,7 @@ def get_adapters():
 
     settings = {}
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             for row in conn.execute("SELECT mac_address, custom_name, is_visible, is_primary FROM adapter_settings"):
                 settings[row[0]] = {
                     "name": row[1], 
@@ -1427,7 +1499,7 @@ def save_adapter_settings():
         interfaces = psutil.net_if_addrs()
         valid_keys = []
         
-        # 1. Gather all actual usable adapters on the system
+# 1. Gather all actual usable adapters on the system
         for iface_name, addrs in interfaces.items():
             if "Loopback" in iface_name or "vEthernet" in iface_name or iface_name == "lo": 
                 continue
@@ -1436,12 +1508,12 @@ def save_adapter_settings():
                 if a.family == psutil.AF_LINK: 
                     temp_mac = a.address
                     
-            # Use the exact same key logic that get_adapters() uses
-            key = temp_mac if (temp_mac and temp_mac != "-") else iface_name
-            valid_keys.append(key)
+            # --- FIXED: Only count physical adapters with a real MAC address ---
+            if temp_mac and temp_mac != "-":
+                valid_keys.append(temp_mac)
             
         # 2. Get the adapters currently hidden in the database
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             hidden_rows = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_visible = 0").fetchall()
             hidden_keys = set(r[0] for r in hidden_rows)
         
@@ -1455,7 +1527,7 @@ def save_adapter_settings():
             return jsonify({"status": "error", "message": "You need to have at least one usable adapter usable."}), 400
 
     # --- Save Settings ---
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         # If this new adapter is being set as primary, un-pin all others first
         if primary == 1:
             conn.execute("UPDATE adapter_settings SET is_primary = 0")
@@ -1486,7 +1558,7 @@ def update_adapter_settings():
     if not mac or mac == '-':
         return jsonify({"status": "error", "message": "Cannot configure adapter without MAC address"})
 
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         # Upsert: Update if exists, Insert if new
         conn.execute("""
             INSERT INTO adapter_settings (mac_address, custom_name, is_visible)
@@ -1620,7 +1692,7 @@ def get_wifi_rates():
 
 @app.route('/api/networks')
 def list_networks():
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         networks = conn.execute("SELECT * FROM networks ORDER BY last_scan DESC").fetchall()
         result = []
@@ -1634,7 +1706,7 @@ def list_networks():
 
 @app.route('/api/networks/delete', methods=['POST'])
 def delete_network():
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM networks WHERE id=?", (request.json.get('id'),))
         conn.commit()
     return jsonify({"status": "success"})
@@ -1643,7 +1715,7 @@ def delete_network():
 def rename_network():
     d = request.json
     name = str(d.get('name', '')).strip()[:50] # Safely sliced
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("UPDATE networks SET name=? WHERE id=?", (name, d.get('id'))) # Use the variable!
         conn.commit()
     return jsonify({"status": "success"})
@@ -1652,7 +1724,7 @@ def rename_network():
 def update_device_name():
     d = request.json
     name = str(d.get('name', '')).strip()[:50] # Safely sliced
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("UPDATE devices SET custom_name=? WHERE mac_address=? AND network_id=?", 
                      (name, d.get('mac'), d.get('network_id'))) # Use the variable!
         conn.execute("INSERT OR REPLACE INTO global_device_names (mac_address, custom_name) VALUES (?, ?)", 
@@ -1662,7 +1734,7 @@ def update_device_name():
 
 @app.route('/api/networks/<int:net_id>/devices')
 def get_network_devices(net_id):
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, custom_vendor FROM devices WHERE network_id=?"
         devices = conn.execute(query, (net_id,)).fetchall()
@@ -1698,7 +1770,7 @@ def scan_network():
     target_mac_val = None
 
     # 1. Check for Pinned Adapter in Database
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
         if row:
             pinned_mac = row[0]
@@ -1948,7 +2020,7 @@ def dns_lookup():
 @app.route('/api/dns/logs')
 def get_dns_logs():
     """Fetches the last 100 DNS lookup records."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         logs = conn.execute("SELECT * FROM dns_logs ORDER BY id DESC LIMIT 100").fetchall()
         return jsonify([dict(l) for l in logs])
@@ -1956,7 +2028,7 @@ def get_dns_logs():
 @app.route('/api/dns/clear', methods=['POST'])
 def clear_dns_logs():
     """Clears the DNS history log."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM dns_logs")
         conn.commit()
     return jsonify({"status": "success"})
@@ -2050,7 +2122,7 @@ def run_ping():
 @app.route('/api/ping/logs')
 def get_ping_logs():
     """Fetches the last 100 Ping records."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         logs = conn.execute("SELECT * FROM ping_logs ORDER BY id DESC LIMIT 100").fetchall()
         return jsonify([dict(l) for l in logs])
@@ -2058,7 +2130,7 @@ def get_ping_logs():
 @app.route('/api/ping/clear', methods=['POST'])
 def clear_ping_logs():
     """Clears the Ping history log."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM ping_logs")
         conn.commit()
     return jsonify({"status": "success"})
@@ -2070,7 +2142,7 @@ def export_tool_logs():
     out = io.StringIO()
     writer = csv.writer(out)
     
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         if log_type == 'dns':
             rows = conn.execute("SELECT * FROM dns_logs ORDER BY id DESC").fetchall()
@@ -2084,6 +2156,29 @@ def export_tool_logs():
                 writer.writerow([r['timestamp'], r['target'], r['status'], r['latency'], r['packet_loss'], r['router_ip'], r['network_name'], r['lan_ip']])
             
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={log_type}_logs.csv"})
+
+@app.route('/api/system/alerts', methods=['GET'])
+def get_system_alerts():
+    try:
+        if os.path.exists(ALERTS_FILE):
+            with open(ALERTS_FILE, "r") as f:
+                return jsonify(json.load(f))
+    except: pass
+    return jsonify([])
+
+@app.route('/api/system/alerts/dismiss', methods=['POST'])
+def dismiss_system_alert():
+    msg = request.json.get('message')
+    try:
+        if os.path.exists(ALERTS_FILE):
+            with open(ALERTS_FILE, "r") as f:
+                alerts = json.load(f)
+            if msg in alerts:
+                alerts.remove(msg)
+            with open(ALERTS_FILE, "w") as f:
+                json.dump(alerts, f)
+    except: pass
+    return jsonify({"status": "success"})
 
 # --- Misc (WiFi, Speedtest, History, Update) ---
 
@@ -2406,7 +2501,7 @@ def get_wifi_networks():
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             auto_name = f"Auto-Scan {timestamp}"
             
-            with sqlite3.connect(DB_NAME) as conn:
+            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                 conn.execute("PRAGMA busy_timeout = 3000")
                 c = conn.cursor()
                 c.execute(
@@ -2435,7 +2530,7 @@ def run_speedtest():
 
     # 1. Identify the Adapter and its IP
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
             if row:
                 pinned_mac = row[0]
@@ -2584,13 +2679,13 @@ def run_speedtest():
 def get_last_name():
     """Gets the most recent network label for the current location."""
     info = get_isp_info()
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         row = conn.execute("SELECT network_name FROM history WHERE wan_ip = ? ORDER BY id DESC LIMIT 1", (info['ip'],)).fetchone()
         return jsonify({"last_name": row[0] if row else "", "wan_ip": info['ip'], "isp": info['isp']})
 
 @app.route('/api/history')
 def get_history():
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row  # THIS IS KEY
         cursor = conn.execute("SELECT * FROM history ORDER BY timestamp DESC")
         rows = cursor.fetchall()
@@ -2603,7 +2698,7 @@ def update_history():
     d = request.json
     name = str(d.get('name', '')).strip()[:50]
     c_type = str(d.get('type', '')).strip()[:50]
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("UPDATE history SET network_name = ?, connection_type = ? WHERE id = ?", 
                      (name, c_type, d.get('id'))) # Use variables
         conn.commit()
@@ -2628,7 +2723,7 @@ def bulk_delete():
         return jsonify({"error": "Invalid request parameters"}), 400
         
     placeholders = ','.join(['?'] * len(ids))
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         # --- NEW: Handle MAC address based deletion for devices ---
         if table == 'devices':
             conn.execute(f"DELETE FROM devices WHERE mac_address IN ({placeholders})", ids)
@@ -2650,7 +2745,7 @@ def bulk_export_networks():
     
     memory_file = io.BytesIO()
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             for net_id in ids:
                 net = conn.execute("SELECT name FROM networks WHERE id=?", (net_id,)).fetchone()
@@ -2682,7 +2777,7 @@ def bulk_export_wifi():
     
     memory_file = io.BytesIO()
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             for scan_id in ids:
                 scan = conn.execute("SELECT scan_name, results_json FROM wifi_history WHERE id=?", (scan_id,)).fetchone()
@@ -2713,7 +2808,7 @@ def bulk_export_wifi():
 @app.route('/api/history/clear', methods=['POST'])
 def clear_history():
     """Clears all speed test history."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM history")
         conn.commit()
     return jsonify({"status": "success"})
@@ -2729,7 +2824,7 @@ def export_history():
     
     # If no specific rows were sent from the frontend, fetch all from the DB
     if not rows:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = [dict(r) for r in conn.execute("SELECT * FROM history ORDER BY id DESC").fetchall()]
     
@@ -2799,7 +2894,7 @@ def import_database():
         tmp_path = tmp.name
 
     try:
-        conn_local = sqlite3.connect(DB_NAME)
+        conn_local = sqlite3.connect(DB_NAME, timeout=10.0)
         conn_remote = sqlite3.connect(tmp_path)
         conn_remote.row_factory = sqlite3.Row
         
@@ -2880,7 +2975,7 @@ def import_database():
 def get_update_channel():
     """Helper to fetch the current update channel from DB."""
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
             return row[0] if row else 'stable'
     except:
@@ -2897,7 +2992,7 @@ def get_github_settings():
 def handle_update_channel():
     """API endpoint to switch the update channel."""
     channel = request.json.get('channel', 'stable')
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('update_channel', ?)", (channel,))
         conn.commit()
     return jsonify({"status": "success", "channel": channel})
@@ -3001,14 +3096,38 @@ def get_changelog():
 @app.route('/api/update/apply', methods=['POST'])
 def update_software():
     """
-    Cross-Platform Update Mechanism:
+    Cross-Platform Update Mechanism with Rollback Support.
     Sets full Read/Write/Execute (777) permissions for all users.
     """
     try:
-        gh_set = get_github_settings() # USE DYNAMIC SETTINGS
+        gh_set = get_github_settings()
         if not gh_set: return jsonify({"error": "No GitHub settings."}), 500
         print(f"[*] Starting Update on {platform.system()} from {gh_set['repo']}...")
         
+        base_dir = app.root_path
+        
+        # --- NEW: Create a Rollback Backup ---
+        print("[*] Creating rollback backup before updating...")
+        rollback_zip = os.path.join(base_dir, "rollback.zip")
+        try:
+            with zipfile.ZipFile(rollback_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(base_dir):
+                    # Ignore heavy/unnecessary directories
+                    if "venv" in dirs: dirs.remove("venv")
+                    if "logs" in dirs: dirs.remove("logs")
+                    if "__pycache__" in dirs: dirs.remove("__pycache__")
+                    if ".git" in dirs: dirs.remove(".git")
+                    
+                    for file in files:
+                        # Ignore databases and existing backups
+                        if file.endswith(".db") or file.endswith(".db-wal") or file.endswith(".db-shm"): continue
+                        if file.endswith(".bak") or file == "rollback.zip": continue
+                        
+                        file_path = os.path.join(root, file)
+                        zipf.write(file_path, os.path.relpath(file_path, base_dir))
+        except Exception as e:
+            print(f"[!] Rollback backup warning: {e}")
+
         # --- 1. Snapshot the state BEFORE updating ---
         was_dev = "DEV" in get_global_version().upper()
         
@@ -3022,7 +3141,6 @@ def update_software():
 
         # 2. Extract & Install
         import tempfile
-        base_dir = app.root_path
         with tempfile.TemporaryDirectory() as temp_dir:
             with zipfile.ZipFile(zip_data) as zip_ref:
                 root_name = zip_ref.namelist()[0].split('/')[0]
@@ -3063,18 +3181,15 @@ def update_software():
         # --- 2. Database Copy Logic (Post-Extraction) ---
         is_now_dev = "DEV" in get_global_version().upper()
         
-        # If we successfully transitioned from a Production version to a Dev version
         if not was_dev and is_now_dev:
             prod_db = os.path.join(app.root_path, "network_data.db")
             dev_db = os.path.join(app.root_path, "network_data_dev.db")
             bak_db = dev_db + ".back"
             
-            # Only attempt a copy if a Production database actually exists
             if os.path.exists(prod_db):
-                # Back up the existing Dev DB if one is found
                 if os.path.exists(dev_db):
                     if os.path.exists(bak_db):
-                        os.remove(bak_db) # Remove older backup to make room for new one
+                        os.remove(bak_db) 
                     os.rename(dev_db, bak_db)
                 
                 shutil.copy2(prod_db, dev_db)
@@ -3109,7 +3224,7 @@ def fix_permissions(path):
 def save_wifi_scan():
     data = request.json
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_NAME, timeout=10.0)
         c = conn.cursor()
         
         raw_name = str(data.get('name', '')).strip()[:50]
@@ -3131,17 +3246,34 @@ def save_wifi_scan():
 
 @app.route('/api/wifi/history', methods=['GET'])
 def get_wifi_history():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=10.0)
     c = conn.cursor()
-    c.execute("SELECT id, timestamp, scan_name, comments FROM wifi_history ORDER BY timestamp DESC")
+    # --- FIXED: Select the is_protected column ---
+    c.execute("SELECT id, timestamp, scan_name, comments, is_protected FROM wifi_history ORDER BY timestamp DESC")
     rows = c.fetchall()
-    history = [{"id": r[0], "timestamp": r[1], "name": r[2], "comments": r[3]} for r in rows]
+    history = [{"id": r[0], "timestamp": r[1], "name": r[2], "comments": r[3], "is_protected": r[4] or 0} for r in rows]
     conn.close()
     return jsonify(history)
 
+# --- NEW: Endpoint to lock/unlock records ---
+@app.route('/api/system/toggle_protection', methods=['POST'])
+def toggle_protection():
+    d = request.json
+    table_map = {'history': 'history', 'wifi': 'wifi_history'}
+    table = table_map.get(d.get('type'))
+    item_id = d.get('id')
+    state = 1 if d.get('state') else 0
+    
+    if table and item_id:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.execute(f"UPDATE {table} SET is_protected = ? WHERE id = ?", (state, item_id))
+            conn.commit()
+        return jsonify({"status": "success"})
+    return jsonify({"error": "Invalid request"}), 400
+
 @app.route('/api/wifi/history/<int:scan_id>', methods=['GET'])
 def load_wifi_scan(scan_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=10.0)
     c = conn.cursor()
     c.execute("SELECT results_json, scan_name FROM wifi_history WHERE id = ?", (scan_id,))
     row = c.fetchone()
@@ -3153,7 +3285,7 @@ def load_wifi_scan(scan_id):
 @app.route('/api/wifi/delete', methods=['POST'])
 def delete_wifi_scan():
     scan_id = request.json.get('id')
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=10.0)
     c = conn.cursor()
     c.execute("DELETE FROM wifi_history WHERE id = ?", (scan_id,))
     conn.commit()
@@ -3163,7 +3295,7 @@ def delete_wifi_scan():
 @app.route('/api/wifi/export/<int:scan_id>')
 def export_wifi_csv(scan_id):
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_NAME, timeout=10.0)
         c = conn.cursor()
         c.execute("SELECT scan_name, results_json FROM wifi_history WHERE id = ?", (scan_id,))
         row = c.fetchone()
@@ -3202,7 +3334,7 @@ def export_wifi_csv(scan_id):
 
 @app.route('/api/wifi/history/clear_all', methods=['POST'])
 def clear_all_wifi_history():
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM wifi_history")
         conn.commit()
     return jsonify({"status": "success"})
@@ -3249,7 +3381,7 @@ def update_wifi_history():
         new_name = f"Scan {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.execute(
                 "UPDATE wifi_history SET scan_name = ?, comments = ? WHERE id = ?",
                 (new_name, new_comment, scan_id)
@@ -3262,7 +3394,7 @@ def update_wifi_history():
 @app.route('/api/settings/connection_types', methods=['GET'])
 def get_connection_types():
     """Fetches all connection types for dropdowns and settings."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM connection_types ORDER BY id").fetchall()
         return jsonify([dict(r) for r in rows])
@@ -3274,7 +3406,7 @@ def add_connection_type():
     name = str(request.json.get('name', '')).strip()[:50]
     if not name: return jsonify({"error": "Name required"}), 400
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.execute("INSERT INTO connection_types (name) VALUES (?)", (name,))
             conn.commit()
         return jsonify({"status": "success"})
@@ -3285,7 +3417,7 @@ def add_connection_type():
 def delete_connection_type():
     """Removes a connection type from the list."""
     type_id = request.json.get('id')
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM connection_types WHERE id=?", (type_id,))
         conn.commit()
     return jsonify({"status": "success"})
@@ -3296,7 +3428,7 @@ def api_device_history():
     try:
         #print("\n[-->] API /device_history called. Connecting to DB...")
         
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             #print("[*] DB connected. Executing optimized query...")
             
@@ -3350,7 +3482,7 @@ def api_device_history():
 @app.route('/api/device_history/<mac>')
 def api_device_history_detail(mac):
     """Returns all historical connection records for a specific MAC address."""
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         query = """
             SELECT d.ip_address, d.last_seen, d.discovery_status, d.previous_ip, n.name as network_name
@@ -3374,7 +3506,7 @@ def api_vendor_lookup():
     
     # Save the result to the DB so we never look it up again
     if vendor:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.execute("UPDATE devices SET vendor=? WHERE mac_address=?", (vendor, mac))
             conn.commit()
             
@@ -3384,7 +3516,7 @@ def api_vendor_lookup():
 def api_wifi_networks_history():
     """Aggregates all unique Wi-Fi SSIDs seen across all historical scans."""
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             # Fetch all scans sorted oldest to newest to track first/last seen dates
             rows = conn.execute("SELECT timestamp, results_json FROM wifi_history ORDER BY timestamp ASC").fetchall()
@@ -3438,7 +3570,7 @@ def api_wifi_network_details():
     """Returns all historical scan records for a specific SSID."""
     ssid = request.json.get('ssid')
     try:
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT id, timestamp, scan_name, results_json FROM wifi_history ORDER BY timestamp DESC").fetchall()
             
@@ -3526,9 +3658,18 @@ def save_workers_endpoint():
             new_config[key] = defaults[key]
 
     file_path = os.path.join(app.root_path, WORKERS_FILE)
+    backup_path = os.path.join(app.root_path, f"{WORKERS_FILE}.bak")
     try:
+        # --- NEW: Create a backup of the previous working config before saving ---
+        if os.path.exists(file_path):
+            shutil.copy2(file_path, backup_path)
+            
         with open(file_path, "w") as f:
             json.dump(new_config, f, indent=4)
+            
+        # Trigger server restart in the background
+        threading.Thread(target=restart_server).start()
+        
         return jsonify({"status": "success", "config": new_config})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -3543,7 +3684,7 @@ def update_device_vendor():
     if not mac:
         return jsonify({"status": "error", "message": "MAC required"}), 400
 
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         if network_id:
             conn.execute("UPDATE devices SET custom_vendor=? WHERE mac_address=? AND network_id=?", (vendor, mac, network_id))
         else:
@@ -3574,7 +3715,7 @@ def scan_network_stream():
     def generate():
         pinned_mac, target_iface, target_ip_val, target_mac_val = None, None, None, None
 
-        with sqlite3.connect(DB_NAME) as conn:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
             if row: pinned_mac = row[0]
 
@@ -3759,14 +3900,14 @@ def bulk_hide_adapters():
     if not macs:
         return jsonify({"status": "error", "message": "Cannot configure adapters without MAC addresses."}), 400
 
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         # 1. Prevent hiding a pinned adapter
         placeholders = ','.join(['?'] * len(macs))
         pinned = conn.execute(f"SELECT mac_address FROM adapter_settings WHERE is_primary=1 AND mac_address IN ({placeholders})", macs).fetchone()
         if pinned:
             return jsonify({"status": "error", "message": "One or more selected adapters are pinned. Unpin them before hiding."}), 400
 
-        # 2. Prevent hiding the last usable adapter
+# 2. Prevent hiding the last usable adapter
         interfaces = psutil.net_if_addrs()
         valid_keys = []
         for iface_name, addrs in interfaces.items():
@@ -3776,8 +3917,10 @@ def bulk_hide_adapters():
             for a in addrs:
                 if a.family == psutil.AF_LINK: 
                     temp_mac = a.address
-            key = temp_mac if (temp_mac and temp_mac != "-") else iface_name
-            valid_keys.append(key)
+            
+            # --- FIXED: Only count physical adapters with a real MAC address ---
+            if temp_mac and temp_mac != "-":
+                valid_keys.append(temp_mac)
             
         hidden_rows = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_visible = 0").fetchall()
         hidden_keys = set(r[0] for r in hidden_rows)
@@ -3812,7 +3955,7 @@ def delete_network_devices():
     if not net_id:
         return jsonify({"error": "Network ID required"}), 400
         
-    with sqlite3.connect(DB_NAME) as conn:
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         if mode == 'offline':
             # Delete all devices marked offline for this network
             conn.execute("DELETE FROM devices WHERE network_id=? AND is_online=0", (net_id,))
@@ -3825,7 +3968,143 @@ def delete_network_devices():
         
     return jsonify({"status": "success"})
 
+def manage_boot_counter():
+    """
+    Crash loop protection: Increments a counter on boot. 
+    If it hits 3, restores the previous version (if updated), worker settings, and safe port.
+    """
+    base_dir = app.root_path
+    counter_file = os.path.join(base_dir, "boot_attempts.txt")
+    
+    attempts = 0
+    if os.path.exists(counter_file):
+        try:
+            with open(counter_file, "r") as f:
+                attempts = int(f.read().strip())
+        except: pass
+        
+    if attempts >= 3:
+        print("\n[!] CRASH LOOP DETECTED! Restoring safe settings...")
+        
+        # --- NEW: 1. Rollback Failed Update ---
+        rollback_zip = os.path.join(base_dir, "rollback.zip")
+        if os.path.exists(rollback_zip):
+            print("[*] Rollback archive found. Reverting to previous application version...")
+            try:
+                with zipfile.ZipFile(rollback_zip, 'r') as zip_ref:
+                    zip_ref.extractall(base_dir)
+                os.remove(rollback_zip)
+                add_system_alert("Update caused a system crash. The application has been automatically rolled back to the previous version.")
+            except Exception as e:
+                print(f"[!] Failed to extract rollback archive: {e}")
+                
+        # --- 2. Restore Worker Settings ---
+        file_path = os.path.join(base_dir, WORKERS_FILE)
+        backup_path = os.path.join(base_dir, f"{WORKERS_FILE}.bak")
+        
+        if os.path.exists(backup_path):
+            try:
+                shutil.copy2(backup_path, file_path)
+                print("[*] Restored previous worker configuration.")
+                add_system_alert("Crash loop detected: Worker settings restored to previous working configuration.")
+            except: pass
+        else:
+            defaults = get_default_workers_for_hardware()
+            try:
+                with open(file_path, "w") as f:
+                    json.dump(defaults, f, indent=4)
+                print("[*] Restored hardware default worker configuration.")
+                add_system_alert("Crash loop detected: Worker settings restored to hardware defaults.")
+            except: pass
+            
+        # --- 3. Restore Last Known Good Web Port ---
+        try:
+            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                row = conn.execute("SELECT value FROM system_settings WHERE key='last_good_port'").fetchone()
+                safe_port = row[0] if row else '81'
+                conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (safe_port,))
+                conn.commit()
+            print(f"[*] Restored last known good web port ({safe_port}).")
+            add_system_alert(f"Crash loop detected: Web port automatically restored to last known good port ({safe_port}).")
+            
+            port_override = os.path.join(base_dir, "webport")
+            if os.path.exists(port_override):
+                os.remove(port_override)
+        except Exception as e:
+            print(f"[!] Could not restore default port: {e}")
+
+        # Clear the counter so it can boot normally
+        if os.path.exists(counter_file):
+            try: os.remove(counter_file)
+            except: pass
+    else:
+        # Increment the counter
+        try:
+            with open(counter_file, "w") as f:
+                f.write(str(attempts + 1))
+        except: pass
+
+def clear_boot_counter():
+    """Clears the boot counter if the server survives startup and saves the port as known-good."""
+    base_dir = app.root_path
+    counter_file = os.path.join(base_dir, "boot_attempts.txt")
+    
+    # 1. Clear the crash counter
+    if os.path.exists(counter_file):
+        try:
+            os.remove(counter_file)
+            print("[*] Server stable. Boot counter cleared.")
+        except: pass
+        
+    # --- NEW: Delete rollback file since boot was successful ---
+    rollback_zip = os.path.join(base_dir, "rollback.zip")
+    if os.path.exists(rollback_zip):
+        try:
+            os.remove(rollback_zip)
+        except: pass
+        
+    # 2. Save the current port as the "last known good port"
+    try:
+        current_port = get_current_port()
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('last_good_port', ?)", (str(current_port),))
+            conn.commit()
+    except: pass
+
+def get_available_port(start_port):
+    """
+    Checks for an available port starting from start_port up to 90.
+    If the start_port is already above 90, it will check the next 9 ports.
+    """
+    max_port = max(start_port + 9, 90)
+    for port in range(start_port, max_port + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('0.0.0.0', port))
+                return port
+            except OSError:
+                print(f"[*] Port {port} is in use, checking next...")
+                continue
+    return None
+
+def check_disk_space():
+    """Checks if available disk space is below 250MB on startup."""
+    try:
+        root_path = os.path.splitdrive(os.getcwd())[0] or '/'
+        usage = psutil.disk_usage(root_path if platform.system() == "Windows" else '/')
+        free_mb = usage.free / (1024 * 1024)
+        
+        if free_mb < 250.0:
+            add_system_alert(f"Critical low disk space warning: Only {free_mb:.1f} MB remaining. Free up space to ensure normal operation.")
+            return False
+    except Exception as e:
+        print(f"[*] Could not check disk space: {e}")
+    return True
+
 if __name__ == '__main__':
+    # --- 1. Catch boot loops before doing anything else ---
+    manage_boot_counter()
+
     if platform.system() == "Darwin":
             try:
                 import CoreLocation
@@ -3836,10 +4115,9 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"[!] CoreLocation initialization failed: {e}")
 
-    # --- NEW: Disable Wi-Fi Power Management on Linux/Raspberry Pi ---
+    # Disable Wi-Fi Power Management on Linux/Raspberry Pi
     if platform.system() == "Linux":
         try:
-            # Using sudo since setup_env.py already elevates the script on Linux
             subprocess.run(["sudo", "iw", "dev", "wlan0", "set", "power_save", "off"], 
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("[*] Wi-Fi power management disabled for stable scanning.")
@@ -3852,9 +4130,44 @@ if __name__ == '__main__':
     check_clear_database()
     init_db()
     check_password_reset()
-    check_webport_file() # ADD THIS
+    check_webport_file()
+    check_disk_space()
     
-    current_port = get_current_port() # ADD THIS
+    current_port = get_current_port()
+
+    # --- NEW: Port Conflict Fallback ---
+    available_port = get_available_port(current_port)
+    
+    if not available_port:
+        print("\n" + "!"*60)
+        print(f"[!] CRITICAL ERROR: Port conflict detected.")
+        print(f"[!] Could not find an open port between {current_port} and 90.")
+        print(f"[!] Please define a port in the 'webport' file.")
+        print("!"*60 + "\n")
+        
+        # Auto-create the webport file for the user with an alternative default
+        port_file = os.path.join(app.root_path, "webport")
+        try:
+            with open(port_file, "w") as f:
+                f.write("8080")
+            print(f"[*] Auto-created 'webport' file in {app.root_path} with suggested port 8080.")
+        except: pass
+        
+        sys.exit(1)
+        
+    if available_port != current_port:
+        conflict_msg = f"Port conflict on {current_port}. Automatically fell back to open port {available_port}."
+        print(f"[*] {conflict_msg}")
+        add_system_alert(conflict_msg)
+        try:
+            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(available_port),))
+                conn.commit()
+        except: pass
+        current_port = available_port
+
+    # --- 2. Start a timer to clear the boot counter if the app stays alive for 5 seconds ---
+    threading.Timer(5.0, clear_boot_counter).start()
 
     # Try to use the production-ready Waitress server
     try:

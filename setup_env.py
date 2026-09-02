@@ -17,7 +17,7 @@ from pathlib import Path
 import sqlite3
 
 # --- Configuration ---
-SETUP_VERSION = "0.10.0"
+SETUP_VERSION = "0.11.0"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
@@ -357,19 +357,22 @@ def run_application(base_dir, venv_python):
         cmd = ["sudo"] + cmd
         
     try:
-        current_port = get_configured_port(base_dir)
+        # Get the initial port, but note that app.py might change it during boot!
+        actual_port = get_configured_port(base_dir)
         
         # Start the app as a subprocess so we can monitor it
         process = subprocess.Popen(cmd)
         
-        print(f"[*] Waiting for the server to spin up on port {current_port}...")
+        print("[*] Waiting for the server to spin up...")
         
         # Check if the port is open, trying once per second for up to 60 seconds
         server_ready = False
         for _ in range(60):
+            # --- FIXED: Re-fetch the port every second in case app.py changed it to resolve a conflict ---
+            actual_port = get_configured_port(base_dir)
             try:
                 # Attempt to connect to the local port
-                with socket.create_connection(("127.0.0.1", current_port), timeout=1):
+                with socket.create_connection(("127.0.0.1", actual_port), timeout=1):
                     server_ready = True
                     break
             except (ConnectionRefusedError, TimeoutError, OSError):
@@ -377,12 +380,12 @@ def run_application(base_dir, venv_python):
         
         if server_ready:
             if get_autostart_setting(base_dir):
-                print("[✓] Server is ready! Opening browser...")
-                webbrowser.open(f"http://127.0.0.1:{current_port}")
+                print(f"[✓] Server is ready on port {actual_port}! Opening browser...")
+                webbrowser.open(f"http://127.0.0.1:{actual_port}")
             else:
-                print(f"[✓] Server is ready! Access remotely via http://<your_device_ip>:{current_port}")
+                print(f"[✓] Server is ready! Access remotely via http://<your_device_ip>:{actual_port}")
         else:
-            print(f"[!] Could not verify server status. You can try opening http://127.0.0.1:{current_port} manually.")
+            print(f"[!] Could not verify server status. You can try opening http://127.0.0.1:{actual_port} manually.")
 
         # Keep this setup script open as long as the dashboard is running
         process.wait()

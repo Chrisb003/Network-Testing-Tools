@@ -16,7 +16,17 @@
             border-top: 1px solid var(--bs-border-color); font-size: 0.85em; 
             padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; z-index: 1000; 
         }
-        .ver-tag { cursor: pointer; margin-left: 15px; padding: 3px 8px; border-radius: 4px; border: 1px solid var(--bs-border-color); transition: 0.2s; }
+
+                .ver-tag { 
+            cursor: pointer; 
+            margin-left: 6px; /* Reduced space between boxes */
+            padding: 3px 6px; 
+            border-radius: 4px; 
+            border: 1px solid var(--bs-border-color); 
+            transition: 0.2s; 
+            display: inline-flex;
+            align-items: center;
+        }
         .ver-tag:hover { background-color: var(--bs-secondary-bg); }
         .ver-update { color: #ffc107; border-color: #ffc107; font-weight: bold; }
         

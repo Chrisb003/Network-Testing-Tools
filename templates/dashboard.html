@@ -1,4 +1,4 @@
-<!-- Version number 0.10.0 -->
+<!-- Version number 0.11.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -14,6 +14,8 @@
 <body>
 
 <div class="container mt-4">
+    <!-- NEW: System Alerts Container -->
+    <div id="system-alerts-container"></div>
     <div class="d-flex justify-content-between align-items-center mb-4">
          <div><img src="{{ url_for('static', filename='Logo.png') }}" alt="logo" style="width:50px;height:50px;"></div>
         <h1 class="mb-0">Network Diagnostics Dashboard</h1>
@@ -729,7 +731,7 @@
 <div class="version-footer">
     <div>Network Diagnostics <span class="badge bg-secondary">BETA</span></div>
     <div>
-        <span id="footer-channel-badge" class="badge {% if update_channel == 'dev' %}bg-warning text-dark{% else %}bg-success{% endif %} me-2" style="font-size: 0.9em; vertical-align: middle;">
+        <span id="footer-channel-badge" class="ver-tag {% if update_channel == 'dev' %}bg-warning text-dark{% else %}bg-success text-white{% endif %}">
             {{ 'Dev' if update_channel == 'dev' else 'Production' }}
         </span>
         <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Global: {{ global_version | replace('DEV', '') }}</span>
