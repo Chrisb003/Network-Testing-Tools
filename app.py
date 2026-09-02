@@ -27,13 +27,15 @@ import logging
 import tempfile
 import re
 import base64
+from flask import stream_with_context
+from concurrent.futures import as_completed
 from werkzeug.security import generate_password_hash, check_password_hash
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 
 # --- Configuration ---
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.10.0"
 
 # GITHUB CONFIGURATION
 # Ensure your Personal Access Token (PAT) has 'repo' scope
@@ -209,6 +211,12 @@ def init_db():
         except Exception as e:
             print(f"[!] Migration check failed: {e}")
 
+        # Add inside init_db():
+        c.execute('''CREATE TABLE IF NOT EXISTS global_device_vendors (
+                        mac_address TEXT PRIMARY KEY, 
+                        custom_vendor TEXT
+                    )''')
+
         # Column Migrations for History Table
         try: c.execute("ALTER TABLE history ADD COLUMN isp TEXT"); 
         except sqlite3.OperationalError: pass
@@ -236,6 +244,8 @@ def init_db():
         try: c.execute("ALTER TABLE devices ADD COLUMN discovery_status TEXT DEFAULT 'New Device'"); 
         except sqlite3.OperationalError: pass
         try: c.execute("ALTER TABLE devices ADD COLUMN vendor TEXT"); 
+        except sqlite3.OperationalError: pass
+        try: c.execute("ALTER TABLE devices ADD COLUMN custom_vendor TEXT"); 
         except sqlite3.OperationalError: pass
 
         conn.commit()
@@ -296,6 +306,65 @@ def get_setup_version():
         return "Not Found"
     except:
         return "Error"
+
+WORKERS_FILE = "workers"
+
+def detect_hardware():
+    """Identifies system hardware (Raspberry Pi models vs PC/Mac)."""
+    if platform.system() == "Linux":
+        for path in ["/proc/device-tree/model", "/sys/firmware/devicetree/base/model"]:
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        return f.read().strip().replace('\x00', '')
+                except Exception:
+                    pass
+        return "Linux PC / Server"
+    elif platform.system() == "Darwin":
+        return "Apple macOS"
+    elif platform.system() == "Windows":
+        return "Microsoft Windows"
+    return "Generic Host"
+
+def get_default_workers_for_hardware():
+    """Returns sensible concurrency defaults based on detected hardware profile."""
+    hw = detect_hardware().lower()
+    if "pi 3" in hw or "pi 2" in hw or "pi zero" in hw:
+        # Constrained: 1GB RAM, 4 slower Cortex-A53 cores
+        return {"server_threads": 6, "scan_workers": 10, "ping_workers": 15}
+    elif "pi 4" in hw or "pi 400" in hw:
+        # Moderate: 2GB-8GB RAM, Cortex-A72 cores
+        return {"server_threads": 12, "scan_workers": 20, "ping_workers": 30}
+    else:
+        # High performance: Pi 5, Desktop PCs, Servers
+        return {"server_threads": 24, "scan_workers": 30, "ping_workers": 50}
+
+def get_worker_config():
+    """Reads the 'workers' file, automatically generating it from defaults if missing."""
+    file_path = os.path.join(app.root_path, WORKERS_FILE)
+    defaults = get_default_workers_for_hardware()
+    
+    if not os.path.exists(file_path):
+        try:
+            with open(file_path, "w") as f:
+                json.dump(defaults, f, indent=4)
+            print(f"[*] Generated default 'workers' configuration for: {detect_hardware()}")
+            return defaults
+        except Exception as e:
+            print(f"[!] Failed to write workers file: {e}")
+            return defaults
+            
+    try:
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        config = {}
+        for k in ["server_threads", "scan_workers", "ping_workers"]:
+            val = data.get(k)
+            config[k] = int(val) if str(val).isdigit() and int(val) > 0 else defaults[k]
+        return config
+    except Exception as e:
+        print(f"[!] Error parsing 'workers' file, using defaults: {e}")
+        return defaults
 
 # --- System & Network Helpers ---
 def get_isp_info():
@@ -846,7 +915,7 @@ def get_gateway_mac(gateway_ip):
     try:
         # Use 'iface' to force Scapy to only bind to the chosen adapter
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), 
-                     timeout=2, verbose=0, iface=target_iface)
+                     timeout=2, verbose=0, iface=target_iface, promisc=False)
         for _, received in ans: 
             return received.hwsrc
     except Exception as e:
@@ -1127,6 +1196,10 @@ def cleanup_database():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/live_bandwidth')
+def api_live_bandwidth():
+    return jsonify(get_bandwidth())
+
 @app.route('/api/adapters')
 def get_adapters():
     """
@@ -1168,7 +1241,7 @@ def get_adapters():
     for name, addrs in interfaces.items():
         st = stats.get(name)
         
-        if "Loopback" in name or "vEthernet" in name: 
+        if "Loopback" in name or "vEthernet" in name or name == "lo": 
             continue
         
         ip4, mac = "-", "-"
@@ -1482,20 +1555,21 @@ def update_device_name():
 
 @app.route('/api/networks/<int:net_id>/devices')
 def get_network_devices(net_id):
-    """Returns devices for a network, ensuring all fields are present."""
     with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row  # This is critical for accessing columns by name
-        # Explicitly select 'services' to ensure it's not missed
-        query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online FROM devices WHERE network_id=?"
+        conn.row_factory = sqlite3.Row
+        query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, custom_vendor FROM devices WHERE network_id=?"
         devices = conn.execute(query, (net_id,)).fetchall()
         
         dev_list = [dict(d) for d in devices]
         
-        # Sync with Global Names (Bonus: ensures names follow the device everywhere)
         for dev in dev_list:
-            global_name_row = conn.execute("SELECT custom_name FROM global_device_names WHERE mac_address=?", (dev['mac_address'],)).fetchone()
-            if global_name_row and global_name_row[0]:
-                dev['custom_name'] = global_name_row[0]
+            # Sync Global Names
+            g_name = conn.execute("SELECT custom_name FROM global_device_names WHERE mac_address=?", (dev['mac_address'],)).fetchone()
+            if g_name and g_name[0]: dev['custom_name'] = g_name[0]
+            
+            # Sync Global Vendors
+            g_vendor = conn.execute("SELECT custom_vendor FROM global_device_vendors WHERE mac_address=?", (dev['mac_address'],)).fetchone()
+            if g_vendor and g_vendor[0]: dev['custom_vendor'] = g_vendor[0]
 
         try:
             dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
@@ -1509,6 +1583,8 @@ def scan_network():
     Improved: Guarantees Router injection even if the router completely blocks ARP.
     Includes an OS-agnostic Ping Sweep fallback for stubborn Wi-Fi adapters.
     """
+    # Load dynamic concurrency limits
+    worker_cfg = get_worker_config()
     pinned_mac = None
     target_iface = None
     target_ip_val = None
@@ -1558,7 +1634,7 @@ def scan_network():
                      timeout=3, retry=2, verbose=0, inter=0.02, 
                      iface=target_iface, promisc=False)
         
-        with ThreadPoolExecutor(max_workers=30) as executor:
+        with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
             futures = [executor.submit(process_device_info, received) for _, received in ans]
             for future in futures: scanned_results.append(future.result())
 
@@ -1582,7 +1658,7 @@ def scan_network():
 
             # Sweep the subnet concurrently
             network = ipaddress.IPv4Network(target_subnet, strict=False)
-            with ThreadPoolExecutor(max_workers=50) as executor:
+            with ThreadPoolExecutor(max_workers=worker_cfg['ping_workers']) as executor:
                 for ip in network.hosts():
                     executor.submit(fast_ping, str(ip))
             
@@ -1613,7 +1689,7 @@ def scan_network():
 
             # Process newly found devices concurrently
             if arp_devices:
-                with ThreadPoolExecutor(max_workers=30) as executor:
+                with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
                     futures = [executor.submit(process_device_info, dev) for dev in arp_devices]
                     for future in futures: scanned_results.append(future.result())
                     
@@ -3293,6 +3369,248 @@ def set_autostart():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/settings/workers', methods=['GET'])
+def get_workers_endpoint():
+    return jsonify({
+        "config": get_worker_config(),
+        "hardware": detect_hardware(),
+        "defaults": get_default_workers_for_hardware()
+    })
+
+@app.route('/api/settings/workers', methods=['POST'])
+def save_workers_endpoint():
+    data = request.json or {}
+    defaults = get_default_workers_for_hardware()
+    new_config = {}
+    
+    for key in ["server_threads", "scan_workers", "ping_workers"]:
+        val = data.get(key)
+        if val is not None and str(val).isdigit() and 1 <= int(val) <= 100:
+            new_config[key] = int(val)
+        else:
+            new_config[key] = defaults[key]
+
+    file_path = os.path.join(app.root_path, WORKERS_FILE)
+    try:
+        with open(file_path, "w") as f:
+            json.dump(new_config, f, indent=4)
+        return jsonify({"status": "success", "config": new_config})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/devices/update_vendor', methods=['POST'])
+def update_device_vendor():
+    d = request.json or {}
+    mac = d.get('mac')
+    vendor = d.get('vendor', '').strip()
+    network_id = d.get('network_id')
+
+    if not mac:
+        return jsonify({"status": "error", "message": "MAC required"}), 400
+
+    with sqlite3.connect(DB_NAME) as conn:
+        if network_id:
+            conn.execute("UPDATE devices SET custom_vendor=? WHERE mac_address=? AND network_id=?", (vendor, mac, network_id))
+        else:
+            conn.execute("UPDATE devices SET custom_vendor=? WHERE mac_address=?", (vendor, mac))
+        
+        # Save globally so it persists across different network scans
+        conn.execute("INSERT OR REPLACE INTO global_device_vendors (mac_address, custom_vendor) VALUES (?, ?)", (mac, vendor))
+        conn.commit()
+
+    return jsonify({"status": "success", "vendor": vendor})
+
+from flask import stream_with_context
+from concurrent.futures import as_completed
+
+def process_device_quick(received):
+    """Processes device network info without making blocking online vendor calls."""
+    ip = getattr(received, 'psrc', getattr(received, 'ip', None))
+    mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
+    return {
+        "ip": ip,
+        "mac": mac,
+        "hostname": resolve_hostname(ip, mac=None),  # Skip vendor appending in hostname
+        "services": check_open_ports(ip)['services']
+    }
+
+@app.route('/api/scan_network_stream')
+def scan_network_stream():
+    def generate():
+        pinned_mac, target_iface, target_ip_val, target_mac_val = None, None, None, None
+
+        with sqlite3.connect(DB_NAME) as conn:
+            row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
+            if row: pinned_mac = row[0]
+
+        if pinned_mac:
+            for name, addrs in psutil.net_if_addrs().items():
+                for a in addrs:
+                    if a.family == psutil.AF_LINK and a.address == pinned_mac:
+                        target_iface = name
+                        for a2 in addrs:
+                            if a2.family == socket.AF_INET: target_ip_val = a2.address
+                        target_mac_val = pinned_mac
+                        break
+
+        if not target_iface or not target_ip_val:
+            target_iface = get_active_interface_name()
+            target_ip_val = get_local_ip()
+            if target_iface:
+                for a in psutil.net_if_addrs().get(target_iface, []):
+                    if a.family == psutil.AF_LINK: target_mac_val = a.address
+
+        if not target_ip_val or target_ip_val == "127.0.0.1":
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No local network subnet found'})}\n\n"
+            return
+
+        target_subnet = f"{target_ip_val.rsplit('.', 1)[0]}.0/24"
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        ext_info = get_extended_iface_info()
+        gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
+        gateway_mac = get_gateway_mac(gateway_ip) or f"NO_MAC_{int(time.time()*1000)}"
+
+        with sqlite3.connect(DB_NAME, timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
+            row = c.fetchone()
+            if row:
+                network_id, final_network_name = row[0], row[1]
+                c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
+            else:
+                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip) VALUES (?, ?, ?, ?)", 
+                          (gateway_mac, final_network_name, current_time, gateway_ip))
+                network_id = c.lastrowid
+            c.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
+            conn.commit()
+
+        yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name})}\n\n"
+
+        worker_cfg = get_worker_config() if 'get_worker_config' in globals() else {"scan_workers": 20}
+
+        # Fast ARP Scan (promisc=False prevents Pi kernel panic)
+        ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
+                     timeout=2, retry=1, verbose=0, inter=0.01, 
+                     iface=target_iface, promisc=False)
+
+        raw_candidates = [received for _, received in ans]
+
+        # Inject Local Host and Router
+        class MockDev:
+            def __init__(self, ip, mac): self.ip, self.mac = ip, mac
+        
+        found_ips = [getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates]
+        if target_ip_val not in found_ips and target_mac_val:
+            raw_candidates.append(MockDev(target_ip_val, target_mac_val))
+        if gateway_ip != "-" and gateway_ip not in found_ips:
+            raw_candidates.append(MockDev(gateway_ip, gateway_mac))
+
+        # Stream devices as each worker thread finishes
+        with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
+            future_to_dev = {executor.submit(process_device_quick, d): d for d in raw_candidates}
+            
+            for future in as_completed(future_to_dev):
+                try:
+                    dev = future.result()
+                    if dev["ip"] == gateway_ip and "(Router)" not in dev["hostname"]:
+                        dev["hostname"] += " (Router)"
+                    elif dev["ip"] == target_ip_val and "(This device)" not in dev["hostname"]:
+                        dev["hostname"] += " (This device)"
+
+                    with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                        c = conn.cursor()
+                        # Resolve existing names, vendors, and history
+                        c.execute("SELECT custom_name, custom_vendor, vendor, ip_address, previous_ip FROM devices WHERE mac_address=? AND network_id=?", (dev["mac"], network_id))
+                        row = c.fetchone()
+                        existing_name = row[0] if row and row[0] else ""
+                        existing_custom_v = row[1] if row and row[1] else ""
+                        existing_vendor = row[2] if row and row[2] else ""
+                        db_ip = row[3] if row else None
+                        db_prev = row[4] if row else None
+
+                        if not existing_name:
+                            g_name = c.execute("SELECT custom_name FROM global_device_names WHERE mac_address=?", (dev["mac"],)).fetchone()
+                            if g_name: existing_name = g_name[0]
+
+                        if not existing_custom_v:
+                            g_vend = c.execute("SELECT custom_vendor FROM global_device_vendors WHERE mac_address=?", (dev["mac"],)).fetchone()
+                            if g_vend: existing_custom_v = g_vend[0]
+
+                        dev["custom_name"] = existing_name
+                        dev["custom_vendor"] = existing_custom_v
+                        dev["vendor"] = existing_vendor
+                        dev["is_online"] = 1
+                        
+                        # Match the expected frontend keys
+                        dev["ip_address"] = dev["ip"]
+                        dev["mac_address"] = dev["mac"]
+                        
+                        # Assign history badges for live rendering
+                        if db_ip and db_ip != dev["ip"] and db_ip != "0.0.0.0":
+                            dev["previous_ip"] = db_ip
+                            dev["discovery_status"] = "Seen Before"
+                        else:
+                            dev["previous_ip"] = db_prev
+                            dev["discovery_status"] = "Seen Before" if row else "New Device"
+
+                        c.execute("""
+                            INSERT INTO devices (mac_address, network_id, hostname, custom_name, custom_vendor, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor)
+                            VALUES (?, ?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?)
+                            ON CONFLICT(mac_address, network_id) DO UPDATE SET
+                                hostname=excluded.hostname,
+                                custom_name=COALESCE(?, devices.custom_name),
+                                custom_vendor=COALESCE(?, devices.custom_vendor),
+                                previous_ip=CASE WHEN devices.ip_address != excluded.ip_address AND devices.ip_address != '0.0.0.0' THEN devices.ip_address ELSE devices.previous_ip END,
+                                discovery_status='Seen Before',
+                                ip_address=excluded.ip_address,
+                                last_seen=excluded.last_seen,
+                                services=excluded.services,
+                                is_online=1,
+                                vendor=excluded.vendor
+                        """, (dev["mac"], network_id, dev["hostname"], existing_name, existing_custom_v, dev["ip"], current_time, dev["services"], existing_vendor, existing_name, existing_custom_v))
+                        conn.commit()
+
+                    # Yield event immediately to browser
+                    yield f"data: {json.dumps({'type': 'device', 'device': dev})}\n\n"
+                except Exception:
+                    pass
+
+        # --- NEW: Fetch offline devices after the active scan finishes ---
+        offline_devices = []
+        with sqlite3.connect(DB_NAME, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            # Fetch all devices on this network that didn't respond to the current scan
+            c.execute("""
+                SELECT mac_address, hostname, custom_name, custom_vendor, ip_address, 
+                       previous_ip, discovery_status, last_seen, services, is_online, vendor 
+                FROM devices 
+                WHERE network_id=? AND is_online=0
+            """, (network_id,))
+            
+            for r in c.fetchall():
+                dev = dict(r)
+                # Ensure global names/vendors are applied if missing
+                if not dev.get("custom_name"):
+                    g_name = conn.execute("SELECT custom_name FROM global_device_names WHERE mac_address=?", (dev['mac_address'],)).fetchone()
+                    if g_name: dev['custom_name'] = g_name[0]
+
+                if not dev.get("custom_vendor"):
+                    g_vend = conn.execute("SELECT custom_vendor FROM global_device_vendors WHERE mac_address=?", (dev['mac_address'],)).fetchone()
+                    if g_vend: dev['custom_vendor'] = g_vend[0]
+                    
+                offline_devices.append(dev)
+
+        # Attach the offline devices to the final complete packet
+        yield f"data: {json.dumps({'type': 'complete', 'network_id': network_id, 'network_name': final_network_name, 'offline_devices': offline_devices})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    })
+
 if __name__ == '__main__':
     if platform.system() == "Darwin":
             try:
@@ -3303,6 +3621,16 @@ if __name__ == '__main__':
                 print("[*] CoreLocation authorization requested.")
             except Exception as e:
                 print(f"[!] CoreLocation initialization failed: {e}")
+
+    # --- NEW: Disable Wi-Fi Power Management on Linux/Raspberry Pi ---
+    if platform.system() == "Linux":
+        try:
+            # Using sudo since setup_env.py already elevates the script on Linux
+            subprocess.run(["sudo", "iw", "dev", "wlan0", "set", "power_save", "off"], 
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("[*] Wi-Fi power management disabled for stable scanning.")
+        except Exception as e:
+            print(f"[*] Note: Could not disable Wi-Fi power management: {e}")
 
     cleanup_old_files()
     
@@ -3321,6 +3649,7 @@ if __name__ == '__main__':
             print(f"   DASHBOARD ACTIVE: http://0.0.0.0:{current_port}")
             print("   (Production WSGI Server - No Warnings)")
             print("="*60 + "\n")
-            serve(app, host='0.0.0.0', port=current_port, threads=24)
+            worker_cfg = get_worker_config()
+            serve(app, host='0.0.0.0', port=current_port, threads=worker_cfg['server_threads'])
     except ImportError:
         app.run(debug=True, host='0.0.0.0', port=current_port)

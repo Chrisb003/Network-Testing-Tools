@@ -1,4 +1,4 @@
-<!-- Version number 0.9.2 -->
+<!-- Version number 0.10.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -144,7 +144,7 @@
         </div>
         <div class="card-body p-0">
             <table class="table table-striped mb-0 small align-middle">
-                <thead><tr><th>Hostname</th><th>Name</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th><th>History</th></tr></thead>
+                <thead><tr><th>Hostname</th><th>Name</th><th>Vendor</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th><th>History</th></tr></thead>
                 <tbody id="device-list"><tr><td colspan="7" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
             </table>
         </div>
@@ -651,7 +651,40 @@
                 </div>
             </div>
         </div>
-
+        <!-- Card: Performance & Worker Concurrency -->
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100 border-primary">
+                <div class="card-header bg-primary-subtle text-primary d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-cpu-fill"></i> Concurrency & Workers</h5>
+                    <span id="detected-hw-badge" class="badge bg-secondary">Detecting...</span>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted mb-3">Adjust thread pools to balance scanning speed against CPU and RAM usage.</p>
+                    <p class="small text-muted mb-3">More threads mean faster scans but higher resource usage.</p>
+                    <div class="row g-2 mb-3">
+                        <div class="col-4">
+                            <label class="form-label small fw-bold mb-1">Server Threads</label>
+                            <input type="number" id="workers-server" class="form-control form-control-sm" min="1" max="100">
+                            <span class="text-muted" style="font-size: 0.7rem;">Waitress (Req. restart)</span>
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label small fw-bold mb-1">Scan Workers</label>
+                            <input type="number" id="workers-scan" class="form-control form-control-sm" min="1" max="100">
+                            <span class="text-muted" style="font-size: 0.7rem;">Device info & ports</span>
+                        </div>
+                        <div class="col-4">
+                            <label class="form-label small fw-bold mb-1">Ping Workers</label>
+                            <input type="number" id="workers-ping" class="form-control form-control-sm" min="1" max="100">
+                            <span class="text-muted" style="font-size: 0.7rem;">Subnet sweep fallback</span>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-primary btn-sm flex-grow-1" onclick="saveWorkerSettings()">Save Worker Settings</button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="resetWorkerSettings()" title="Reset to hardware defaults">Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div> <!-- End of Row -->
 </div>
 

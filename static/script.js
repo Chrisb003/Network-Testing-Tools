@@ -35,7 +35,8 @@
         });
 
         // Start Loops
-        setInterval(updateLiveRatesOnly, 3000); 
+        setInterval(updateLiveRatesOnly, 3000);
+        loadWorkerSettings();
         fetchAdapters(); 
         checkUpdates(); 
         loadNetworks();
@@ -210,7 +211,7 @@ function showPage(id, link) {
         isPolling = true; // Lock
 
         try {
-            const response = await fetch('/api/adapters');
+            const response = await fetch('/api/live_bandwidth');
             const data = await response.json();
             
             // UPDATE THE MAIN METRIC CARDS
@@ -1214,96 +1215,225 @@ function updateTouchIcon(isTouch) {
         });
     }
 
-    function scanDevices() {
-        const b = document.getElementById('btn-scan-devices'); 
-        const originalText = b.innerText; // Save original text to restore later
+function scanDevices() {
+    const b = document.getElementById('btn-scan-devices'); 
+    b.disabled = true; 
+    b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+    
+    const tb = document.getElementById('device-list');
+    if (tb) tb.innerHTML = '<tr><td colspan="8" class="text-center p-4 text-info"><div class="spinner-border spinner-border-sm me-2"></div>Discovering network devices...</td></tr>';
+    
+    allDevices = [];
+    let isFirstDevice = true;
 
-        // 1. Show Loading State
-        b.disabled = true; 
-        b.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Scanning...';
-        
-        // 2. Clear the table temporarily to indicate refresh
-        const tb = document.getElementById('device-list');
-        // Updated colspan="7" for the new History column
-        if (tb) tb.innerHTML = '<tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Scanning Network...</h5><p class="small text-secondary">This may take a few seconds.</p></td></tr>';
+    // Use SSE to stream devices live
+    const eventSource = new EventSource('/api/scan_network_stream');
 
-        // 3. Perform the Scan
-        fetch('/api/scan_network')
-            .then(r => r.json())
-            .then(d => {
-                if(d.error) { 
-                    alert(d.error); 
-                    // Restore table if error with colspan="7"
-                    tb.innerHTML = '<tr><td colspan="7" class="text-center p-4 text-danger">Scan Failed. Check console/logs.</td></tr>';
-                    return; 
-                }
-                loadNetworkDevices(d.network_id, d.network_name);
-            })
-            .catch(err => {
-                console.error("Scan Error:", err);
-                // Communication error UI with colspan="7"
-                tb.innerHTML = '<tr><td colspan="7" class="text-center p-4 text-danger">Communication Error.</td></tr>';
-            })
-            .finally(() => {
-                // 4. Restore Button State
-                b.disabled = false; 
-                b.innerHTML = '<i class="bi bi-search"></i> Scan'; 
+    eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'init') {
+            currentNetworkId = data.network_id;
+            document.getElementById('device-tab-title').innerText = `Devices in: ${data.network_name}`;
+            const locationInput = document.getElementById('st-network-name');
+            if (locationInput) locationInput.value = data.network_name;
+        } 
+        else if (data.type === 'device') {
+            if (isFirstDevice) {
+                tb.innerHTML = '';
+                isFirstDevice = false;
+            }
+
+            const idx = allDevices.findIndex(d => d.mac_address === data.device.mac_address);
+            if (idx >= 0) allDevices[idx] = data.device;
+            else allDevices.push(data.device);
+
+            // Keep devices sorted numerically by IPv4 address (with safety fallbacks)
+            allDevices.sort((a, b) => {
+                const ipA = a.ip_address || "0.0.0.0";
+                const ipB = b.ip_address || "0.0.0.0";
+                
+                const numA = ipA.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+                const numB = ipB.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+                return numA - numB;
             });
-    }
 
-    function renderDevices(d) {
-        const tb = document.getElementById('device-list');
-        if (!tb) return;
+            renderDevices(allDevices);
+        } 
+        else if (data.type === 'complete') {
+                    eventSource.close();
+                    b.disabled = false;
+                    b.innerHTML = '<i class="bi bi-search"></i> Scan';
+                    
+                    // --- NEW: Add offline devices to the list ---
+                    if (data.offline_devices && data.offline_devices.length > 0) {
+                        data.offline_devices.forEach(offDev => {
+                            // Prevent duplicates just in case
+                            if (!allDevices.some(d => d.mac_address === offDev.mac_address)) {
+                                allDevices.push(offDev);
+                            }
+                        });
 
-        tb.innerHTML = d.length ? d.map(x => {
-            // Force Link Logic
-            const ip = x.ip_address || "0.0.0.0";
-            const services = String(x.services || "").toUpperCase();
-            const hasWeb = services.includes("HTTP");
+                        // Re-sort so offline devices show up natively based on their last IP
+                        allDevices.sort((a, b) => {
+                            const ipA = a.ip_address || "0.0.0.0";
+                            const ipB = b.ip_address || "0.0.0.0";
+                            const numA = ipA.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+                            const numB = ipB.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+                            return numA - numB;
+                        });
+                        renderDevices(allDevices);
+                    }
             
-            let ipColumnHtml;
-            if (hasWeb) {
-                const protocol = services.includes("HTTPS") ? "https" : "http";
-                const url = `${protocol}://${ip}`;
-                ipColumnHtml = `<a href="${url}" target="_blank" style="color: #0d6efd !important; text-decoration: underline !important; font-weight: bold;">${ip}</a>`;
-            } else {
-                ipColumnHtml = ip;
-            }
+            // Trigger asynchronous background vendor lookups for unpopulated entries
+            resolveMissingVendors(allDevices);
+        }
+        else if (data.type === 'error') {
+            eventSource.close();
+            b.disabled = false;
+            b.innerHTML = '<i class="bi bi-search"></i> Scan';
+            alert(data.message || 'Scan failed.');
+        }
+    };
 
-            // Service Badges
-            let serviceBadges = `<span class="badge bg-secondary opacity-50">None</span>`;
-            if (services && services !== "NONE") {
-                serviceBadges = services.split(',').map(s => {
-                    const sTrim = s.trim();
-                    const badgeClass = sTrim.includes("HTTP") ? "bg-primary" : "bg-info text-dark";
-                    return `<span class="badge ${badgeClass} me-1">${sTrim}</span>`;
-                }).join('');
-            }
+    eventSource.onerror = function() {
+        eventSource.close();
+        b.disabled = false;
+        b.innerHTML = '<i class="bi bi-search"></i> Scan';
+    };
+}
 
-            // History Column Logic
-            let historyHtml = `<span class="badge bg-secondary">Unknown</span>`;
-            if (x.discovery_status === 'New Device') {
-                historyHtml = `<span class="badge bg-success">New Device</span>`;
-            } else if (x.previous_ip) {
-                historyHtml = `<span class="badge bg-warning text-dark">IP Changed <small>(${x.previous_ip})</small></span>`;
-            } else {
-                historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
-            }
+function renderDevices(d) {
+    const tb = document.getElementById('device-list');
+    if (!tb) return;
 
-            return `
-                <tr>
-                    <td><strong>${x.hostname || 'Unknown'}</strong></td>
-                    <td onclick="updateDeviceName('${x.mac_address}', '${x.custom_name}')" style="cursor:pointer">
-                        ${x.custom_name || '<i class="text-muted">Set Name</i>'} <i class="bi bi-pencil small"></i>
-                    </td>
-                    <td>${ipColumnHtml}</td>
-                    <td class="font-monospace small text-muted">${x.mac_address}</td>
-                    <td class="${x.is_online ? 'text-success' : 'text-muted'}">${x.is_online ? 'Online' : 'Offline'}</td>
-                    <td>${serviceBadges}</td>
-                    <td>${historyHtml}</td>
-                </tr>`;
-        }).join('') : '<tr><td colspan="7" class="text-center p-4">No devices found.</td></tr>';
-    }
+    tb.innerHTML = d.length ? d.map(x => {
+        const ip = x.ip_address || "0.0.0.0";
+        const services = String(x.services || "").toUpperCase();
+        const hasWeb = services.includes("HTTP");
+        
+        // --- UPDATED: Blank IP for Offline Devices ---
+        let ipColumnHtml;
+        if (!x.is_online) {
+            ipColumnHtml = `<span class="text-muted">-</span>`;
+        } else if (hasWeb) {
+            ipColumnHtml = `<a href="${services.includes('HTTPS') ? 'https' : 'http'}://${ip}" target="_blank" class="fw-bold text-primary text-decoration-underline">${ip}</a>`;
+        } else {
+            ipColumnHtml = ip;
+        }
+
+        // --- UPDATED: Hide Services for Offline Devices ---
+        let serviceBadges = `<span class="badge bg-secondary opacity-50">None</span>`;
+        if (x.is_online && services && services !== "NONE") {
+            serviceBadges = services.split(',').map(s => {
+                const trim = s.trim();
+                return `<span class="badge ${trim.includes('HTTP') ? 'bg-primary' : 'bg-info text-dark'} me-1">${trim}</span>`;
+            }).join('');
+        }
+
+        // --- UPDATED: History Badges with Date/Time for Offline Devices ---
+        let historyHtml = `<span class="badge bg-secondary">Unknown</span>`;
+        if (!x.is_online) {
+            const lastTime = x.last_seen ? ` on ${x.last_seen}` : '';
+            historyHtml = `<span class="badge bg-secondary">Last seen ${ip}${lastTime}</span>`;
+        } else if (x.discovery_status === 'New Device') {
+            historyHtml = `<span class="badge bg-success">New Device</span>`;
+        } else if (x.previous_ip) {
+            historyHtml = `<span class="badge bg-warning text-dark">IP changed previous ${x.previous_ip}</span>`;
+        } else {
+            historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
+        }
+
+        // Vendor Display Hierarchy
+        const safeMac = x.mac_address.replace(/[:-]/g, '');
+        let vendorDisplay = `<span id="vend-${safeMac}" class="text-muted small fst-italic">Pending...</span>`;
+
+        if (x.custom_vendor) {
+            vendorDisplay = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle">${x.custom_vendor}</span>`;
+        } else if (x.vendor && x.vendor !== 'Unknown') {
+            vendorDisplay = `<span id="vend-${safeMac}">${x.vendor}</span>`;
+        }
+
+        const safeCustomV = (x.custom_vendor || '').replace(/'/g, "\\'");
+        const safeLookupV = (x.vendor || '').replace(/'/g, "\\'");
+
+        // Notice the opacity class dimming the row slightly if disconnected
+        return `
+            <tr class="${!x.is_online ? 'opacity-75' : ''}">
+                <td><strong>${x.hostname || 'Unknown'}</strong></td>
+                <td onclick="updateDeviceName('${x.mac_address}', '${x.custom_name}')" style="cursor:pointer">
+                    ${x.custom_name || '<i class="text-muted">Set Name</i>'} <i class="bi bi-pencil small"></i>
+                </td>
+                <td onclick="updateDeviceVendor('${x.mac_address}', '${safeCustomV}', '${safeLookupV}')" style="cursor:pointer" title="Click to customize vendor">
+                    ${vendorDisplay} <i class="bi bi-pencil small text-muted"></i>
+                </td>
+                <td>${ipColumnHtml}</td>
+                <td class="font-monospace small text-muted">${x.mac_address}</td>
+                <td class="${x.is_online ? 'text-success' : 'text-muted'}">${x.is_online ? 'Online' : 'Offline'}</td>
+                <td>${serviceBadges}</td>
+                <td>${historyHtml}</td>
+            </tr>`;
+    }).join('') : '<tr><td colspan="8" class="text-center p-4">No devices found.</td></tr>';
+}
+
+function updateDeviceVendor(mac, currentCustom, currentLookup) {
+    const promptMsg = currentLookup 
+        ? `Enter Custom Vendor name (leave blank to revert to '${currentLookup}'):`
+        : "Enter Custom Vendor name:";
+    
+    const nextVendor = prompt(promptMsg, currentCustom);
+    if (nextVendor === null) return; // User cancelled
+
+    fetch('/api/devices/update_vendor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            mac: mac,
+            vendor: nextVendor.trim(),
+            network_id: currentNetworkId
+        })
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.status === 'success') {
+            // Update in-memory state
+            const target = allDevices.find(d => d.mac_address === mac);
+            if (target) {
+                target.custom_vendor = res.vendor;
+                renderDevices(allDevices);
+            }
+        }
+    });
+}
+
+function resolveMissingVendors(devices) {
+    devices.forEach(dev => {
+        // Skip lookup if a custom vendor or valid lookup vendor is already present
+        if (dev.custom_vendor || (dev.vendor && dev.vendor !== 'Unknown')) return;
+
+        const safeMac = dev.mac_address.replace(/[:-]/g, '');
+        const el = document.getElementById(`vend-${safeMac}`);
+        if (el) el.innerHTML = '<span class="spinner-border spinner-border-sm" style="width:0.6rem;height:0.6rem;"></span>';
+
+        fetch('/api/vendor/lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mac: dev.mac_address })
+        })
+        .then(r => r.json())
+        .then(res => {
+            dev.vendor = res.vendor || 'Unknown';
+            const targetEl = document.getElementById(`vend-${safeMac}`);
+            if (targetEl && !dev.custom_vendor) {
+                targetEl.outerHTML = `<span id="vend-${safeMac}">${dev.vendor}</span>`;
+            }
+        })
+        .catch(() => {
+            const targetEl = document.getElementById(`vend-${safeMac}`);
+            if (targetEl && !dev.custom_vendor) targetEl.innerText = 'Unknown';
+        });
+    });
+}
     
     function updateDeviceName(mac, old) { 
         const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
@@ -2134,4 +2264,56 @@ function changeUpdateChannel() {
     .finally(() => {
         select.disabled = false;
     });
+}
+
+let hardwareWorkerDefaults = null;
+
+function loadWorkerSettings() {
+    fetch('/api/settings/workers')
+        .then(r => r.json())
+        .then(data => {
+            const badge = document.getElementById('detected-hw-badge');
+            if (badge) badge.innerText = data.hardware;
+            
+            hardwareWorkerDefaults = data.defaults;
+            
+            const srv = document.getElementById('workers-server');
+            const scn = document.getElementById('workers-scan');
+            const png = document.getElementById('workers-ping');
+            
+            if (srv) srv.value = data.config.server_threads;
+            if (scn) scn.value = data.config.scan_workers;
+            if (png) png.value = data.config.ping_workers;
+        })
+        .catch(err => console.error("Failed to load worker settings:", err));
+}
+
+function saveWorkerSettings() {
+    const payload = {
+        server_threads: parseInt(document.getElementById('workers-server').value),
+        scan_workers: parseInt(document.getElementById('workers-scan').value),
+        ping_workers: parseInt(document.getElementById('workers-ping').value)
+    };
+
+    fetch('/api/settings/workers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.status === "success") {
+            alert("Worker settings saved to 'workers' file.\n(Note: Server Threads will take effect on the next restart).");
+        } else {
+            alert("Error saving workers: " + res.message);
+        }
+    });
+}
+
+function resetWorkerSettings() {
+    if (!hardwareWorkerDefaults) return;
+    document.getElementById('workers-server').value = hardwareWorkerDefaults.server_threads;
+    document.getElementById('workers-scan').value = hardwareWorkerDefaults.scan_workers;
+    document.getElementById('workers-ping').value = hardwareWorkerDefaults.ping_workers;
+    saveWorkerSettings();
 }

@@ -1,3 +1,5 @@
+0.10.0 - Major fixes and changes to improve and fix issues. This can now be run on a raspberry pi. Although I dont recommend anything earlier than a pi 4 due to preformance and hardware limitation it should still run on a pi 3. Major rework to the network scanning part, improving responsiveness and functionality
+
 0.9.2 - A few UI bug fixes. Added setting to allow you to disable the automatic launching of the webpage if you dont want it to when it starts (Usefull if you want to create a dedicated device for it). Added basic user authenication (Useful if running from dedicated device.). Able to change port number app is running on.
 
 0.9.1 - A few UI fixes and clean up of dashboard code moving styles and scripts to seperate file. Added option to switch between production and dev environments

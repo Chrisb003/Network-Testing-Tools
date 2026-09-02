@@ -17,7 +17,7 @@ from pathlib import Path
 import sqlite3
 
 # --- Configuration ---
-SETUP_VERSION = "0.9.2"
+SETUP_VERSION = "0.10.0"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
@@ -97,7 +97,7 @@ def ensure_linux_prerequisites():
                 print("[*] Installing Python build tools and venv...")
                 subprocess.run([
                     "sudo", "apt-get", "install", "-y", 
-                    "python3-venv", "python3-pip", "python3-dev", "build-essential", "git"
+                    "python3-venv", "python3-pip", "python3-dev", "build-essential", "git", "net-tools"
                 ], check=True)
                 
                 print("[✓] Linux prerequisites installed.")
@@ -279,11 +279,14 @@ def install_speedtest_cli(bin_dir):
         # 2. LINUX INSTALLATION (With Multi-Arch Support)
         elif system == "Linux":
             # Dynamic URL Selection based on Architecture
-            if "arm" in machine or "aarch64" in machine:
-                print(f"[*] Architecture detected: ARM/Raspberry Pi")
+            if "aarch64" in machine or "arm64" in machine:
+                print("[*] Architecture detected: ARM 64-bit")
                 url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz"
+            elif "arm" in machine:
+                print("[*] Architecture detected: ARM 32-bit")
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-armhf.tgz"
             else:
-                print(f"[*] Architecture detected: x86_64")
+                print("[*] Architecture detected: x86_64")
                 url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz"
             
             tgz_path = bin_dir / "st.tgz"
