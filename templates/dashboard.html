@@ -71,7 +71,7 @@
         <div class="metric-card shadow-sm text-start h-100 d-flex flex-column justify-content-center" style="padding: 12px 20px;">
             <div class="row g-2 align-items-center">
                 <div class="col-6">
-                    <input type="text" id="st-network-name" class="form-control form-control-sm" placeholder="Location Name" onkeydown="if(event.key === 'Enter') runSpeedTest()">
+                <input type="text" id="st-network-name" class="form-control form-control-sm" placeholder="Location Name" maxlength="50" onkeydown="if(event.key === 'Enter') runSpeedTest()">
                 </div>
                 <div class="col-3">
                     <select id="st-conn-type" class="form-select form-select-sm">
@@ -106,17 +106,24 @@
         <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Network Adapters</h5>
-                <div class="d-flex gap-3">
+                <div class="d-flex gap-3 align-items-center">
+                    <!-- NEW: Bulk Hide Button -->
+                    <button class="btn btn-outline-warning btn-sm text-nowrap" onclick="bulkHideAdapters()">Hide Selected</button>
                     <div class="form-check form-switch pt-1"><input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="fetchAdapters()"><label class="form-check-label small">Hide No-MAC</label></div>
                     <div class="form-check form-switch pt-1"><input class="form-check-input" type="checkbox" id="showHiddenCheck" onchange="fetchAdapters()"><label class="form-check-label small">Show Hidden</label></div>
                 </div>
             </div>
             <div class="card-body p-0">
                 <table class="table table-striped mb-0 small align-middle">
-                    <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>MAC</th><th>IPv4</th><th>Gateway</th><th>DNS</th><th>Speed</th><th></th></tr></thead>
+                    <!-- NEW: Added Master Checkbox column -->
+                    <thead><tr>
+                        <th><input type="checkbox" id="adapters-master-check" onchange="toggleAll('adapters', this)"></th>
+                        <th>Name</th><th>ID</th><th>Status</th><th>MAC</th><th>IPv4</th><th>Gateway</th><th>DNS</th><th>Speed</th><th></th>
+                    </tr></thead>
                     <tbody id="adapter-table">
                     <tr>
-                        <td colspan="9" class="text-center p-5">
+                        <!-- Updated colspan from 9 to 10 to cover new checkbox column -->
+                        <td colspan="10" class="text-center p-5">
                             <div class="spinner-border text-primary mb-3"></div>
                             <h5 class="text-muted">Loading Interfaces...</h5>
                             <p class="small text-secondary">Gathering network adapter data.</p>
@@ -128,12 +135,21 @@
         </div>
     </div>
 
-   <div id="devices" class="page-section hidden">
+<div id="devices" class="page-section hidden">
     <div class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
             <h5 class="mb-0 text-nowrap me-3" id="device-tab-title">Connected Devices</h5>
             <div class="d-flex gap-2 align-items-center">
                 <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
+                
+            <!-- UPDATED: Buttons hidden by default -->
+                <button id="btn-remove-selected" class="btn btn-outline-danger btn-sm text-nowrap hidden" onclick="deleteSelectedNetworkDevices()">
+                    <i class="bi bi-trash"></i> Remove Selected
+                </button>
+                <button id="btn-remove-offline" class="btn btn-outline-warning btn-sm text-nowrap hidden" onclick="deleteOfflineNetworkDevices()">
+                    <i class="bi bi-eraser"></i> Remove Offline
+                </button>
+                
                 <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevicesCSV()">
                     <i class="bi bi-download"></i> Export CSV
                 </button>
@@ -144,8 +160,13 @@
         </div>
         <div class="card-body p-0">
             <table class="table table-striped mb-0 small align-middle">
-                <thead><tr><th>Hostname</th><th>Name</th><th>Vendor</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th><th>History</th></tr></thead>
-                <tbody id="device-list"><tr><td colspan="7" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
+                <!-- NEW: Added Master Checkbox column -->
+                <thead><tr>
+                    <th><input type="checkbox" id="device-master-check" onchange="toggleSelectAll(this, 'device-check'); updateDeviceMasterCheck()"></th>
+                    <th>Hostname</th><th>Name</th><th>Vendor</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th><th>History</th>
+                </tr></thead>
+                <!-- NEW: Updated colspan to 9 -->
+                <tbody id="device-list"><tr><td colspan="9" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
             </table>
         </div>
     </div>
@@ -199,7 +220,7 @@
         <div class="card shadow-sm mb-3">
             <div class="card-body">
                 <div class="input-group">
-                    <input type="text" id="dns-input" class="form-control" placeholder="Enter domain (e.g. google.com)" onkeydown="if(event.key === 'Enter') runDNS()">
+                    <input type="text" id="dns-input" class="form-control" placeholder="Enter domain (e.g. google.com)" maxlength="255" onkeydown="if(event.key === 'Enter') runDNS()">
                     <button class="btn btn-primary" id="btn-dns" onclick="runDNS()">Lookup</button>
                 </div>
             </div>
@@ -243,12 +264,16 @@
         </div>
     </div>
 
-    <div id="device-history-page" class="page-section hidden">
+<div id="device-history-page" class="page-section hidden">
         <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
                 <h5 class="mb-0 text-nowrap me-3">Global Device History</h5>
                 <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
                     <input type="text" id="dev-hist-filter" class="form-control form-control-sm w-50" placeholder="Filter MAC or Name..." onkeyup="filterDevHist()">
+                    <!-- NEW: Delete Button -->
+                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="deleteSelectedDeviceHistory()">
+                        <i class="bi bi-trash"></i> Delete
+                    </button>
                     <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevHistCSV()">
                         <i class="bi bi-download"></i> Export
                     </button>
@@ -308,7 +333,7 @@
         <div class="card shadow-sm mb-3">
             <div class="card-body">
                 <div class="input-group">
-                    <input type="text" id="ping-input" class="form-control" placeholder="Enter IP or Domain (e.g. 8.8.8.8)" onkeydown="if(event.key === 'Enter') runPing()">
+                    <input type="text" id="ping-input" class="form-control" placeholder="Enter IP or Domain (e.g. 8.8.8.8)" maxlength="255" onkeydown="if(event.key === 'Enter') runPing()">
                     <button class="btn btn-primary" id="btn-ping" onclick="runPing()">Ping</button>
                 </div>
                 <div id="ping-status" class="mt-2 small text-muted"></div>
@@ -425,7 +450,7 @@
                 <input type="hidden" id="modal-sys-id">
                 <div class="mb-3">
                     <label class="form-label small fw-bold">Custom Display Name</label>
-                    <input type="text" id="modal-custom-name" class="form-control" placeholder="e.g. Office Ethernet">
+                    <input type="text" id="modal-custom-name" class="form-control" maxlength="50" placeholder="e.g. Office Ethernet">
                 </div>
                 <div class="form-check form-switch mb-3">
                     <input class="form-check-input" type="checkbox" id="modal-visible">
@@ -603,7 +628,7 @@
                     <p class="small text-muted">Manage the connection types available in the Speed Test dropdown.</p>
                     <ul class="list-group mb-3" id="connection-type-list" style="max-height: 180px; overflow-y: auto;"></ul>
                     <div class="input-group">
-                        <input type="text" id="new-conn-type" class="form-control form-control-sm" placeholder="e.g. 5G Home Internet" onkeydown="if(event.key === 'Enter') addConnectionType()">
+                        <input type="text" id="new-conn-type" class="form-control form-control-sm" placeholder="e.g. 5G Home Internet" maxlength="50" onkeydown="if(event.key === 'Enter') addConnectionType()">
                         <button class="btn btn-primary btn-sm" onclick="addConnectionType()">Add Type</button>
                     </div>
                 </div>
@@ -638,10 +663,10 @@
                     
                     <div id="auth-fields" class="hidden">
                         <div class="mb-2">
-                            <input type="text" id="auth-user" class="form-control form-control-sm" placeholder="Username">
+                            <input type="text" id="auth-user" class="form-control form-control-sm" placeholder="Username" maxlength="50">
                         </div>
                         <div class="input-group input-group-sm mb-2">
-                            <input type="password" id="auth-pass" class="form-control" placeholder="New Password (leave blank to keep current)">
+                            <input type="password" id="auth-pass" class="form-control" placeholder="New Password (leave blank to keep current)" maxlength="255">
                             <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility()">
                                 <i class="bi bi-eye" id="auth-pass-icon"></i>
                             </button>
@@ -831,7 +856,7 @@
                 <input type="hidden" id="modal-st-id">
                 <div class="mb-3">
                     <label class="form-label small fw-bold">Location Name</label>
-                    <input type="text" id="modal-st-name" class="form-control">
+                    <input type="text" id="modal-st-name" class="form-control" maxlength="50">
                 </div>
                 <div class="mb-3">
                     <label class="form-label small fw-bold">Connection Type</label>

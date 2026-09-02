@@ -12,6 +12,26 @@
     let selectedDevHistMacs = new Set();
     let currentModalDevData = [];
 
+    function escapeHTML(str) {
+        if (str === null || str === undefined) return "";
+        return String(str)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function escapeJS(str) {
+        if (!str) return "";
+        return String(str)
+            .replace(/\\/g, "\\\\")
+            .replace(/'/g, "\\'")
+            .replace(/"/g, "&quot;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
         setTheme(localStorage.getItem('theme') || 'dark');
         
@@ -139,9 +159,12 @@ function loadConnectionTypes() {
         let listHtml = '';
         
         d.forEach(t => {
-            optionsHtml += `<option value="${t.name}">${t.name}</option>`;
+            // --- FIXED: Escape the connection type name to prevent XSS ---
+            const safeName = escapeHTML(t.name);
+            
+            optionsHtml += `<option value="${safeName}">${safeName}</option>`;
             listHtml += `<li class="list-group-item d-flex justify-content-between align-items-center small py-1">
-                ${t.name}
+                ${safeName}
                 <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteConnectionType(${t.id})"><i class="bi bi-x-lg"></i></button>
             </li>`;
         });
@@ -189,7 +212,6 @@ function showPage(id, link) {
     if(id === 'dns-tool') fetchToolLogs('dns');
     if(id === 'ping-tool') fetchToolLogs('ping');
     if(id === 'wifi-history') loadWifiHistory();
-    if(id === 'device-history-page') loadDeviceHistory();
     if(id === 'device-history-page') loadDeviceHistory();
     if(id === 'wifi-networks-history') loadWifiNetworksHistory();
     // System page doesn't need auto-refresh on load
@@ -361,8 +383,8 @@ async function fetchAdapters() {
             if (!a.visible && !showHidden) return '';
 
             // Sanitize strings for the onclick event
-            const safeName = (a.name || '').replace(/'/g, "\\'"); 
-            const safeId = (a.id || '').replace(/'/g, "\\'");
+            const safeName = escapeJS(a.name);
+            const safeId = escapeJS(a.id);
             const originalMac = a.mac || '-';
             
             // Format MAC for display (colons instead of dashes)
@@ -370,18 +392,25 @@ async function fetchAdapters() {
             
             const isVisible = !!a.visible;
             const isPrimary = !!a.is_primary;
+            
+            // Check if the item was previously selected
+            const isChecked = tableState.adapters.selected.has(originalMac) ? 'checked' : '';
+            // Disable the checkbox entirely if it's a virtual adapter with no MAC
+            const checkboxDisabled = originalMac === '-' ? 'disabled' : '';
 
             return `
                 <tr data-id="${a.id}" class="${!a.visible ? 'opacity-50' : ''}">
+                    <td onclick="event.stopPropagation()">
+                        <input type="checkbox" class="adapters-check" value="${originalMac}" onchange="toggleSelection('adapters', this)" ${isChecked} ${checkboxDisabled}>
+                    </td>
                     <td>
-                        <strong>${a.name}</strong> 
+                        <strong>${escapeHTML(a.name)}</strong> 
                         ${isPrimary ? '<span class="badge bg-primary ms-1" style="font-size: 0.6rem;">PINNED</span>' : ''}
                     </td>
-                    <td class="text-muted small">${a.id}</td>
+                    <td class="text-muted small">${escapeHTML(a.id)}</td>
                     <td class="${a.status === 'Active' ? 'status-active' : 'status-inactive'}">
                         ${a.status}
                     </td>
-                    <!-- Added text-nowrap to prevent 2 lines, and used displayMac -->
                     <td class="font-monospace small text-nowrap">${displayMac}</td>
                     <td>${a.ip4}</td>
                     <td class="text-primary fw-bold">${a.gateway}</td> 
@@ -393,8 +422,9 @@ async function fetchAdapters() {
                         </i>
                     </td>
                 </tr>`;
-
         }).join('');
+        
+        updateMasterCheckbox('adapters'); // Refresh master checkbox UI
 
     } catch (err) {
         // Fallback for if the API fails entirely due to disconnection
@@ -419,6 +449,12 @@ async function saveAdapterSettings() {
     const name = document.getElementById('modal-custom-name').value;
     const visible = document.getElementById('modal-visible').checked ? 1 : 0;
     const primary = document.getElementById('modal-pin-primary').checked ? 1 : 0;
+
+    // --- NEW: Validation to prevent hiding a pinned adapter ---
+    if (primary === 1 && visible === 0) {
+        alert("You cannot hide a pinned adapter. Please unpin it first or make it visible.");
+        return; // Stop the save process
+    }
 
     // Use /api/adapter_settings to match your app.py route exactly
     const response = await fetch('/api/adapter_settings', {
@@ -470,12 +506,12 @@ let allNetworks = []; // Global array to hold the network data
         const paginatedData = getPaginatedData('networks');
 
         tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
-            const safeName = (n.name || '').replace(/'/g, "\\'");
+            const safeName = escapeJS(n.name);
             const isChecked = tableState.networks.selected.has(String(n.id)) ? 'checked' : '';
             return `
             <tr>
                 <td onclick="event.stopPropagation()"><input type="checkbox" class="networks-check" value="${n.id}" onchange="toggleSelection('networks', this)" ${isChecked}></td>
-                <td><strong>${n.name}</strong></td>
+                <td><strong>${escapeHTML(n.name)}</strong></td>
                 <td class="font-monospace small">${n.gateway_mac}</td>
                 <td>${n.gateway_ip}</td>
                 <td><span class="badge bg-secondary">${n.device_count}</span></td>
@@ -518,15 +554,15 @@ let allNetworks = []; // Global array to hold the network data
         const paginatedData = getPaginatedData('history');
 
         tb.innerHTML = paginatedData.length ? paginatedData.map(x => {
-            const safeName = (x.network_name || '').replace(/'/g, "\\'");
-            const safeType = (x.connection_type || '').replace(/'/g, "\\'");
+            const safeName = escapeJS(x.network_name);
+            const safeType = escapeJS(x.connection_type);
             const isChecked = tableState.history.selected.has(String(x.id)) ? 'checked' : '';
             
             return `
             <tr>
                 <td onclick="event.stopPropagation()"><input type="checkbox" class="history-check" value="${x.id}" onchange="toggleSelection('history', this)" ${isChecked}></td>
                 <td><small>${x.timestamp}</small></td>
-                <td><strong>${x.network_name}</strong></td>
+                <td><strong>${escapeHTML(x.network_name)}</strong></td>
                 <td>${x.isp || '-'}</td>
                 <td><span class="badge bg-light text-dark border">${x.connection_type}</span></td>
                 <td class="text-primary fw-bold">${x.download}</td>
@@ -575,15 +611,15 @@ let allNetworks = []; // Global array to hold the network data
         const paginatedData = getPaginatedData('wifi');
 
         tb.innerHTML = paginatedData.length ? paginatedData.map(h => {
-            const safeName = h.name.replace(/'/g, "\\'");
-            const safeComment = (h.comments || "").replace(/'/g, "\\'");
+            const safeName = escapeJS(h.name);
+            const safeComment = escapeJS(h.comments);
             const isChecked = tableState.wifi.selected.has(String(h.id)) ? 'checked' : '';
             return `
             <tr>
                 <td onclick="event.stopPropagation()"><input type="checkbox" class="wifi-check" value="${h.id}" onchange="toggleSelection('wifi', this)" ${isChecked}></td>
                 <td><small class="text-muted">${h.timestamp}</small></td>
-                <td><div class="fw-bold text-primary">${h.name}</div></td>
-                <td><small class="text-muted">${h.comments || 'No comments'}</small></td>
+                <td><div class="fw-bold text-primary">${escapeHTML(h.name)}</div></td>
+                <td><small class="text-muted">${escapeHTML(h.comments) || 'No comments'}</small></td>
                 <td class="text-end">
                     <div class="btn-group">
                         <button class="btn btn-sm btn-outline-primary" onclick="viewPastWifi(${h.id})" title="View Results"><i class="bi bi-eye"></i></button>
@@ -627,7 +663,7 @@ let allNetworks = []; // Global array to hold the network data
                 <tr>
                     <td onclick="event.stopPropagation()"><input type="checkbox" class="dns-check" value="${x.id}" onchange="toggleSelection('dns', this)" ${isChecked}></td>
                     <td><small class="text-muted">${x.timestamp}</small></td>
-                    <td><strong>${x.domain}</strong></td>
+                    <td><strong>${escapeHTML(x.domain)}</strong></td>
                     <td class="font-monospace">${x.result_ip}</td>
                     <td><span class="badge ${x.status==='Resolved'?'bg-success-subtle text-success':'bg-danger-subtle text-danger'}">${x.status}</span></td>
                     <td><small>${x.router_ip || '-'}</small></td>
@@ -644,7 +680,7 @@ let allNetworks = []; // Global array to hold the network data
                 <tr>
                     <td onclick="event.stopPropagation()"><input type="checkbox" class="ping-check" value="${x.id}" onchange="toggleSelection('ping', this)" ${isChecked}></td>
                     <td><small class="text-muted">${x.timestamp}</small></td>
-                    <td><strong>${x.target}</strong></td>
+                    <td><strong>${escapeHTML(x.target)}</strong></td>
                     <td><span class="badge ${x.status==='Success'?'bg-success':'bg-warning'}">${x.status}</span></td>
                     <td>${x.latency}</td>
                     <td>${x.packet_loss}</td>
@@ -781,6 +817,7 @@ let allNetworks = []; // Global array to hold the network data
 
 // --- UNIFIED STATE MANAGER ---
     const tableState = {
+        adapters: { selected: new Set() },
         networks: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
         dns: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
         ping: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
@@ -932,11 +969,11 @@ function renderDeviceHistory() {
 
 tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
             const displayName = d.custom_name || d.clean_hostname || "Unknown";
-            const safeName = String(displayName).replace(/'/g, "\\'");
-            const safeVendor = String(d.vendor || '').replace(/'/g, "\\'"); 
+            const safeName = escapeJS(displayName);
+            const safeVendor = escapeJS(d.vendor);
             
-            let vendorHtml = d.vendor;
-            if (!vendorHtml || vendorHtml === 'Unknown') {
+            let vendorHtml = escapeHTML(d.vendor);
+            if (!d.vendor || d.vendor === 'Unknown') {
                 const safeMacId = d.mac_address.replace(/:/g, '');
                 vendorHtml = `<span id="vendor-${safeMacId}" class="text-muted fst-italic"><span class="spinner-border spinner-border-sm me-1" style="width: 0.8rem; height: 0.8rem;"></span> Fetching...</span>`;
                 missingVendors.push(d.mac_address);
@@ -950,7 +987,7 @@ tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
                 <td onclick="event.stopPropagation()">
                     <input type="checkbox" class="dev-hist-check" value="${d.mac_address}" onchange="toggleDevHistSelection(this)" ${isChecked}>
                 </td>
-                <td><strong>${displayName}</strong></td>
+                <td><strong>${escapeHTML(displayName)}</strong></td>
                 <td>${vendorHtml}</td>
                 <td class="font-monospace text-muted">${d.mac_address}</td>
                 <td><span class="badge bg-secondary">${d.network_name}</span></td>
@@ -1015,52 +1052,78 @@ function exportDevHistCSV() {
     }
 
 function viewDeviceDetails(mac, name, vendor) {
-        // Build the HTML for the main title
-        let modalTitleHtml = `<span class="fw-bold">${name}</span> <br><span class="text-muted small fs-7 fw-normal">${mac}</span>`;
-        
-        // If a valid vendor exists, add it on a new line with muted, smaller text
-        if (vendor && vendor.trim() !== "" && vendor !== "undefined" && vendor !== "Unknown") {
-            modalTitleHtml += `<br><span class="text-muted small fs-7 fw-normal">Make: ${vendor}</span>`;
-        }
-        
-        // Use .innerHTML instead of .innerText to render the HTML structure
-        document.getElementById('devHistModalTitle').innerHTML = modalTitleHtml;
-        const tbody = document.getElementById('devHistModalBody');
-        const exportBtn = document.getElementById('btn-export-dev-modal');
-        
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
-        exportBtn.style.display = 'none'; // Hide export until data is loaded
-        
-        devHistModal.show();
-
-        fetch(`/api/device_history/${mac}`)
-            .then(r => r.json())
-            .then(data => {
-                if (data.error) throw new Error(data.error);
-
-                currentModalDevData = data; // Save data for export feature
-                exportBtn.style.display = 'block'; // Reveal export button
-                exportBtn.onclick = () => exportSingleDeviceHistory(mac, name);
-
-                tbody.innerHTML = data.length ? data.map(x => {
-                    let historyHtml = `<span class="badge bg-secondary">Unknown</span>`;
-                    if (x.discovery_status === 'New Device') historyHtml = `<span class="badge bg-success">New Device</span>`;
-                    else if (x.previous_ip) historyHtml = `<span class="badge bg-warning text-dark">IP Changed <small>(${x.previous_ip})</small></span>`;
-                    else historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
-
-                    return `
-                    <tr>
-                        <td><strong>${x.network_name}</strong></td>
-                        <td class="font-monospace">${x.ip_address}</td>
-                        <td>${historyHtml}</td>
-                        <td><small>${x.last_seen}</small></td>
-                    </tr>`;
-                }).join('') : '<tr><td colspan="4" class="text-center p-3">No data available.</td></tr>';
-            })
-            .catch(err => {
-                tbody.innerHTML = `<tr><td colspan="4" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
-            });
+    let hasVendor = vendor && vendor.trim() !== "" && vendor !== "undefined" && vendor !== "Unknown";
+    
+    // Build the HTML for the main title with a placeholder if vendor is missing
+    let modalTitleHtml = `<span class="fw-bold">${escapeHTML(name)}</span> <br><span class="text-muted small fs-7 fw-normal">${escapeHTML(mac)}</span>`;
+    
+    if (hasVendor) {
+        modalTitleHtml += `<br><span class="text-muted small fs-7 fw-normal" id="modal-vendor-container">Make: <span id="modal-vendor-val">${escapeHTML(vendor)}</span></span>`;
+    } else {
+        modalTitleHtml += `<br><span class="text-muted small fs-7 fw-normal" id="modal-vendor-container">Make: <span id="modal-vendor-val" class="fst-italic"><span class="spinner-border spinner-border-sm me-1" style="width: 0.7rem; height: 0.7rem;"></span> Fetching...</span></span>`;
     }
+    
+    document.getElementById('devHistModalTitle').innerHTML = modalTitleHtml;
+    const tbody = document.getElementById('devHistModalBody');
+    const exportBtn = document.getElementById('btn-export-dev-modal');
+    
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
+    exportBtn.style.display = 'none'; // Hide export until data is loaded
+    
+    devHistModal.show();
+
+    // If vendor is missing, trigger an asynchronous background lookup
+    if (!hasVendor) {
+        fetch('/api/vendor/lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mac: mac })
+        })
+        .then(r => r.json())
+        .then(res => {
+            const fetchedVendor = (res.vendor && res.vendor !== 'Unknown') ? res.vendor : 'Unknown';
+            const valEl = document.getElementById('modal-vendor-val');
+            if (valEl) {
+                valEl.outerHTML = `<span id="modal-vendor-val">${escapeHTML(fetchedVendor)}</span>`;
+            }
+            // Sync with global history array so it updates if re-opened
+            const globalItem = allDeviceHistory.find(x => x.mac_address === mac);
+            if (globalItem) globalItem.vendor = fetchedVendor;
+        })
+        .catch(() => {
+            const valEl = document.getElementById('modal-vendor-val');
+            if (valEl) valEl.outerHTML = '<span id="modal-vendor-val">Unknown</span>';
+        });
+    }
+
+    fetch(`/api/device_history/${mac}`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+
+            currentModalDevData = data; // Save data for export feature
+            exportBtn.style.display = 'block'; // Reveal export button
+            exportBtn.onclick = () => exportSingleDeviceHistory(mac, name);
+
+            tbody.innerHTML = data.length ? data.map(x => {
+                let historyHtml = `<span class="badge bg-secondary">Unknown</span>`;
+                if (x.discovery_status === 'New Device') historyHtml = `<span class="badge bg-success">New Device</span>`;
+                else if (x.previous_ip) historyHtml = `<span class="badge bg-warning text-dark">IP Changed <small>(${x.previous_ip})</small></span>`;
+                else historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
+
+                return `
+                <tr>
+                    <td><strong>${escapeHTML(x.network_name)}</strong></td>
+                    <td class="font-monospace">${escapeHTML(x.ip_address)}</td>
+                    <td>${historyHtml}</td>
+                    <td><small>${escapeHTML(x.last_seen)}</small></td>
+                </tr>`;
+            }).join('') : '<tr><td colspan="4" class="text-center p-3">No data available.</td></tr>';
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="4" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
+        });
+}
 
 function exportSingleDeviceHistory(mac, name) {
         if (!currentModalDevData || !currentModalDevData.length) return;
@@ -1198,7 +1261,8 @@ function updateTouchIcon(isTouch) {
         btn.classList.replace('btn-secondary', 'btn-outline-secondary');
     }
 }
-    function loadNetworkDevices(id, name) {
+
+function loadNetworkDevices(id, name) {
         currentNetworkId = id; 
         showPage('devices', document.querySelectorAll('.nav-link')[1]);
         
@@ -1209,9 +1273,19 @@ function updateTouchIcon(isTouch) {
             if(locationInput) locationInput.value = name;
         }
         
+        // Hide the buttons initially while fetching
+        const btnSel = document.getElementById('btn-remove-selected');
+        const btnOff = document.getElementById('btn-remove-offline');
+        if (btnSel) btnSel.classList.add('hidden');
+        if (btnOff) btnOff.classList.add('hidden');
+        
         fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
             allDevices = d; 
             renderDevices(d);
+            
+            // Show the buttons once the devices are successfully loaded
+            if (btnSel) btnSel.classList.remove('hidden');
+            if (btnOff) btnOff.classList.remove('hidden');
         });
     }
 
@@ -1221,8 +1295,7 @@ function scanDevices() {
     b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
     
     const tb = document.getElementById('device-list');
-    if (tb) tb.innerHTML = '<tr><td colspan="8" class="text-center p-4 text-info"><div class="spinner-border spinner-border-sm me-2"></div>Discovering network devices...</td></tr>';
-    
+    if (tb) tb.innerHTML = '<tr><td colspan="9" class="text-center p-4 text-info"><div class="spinner-border spinner-border-sm me-2"></div>Discovering network devices...</td></tr>';    
     allDevices = [];
     let isFirstDevice = true;
 
@@ -1345,26 +1418,31 @@ function renderDevices(d) {
         }
 
         // Vendor Display Hierarchy
-        const safeMac = x.mac_address.replace(/[:-]/g, '');
-        let vendorDisplay = `<span id="vend-${safeMac}" class="text-muted small fst-italic">Pending...</span>`;
+        const idMac = x.mac_address.replace(/[:-]/g, ''); // Strips colons for HTML ID
+        const escapedMac = escapeJS(x.mac_address);       // Escapes for JS click handlers
+        
+        let vendorDisplay = `<span id="vend-${idMac}" class="text-muted small fst-italic">Pending...</span>`;
 
         if (x.custom_vendor) {
-            vendorDisplay = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle">${x.custom_vendor}</span>`;
+            vendorDisplay = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle">${escapeHTML(x.custom_vendor)}</span>`;
         } else if (x.vendor && x.vendor !== 'Unknown') {
-            vendorDisplay = `<span id="vend-${safeMac}">${x.vendor}</span>`;
+            vendorDisplay = `<span id="vend-${idMac}">${escapeHTML(x.vendor)}</span>`;
         }
 
-        const safeCustomV = (x.custom_vendor || '').replace(/'/g, "\\'");
-        const safeLookupV = (x.vendor || '').replace(/'/g, "\\'");
+        const safeCustomV = escapeJS(x.custom_vendor);
+        const safeLookupV = escapeJS(x.vendor); 
+        const safeCustomN = escapeJS(x.custom_name);
 
-        // Notice the opacity class dimming the row slightly if disconnected
         return `
             <tr class="${!x.is_online ? 'opacity-75' : ''}">
-                <td><strong>${x.hostname || 'Unknown'}</strong></td>
-                <td onclick="updateDeviceName('${x.mac_address}', '${x.custom_name}')" style="cursor:pointer">
-                    ${x.custom_name || '<i class="text-muted">Set Name</i>'} <i class="bi bi-pencil small"></i>
+                <td onclick="event.stopPropagation()">
+                    <input type="checkbox" class="device-check" value="${escapeHTML(x.mac_address)}" onchange="updateDeviceMasterCheck()">
                 </td>
-                <td onclick="updateDeviceVendor('${x.mac_address}', '${safeCustomV}', '${safeLookupV}')" style="cursor:pointer" title="Click to customize vendor">
+                <td><strong>${escapeHTML(x.hostname) || 'Unknown'}</strong></td>
+                <td onclick="updateDeviceName('${escapedMac}', '${safeCustomN}')" style="cursor:pointer">
+                    ${escapeHTML(x.custom_name) || '<i class="text-muted">Set Name</i>'} <i class="bi bi-pencil small"></i>
+                </td>
+                <td onclick="updateDeviceVendor('${escapedMac}', '${safeCustomV}', '${safeLookupV}')" style="cursor:pointer" title="Click to customize vendor">
                     ${vendorDisplay} <i class="bi bi-pencil small text-muted"></i>
                 </td>
                 <td>${ipColumnHtml}</td>
@@ -1373,7 +1451,7 @@ function renderDevices(d) {
                 <td>${serviceBadges}</td>
                 <td>${historyHtml}</td>
             </tr>`;
-    }).join('') : '<tr><td colspan="8" class="text-center p-4">No devices found.</td></tr>';
+    }).join('') : '<tr><td colspan="9" class="text-center p-4">No devices found.</td></tr>';
 }
 
 function updateDeviceVendor(mac, currentCustom, currentLookup) {
@@ -1422,12 +1500,12 @@ function resolveMissingVendors(devices) {
         })
         .then(r => r.json())
         .then(res => {
-            dev.vendor = res.vendor || 'Unknown';
-            const targetEl = document.getElementById(`vend-${safeMac}`);
-            if (targetEl && !dev.custom_vendor) {
-                targetEl.outerHTML = `<span id="vend-${safeMac}">${dev.vendor}</span>`;
-            }
-        })
+                dev.vendor = res.vendor || 'Unknown';
+                const targetEl = document.getElementById(`vend-${safeMacId}`);
+                if (targetEl && !dev.custom_vendor) {
+                    targetEl.outerHTML = `<span id="vend-${safeMacId}">${escapeHTML(dev.vendor)}</span>`;
+                }
+            })
         .catch(() => {
             const targetEl = document.getElementById(`vend-${safeMac}`);
             if (targetEl && !dev.custom_vendor) targetEl.innerText = 'Unknown';
@@ -1875,7 +1953,7 @@ function renderWifiResults(data, isHistory = false) {
             <div class="card shadow-sm h-100 border-0 bg-body-tertiary">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start mb-2">
-                        <strong class="text-truncate" title="${n.ssid}" style="max-width: 60%;">${n.ssid}</strong>
+                        <strong class="text-truncate" title="${escapeHTML(n.ssid)}" style="max-width: 60%;">${escapeHTML(n.ssid)}</strong>
                         <span class="badge bg-primary">Ch: ${n.channel}</span>
                     </div>
                     
@@ -2090,7 +2168,7 @@ let currentModalWifiNetData = [];
             return `
             <tr style="cursor: pointer;" onclick="viewWifiNetworkDetails('${safeSSID}')">
                 <td onclick="event.stopPropagation()"><input type="checkbox" class="wifiNetHist-check" value="${n.ssid}" onchange="toggleSelection('wifiNetHist', this)" ${isChecked}></td>
-                <td><strong>${n.ssid}</strong></td>
+                <td><strong>${escapeHTML(n.ssid)}</strong></td>
                 <td>${n.auth}</td>
                 <td><span class="badge bg-info text-dark">${n.mac_count}</span></td>
                 <td><span class="badge bg-secondary">${n.scan_count}</span></td>
@@ -2137,7 +2215,7 @@ let currentModalWifiNetData = [];
                 return `
                 <tr>
                     <td><small class="text-muted">${x.timestamp}</small></td>
-                    <td>${x.scan_name}</td>
+                    <td>${escapeHTML(x.scan_name)}</td>
                     <td class="font-monospace">${x.mac}</td>
                     <td>${x.band} (Ch ${x.channel})</td>
                     <td>${sig}</td>
@@ -2316,4 +2394,128 @@ function resetWorkerSettings() {
     document.getElementById('workers-scan').value = hardwareWorkerDefaults.scan_workers;
     document.getElementById('workers-ping').value = hardwareWorkerDefaults.ping_workers;
     saveWorkerSettings();
+}
+
+function bulkHideAdapters() {
+    const selectedMacs = Array.from(tableState.adapters.selected);
+    
+    if (!selectedMacs.length) return alert("Please select at least one adapter to hide.");
+    if (!confirm(`Are you sure you want to hide ${selectedMacs.length} selected adapter(s)?`)) return;
+
+    const btn = event.currentTarget;
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Hiding...';
+    btn.disabled = true;
+
+    fetch('/api/adapters/bulk_hide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ macs: selectedMacs })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            tableState.adapters.selected.clear();
+            refreshNetworkInfo(); // Force UI refresh
+        } else {
+            alert("Validation Failed: " + d.message);
+        }
+    })
+    .catch(err => alert("Failed to connect: " + err.message))
+    .finally(() => {
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+    });
+}
+
+function deleteSelectedDeviceHistory() {
+    if (selectedDevHistMacs.size === 0) {
+        return alert("Please select at least one device to delete.");
+    }
+    
+    if (!confirm(`Are you sure you want to completely delete the ${selectedDevHistMacs.size} selected device(s)? This will permanently remove them from all scanned networks.`)) {
+        return;
+    }
+
+    const selectedMacs = Array.from(selectedDevHistMacs);
+    
+    // Disable the button to prevent spam clicking
+    const btn = event.currentTarget;
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Deleting...';
+    btn.disabled = true;
+
+    fetch('/api/bulk_delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'devices', ids: selectedMacs })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            selectedDevHistMacs.clear();
+            loadDeviceHistory(); // Refresh the list
+        } else {
+            alert("Failed to delete devices: " + (d.error || d.message));
+        }
+    })
+    .catch(err => alert("Error: " + err.message))
+    .finally(() => {
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+    });
+}
+
+function updateDeviceMasterCheck() {
+    const checks = document.querySelectorAll('.device-check');
+    const checked = document.querySelectorAll('.device-check:checked');
+    const master = document.getElementById('device-master-check');
+    if (master) master.checked = (checks.length > 0 && checks.length === checked.length);
+}
+
+function deleteSelectedNetworkDevices() {
+    if (!currentNetworkId) return alert("No network selected. Please scan or load a network first.");
+    
+    const macs = Array.from(document.querySelectorAll('.device-check:checked')).map(cb => cb.value);
+    if (!macs.length) return alert("Please select at least one device.");
+    if (!confirm(`Delete ${macs.length} selected device(s) from this network?`)) return;
+    
+    fetch('/api/networks/devices/delete', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ network_id: currentNetworkId, macs: macs, mode: 'selected' })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            document.getElementById('device-master-check').checked = false; // Reset master check
+            loadNetworkDevices(currentNetworkId, ""); // Refresh the list
+        } else {
+            alert(d.error);
+        }
+    });
+}
+
+function deleteOfflineNetworkDevices() {
+    if (!currentNetworkId) return alert("No network selected. Please scan or load a network first.");
+    
+    const offlineCount = allDevices.filter(d => !d.is_online).length;
+    if (offlineCount === 0) return alert("No offline devices found to delete.");
+    
+    if (!confirm(`Are you sure you want to delete all ${offlineCount} offline device(s) from this network view?`)) return;
+    
+    fetch('/api/networks/devices/delete', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ network_id: currentNetworkId, mode: 'offline' })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            document.getElementById('device-master-check').checked = false; // Reset master check
+            loadNetworkDevices(currentNetworkId, ""); // Refresh the list
+        } else {
+            alert(d.error);
+        }
+    });
 }

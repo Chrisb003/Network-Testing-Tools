@@ -75,7 +75,7 @@ def get_autostart_setting(base_dir):
         return True
     try:
         with open(autostart_file, "r") as f:
-            return f.read().strip() == "1"
+            return f.read(10).strip() == "1" # Limit read
     except:
         return True
 
@@ -452,7 +452,7 @@ def get_configured_port(base_dir):
     if port_file.exists():
         try:
             with open(port_file, "r") as f:
-                val = f.read().strip()
+                val = f.read(10).strip() # Limit read
                 # ADDED STRICT VALIDATION
                 if val.isdigit() and 1 <= int(val) <= 65535: 
                     return int(val)

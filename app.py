@@ -737,10 +737,9 @@ def get_bandwidth():
     }
 
 def get_active_interface_name():
-    """Finds the interface matching the local IP, returning an empty string if offline."""
+    """Finds the interface matching the local IP, but returns empty if it is hidden."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # This will fail if there is no network routing at all
         s.connect(('8.8.8.8', 80))
         target_ip = s.getsockname()[0]
     except:
@@ -749,12 +748,27 @@ def get_active_interface_name():
         s.close()
 
     if target_ip == '127.0.0.1':
-        return "" # Return empty string instead of None
+        return "" 
 
     interfaces = psutil.net_if_addrs()
     for iface_name, addrs in interfaces.items():
         for addr in addrs:
             if addr.family == socket.AF_INET and addr.address == target_ip:
+                # --- NEW: Check if this interface is hidden in the DB ---
+                mac = None
+                for a in addrs:
+                    if a.family == psutil.AF_LINK:
+                        mac = a.address
+                
+                if mac:
+                    try:
+                        with sqlite3.connect(DB_NAME) as conn:
+                            row = conn.execute("SELECT is_visible FROM adapter_settings WHERE mac_address=?", (mac,)).fetchone()
+                            if row and row[0] == 0:
+                                return "" # It is hidden, treat it as unusable
+                    except:
+                        pass
+                
                 return iface_name
     return ""
 
@@ -912,6 +926,10 @@ def get_gateway_mac(gateway_ip):
     if not target_iface:
         target_iface = get_active_interface_name()
 
+    # --- NEW: Abort if the active interface was hidden (returned "") ---
+    if not target_iface:
+        return None
+
     try:
         # Use 'iface' to force Scapy to only bind to the chosen adapter
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), 
@@ -1028,8 +1046,8 @@ def set_auth_settings():
     """Saves the auth state and securely hashes the password."""
     d = request.json
     enabled = '1' if d.get('enabled') else '0'
-    username = d.get('username', '').strip()
-    password = d.get('password', '')
+    username = str(d.get('username', '')).strip()[:50] # Limit applied
+    password = str(d.get('password', ''))[:255] # Limit applied
 
     with sqlite3.connect(DB_NAME) as conn:
         # Check if a password already exists
@@ -1090,7 +1108,7 @@ def check_webport_file():
         print("[*] 'webport' file detected. Updating web server port...")
         try:
             with open(port_file, "r") as f:
-                new_port = f.read().strip()
+                new_port = f.read(10).strip()
                 
             # ADDED STRICT VALIDATION: Must be numbers AND a valid port range
             if new_port.isdigit() and 1 <= int(new_port) <= 65535:
@@ -1180,15 +1198,17 @@ def cleanup_database():
             cursor = conn.cursor()
             
             if days == 'all':
-                # Complete wipe of all user data
                 for table in tables + ['networks', 'devices', 'global_device_names', 'adapter_settings']:
                     cursor.execute(f"DELETE FROM {table}")
                 message = "Database cleared completely."
             else:
-                # Selective cleanup of logs based on timestamp
-                # SQLite handles '%Y-%m-%d %H:%M:%S' strings naturally with date() functions
+                # --- NEW: Strict Validation to prevent SQL Injection ---
+                if not str(days).isdigit():
+                    return jsonify({"status": "error", "message": "Invalid time interval."}), 400
+                
+                # Safe to use f-string now because we force it to an integer
                 for table in tables:
-                    cursor.execute(f"DELETE FROM {table} WHERE timestamp < datetime('now', '-{days} days')")
+                    cursor.execute(f"DELETE FROM {table} WHERE timestamp < datetime('now', '-{int(days)} days')")
                 message = f"Data older than {days} days has been removed."
             
             conn.commit()
@@ -1344,13 +1364,51 @@ def save_adapter_settings():
     """Updates custom name, visibility, and primary (pinned) status."""
     data = request.json
     mac = data.get('mac')
-    name = data.get('name', '').strip()
+    # --- FIXED: Apply string limit ---
+    name = str(data.get('name', '')).strip()[:50]
     visible = data.get('visible', 1)
     primary = data.get('is_primary', 0)
     
     if not mac or mac == '-':
         return jsonify({"status": "error", "message": "Cannot configure adapter without MAC address"}), 400
 
+    # --- Strict validation: Prevent hiding a pinned adapter ---
+    if primary == 1 and visible == 0:
+        return jsonify({"status": "error", "message": "You cannot hide a pinned adapter."}), 400
+
+    # --- NEW: Prevent hiding the very last visible adapter ---
+    if visible == 0:
+        interfaces = psutil.net_if_addrs()
+        valid_keys = []
+        
+        # 1. Gather all actual usable adapters on the system
+        for iface_name, addrs in interfaces.items():
+            if "Loopback" in iface_name or "vEthernet" in iface_name or iface_name == "lo": 
+                continue
+            temp_mac = "-"
+            for a in addrs:
+                if a.family == psutil.AF_LINK: 
+                    temp_mac = a.address
+                    
+            # Use the exact same key logic that get_adapters() uses
+            key = temp_mac if (temp_mac and temp_mac != "-") else iface_name
+            valid_keys.append(key)
+            
+        # 2. Get the adapters currently hidden in the database
+        with sqlite3.connect(DB_NAME) as conn:
+            hidden_rows = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_visible = 0").fetchall()
+            hidden_keys = set(r[0] for r in hidden_rows)
+        
+        # 3. Simulate hiding this adapter
+        hidden_keys.add(mac)
+        
+        # 4. Count how many system adapters would survive
+        visible_count = sum(1 for k in valid_keys if k not in hidden_keys)
+        
+        if visible_count == 0:
+            return jsonify({"status": "error", "message": "You need to have at least one usable adapter usable."}), 400
+
+    # --- Save Settings ---
     with sqlite3.connect(DB_NAME) as conn:
         # If this new adapter is being set as primary, un-pin all others first
         if primary == 1:
@@ -1374,7 +1432,8 @@ def update_adapter_settings():
     """Updates custom name and visibility for a specific adapter."""
     d = request.json
     mac = d.get('mac')
-    name = d.get('name')
+    # --- FIXED: Apply string limit ---
+    name = str(d.get('name', '')).strip()[:50]
     visible = 1 if d.get('visible') else 0
     
     # If the adapter has no MAC (virtual interface), we can't reliably save settings
@@ -1537,19 +1596,21 @@ def delete_network():
 @app.route('/api/networks/rename', methods=['POST'])
 def rename_network():
     d = request.json
+    name = str(d.get('name', '')).strip()[:50] # Safely sliced
     with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("UPDATE networks SET name=? WHERE id=?", (d.get('name'), d.get('id')))
+        conn.execute("UPDATE networks SET name=? WHERE id=?", (name, d.get('id'))) # Use the variable!
         conn.commit()
     return jsonify({"status": "success"})
 
 @app.route('/api/devices/update_name', methods=['POST'])
 def update_device_name():
     d = request.json
+    name = str(d.get('name', '')).strip()[:50] # Safely sliced
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("UPDATE devices SET custom_name=? WHERE mac_address=? AND network_id=?", 
-                     (d.get('name'), d.get('mac'), d.get('network_id')))
+                     (name, d.get('mac'), d.get('network_id'))) # Use the variable!
         conn.execute("INSERT OR REPLACE INTO global_device_names (mac_address, custom_name) VALUES (?, ?)", 
-                     (d.get('mac'), d.get('name')))
+                     (d.get('mac'), name)) # Use the variable!
         conn.commit()
     return jsonify({"status": "success"})
 
@@ -1814,11 +1875,13 @@ def scan_network():
 @app.route('/api/dns/lookup', methods=['POST'])
 def dns_lookup():
     """Performs DNS lookup and logs with network context."""
-    domain = request.json.get('domain')
+    domain = request.json.get('domain', '').strip()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Get Context
     lan_ip, router_ip, net_name = get_current_network_context()
+
+    # --- NEW: Strict Validation ---
+    if not domain or domain.startswith('-') or not re.match(r'^[\w\.-]+$', domain):
+        return jsonify({"timestamp": ts, "domain": domain or "Invalid", "ip": "-", "status": "Failed"})
 
     try:
         ip = socket.gethostbyname(domain)
@@ -1858,7 +1921,18 @@ def run_ping():
     Executes a system ping (4 packets) and logs latency/loss.
     Now includes Network Context (Router IP, Name, LAN IP).
     """
-    target = request.json.get('target')
+    target = request.json.get('target', '').strip()
+    
+    # --- NEW: Strict Validation ---
+    if not target or target.startswith('-') or not re.match(r'^[\w\.-]+$', target):
+        return jsonify({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "target": target or "Invalid",
+            "status": "Failed",
+            "latency": "N/A",
+            "loss": "100%",
+            "error": "Invalid target format"
+        })
     
     # Determine OS-specific ping command
     # Windows uses '-n', Unix/Mac uses '-c'
@@ -1966,11 +2040,6 @@ def export_tool_logs():
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={log_type}_logs.csv"})
 
 # --- Misc (WiFi, Speedtest, History, Update) ---
-import re
-import platform
-import subprocess
-import time
-from flask import jsonify
 
 @app.route('/api/wifi')
 def get_wifi_networks():
@@ -2321,19 +2390,25 @@ def run_speedtest():
     # 1. Identify the Adapter and its IP
     try:
         with sqlite3.connect(DB_NAME) as conn:
-            # Check for Pinned Adapter first
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
             if row:
                 pinned_mac = row[0]
             
+            # --- NEW: Fetch hidden interfaces ---
+            hidden_rows = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_visible = 0").fetchall()
+            hidden_macs = [r[0] for r in hidden_rows]
+            
             interfaces = psutil.net_if_addrs()
             
-            # Find the interface name and IP
             for name, addrs in interfaces.items():
                 temp_mac, temp_ip = None, None
                 for a in addrs:
                     if a.family == psutil.AF_LINK: temp_mac = a.address
                     if a.family == socket.AF_INET: temp_ip = a.address
+                
+                # --- NEW: Skip this loop iteration completely if hidden ---
+                if temp_mac in hidden_macs:
+                    continue
                 
                 # If pinned, match by MAC; otherwise, find the active one
                 if pinned_mac and temp_mac == pinned_mac:
@@ -2345,6 +2420,10 @@ def run_speedtest():
                     device_ip = temp_ip
     except Exception as e:
         print(f"[*] Speedtest adapter lookup failed: {e}")
+
+    # --- NEW: Block the speedtest if no visible interface is found ---
+    if not target_iface_name and not pinned_mac:
+        return jsonify({"error": "No usable or visible network adapter found."})
 
     # --- ENHANCED HELPER TO PARSE OOKLA OUTPUT AND PRINT ERRORS ---
     def parse_ookla(raw_text):
@@ -2476,9 +2555,11 @@ def get_history():
 def update_history():
     """Renames a history entry and updates its connection type."""
     d = request.json
+    name = str(d.get('name', '')).strip()[:50]
+    c_type = str(d.get('type', '')).strip()[:50]
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("UPDATE history SET network_name = ?, connection_type = ? WHERE id = ?", 
-                     (d.get('name'), d.get('type'), d.get('id')))
+                     (name, c_type, d.get('id'))) # Use variables
         conn.commit()
     return jsonify({"status": "success"})
 
@@ -2491,7 +2572,8 @@ def bulk_delete():
         'wifi': 'wifi_history',
         'history': 'history',
         'dns': 'dns_logs',
-        'ping': 'ping_logs'
+        'ping': 'ping_logs',
+        'devices': 'devices'  # <-- NEW: Added devices to mapping
     }
     table = table_map.get(d.get('type'))
     ids = d.get('ids', [])
@@ -2501,10 +2583,16 @@ def bulk_delete():
         
     placeholders = ','.join(['?'] * len(ids))
     with sqlite3.connect(DB_NAME) as conn:
-        conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", ids)
-        # Cascade delete devices if we are deleting networks
-        if table == 'networks':
-            conn.execute(f"DELETE FROM devices WHERE network_id IN ({placeholders})", ids)
+        # --- NEW: Handle MAC address based deletion for devices ---
+        if table == 'devices':
+            conn.execute(f"DELETE FROM devices WHERE mac_address IN ({placeholders})", ids)
+            conn.execute(f"DELETE FROM global_device_names WHERE mac_address IN ({placeholders})", ids)
+            conn.execute(f"DELETE FROM global_device_vendors WHERE mac_address IN ({placeholders})", ids)
+        else:
+            conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", ids)
+            # Cascade delete devices if we are deleting networks
+            if table == 'networks':
+                conn.execute(f"DELETE FROM devices WHERE network_id IN ({placeholders})", ids)
         conn.commit()
     return jsonify({"status": "success"})
 
@@ -2978,10 +3066,10 @@ def save_wifi_scan():
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         
-        raw_name = data.get('name', '').strip()
+        raw_name = str(data.get('name', '')).strip()[:50]
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         scan_name = raw_name if raw_name else f"Scan {timestamp}"
-        comments = data.get('comments', '').strip()
+        comments = str(data.get('comments', '')).strip()[:200]
 
         # ADDED 'timestamp' column and value here:
         c.execute(
@@ -3107,8 +3195,8 @@ def update_wifi_history():
     """Updates the scan name and comment of a specific Wi-Fi history entry."""
     data = request.json
     scan_id = data.get('id')
-    new_name = data.get('name', '').strip()
-    new_comment = data.get('comment', '').strip()
+    new_name = str(data.get('name', '')).strip()[:50]
+    new_comment = str(data.get('comment', '')).strip()[:200]
     
     # Fallback for name if left empty
     if not new_name:
@@ -3136,7 +3224,8 @@ def get_connection_types():
 @app.route('/api/settings/connection_types/add', methods=['POST'])
 def add_connection_type():
     """Adds a new custom connection type."""
-    name = request.json.get('name', '').strip()
+    # --- FIXED: Apply strip and limit ---
+    name = str(request.json.get('name', '')).strip()[:50]
     if not name: return jsonify({"error": "Name required"}), 400
     try:
         with sqlite3.connect(DB_NAME) as conn:
@@ -3355,7 +3444,7 @@ def get_autostart():
         return jsonify({"autostart": True})
     try:
         with open(AUTOSTART_FILE, "r") as f:
-            return jsonify({"autostart": f.read().strip() == "1"})
+            return jsonify({"autostart": f.read(10).strip() == "1"}) # Limit read
     except:
         return jsonify({"autostart": True})
 
@@ -3402,7 +3491,7 @@ def save_workers_endpoint():
 def update_device_vendor():
     d = request.json or {}
     mac = d.get('mac')
-    vendor = d.get('vendor', '').strip()
+    vendor = str(d.get('vendor', '')).strip()[:50]
     network_id = d.get('network_id')
 
     if not mac:
@@ -3455,13 +3544,14 @@ def scan_network_stream():
 
         if not target_iface or not target_ip_val:
             target_iface = get_active_interface_name()
-            target_ip_val = get_local_ip()
             if target_iface:
+                target_ip_val = get_local_ip()
                 for a in psutil.net_if_addrs().get(target_iface, []):
                     if a.family == psutil.AF_LINK: target_mac_val = a.address
 
-        if not target_ip_val or target_ip_val == "127.0.0.1":
-            yield f"data: {json.dumps({'type': 'error', 'message': 'No local network subnet found'})}\n\n"
+        # --- NEW: Catch hidden/disconnected adapters and stop the scan ---
+        if not target_iface or not target_ip_val or target_ip_val == "127.0.0.1":
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No usable or visible network adapter found.'})}\n\n"
             return
 
         target_subnet = f"{target_ip_val.rsplit('.', 1)[0]}.0/24"
@@ -3610,6 +3700,84 @@ def scan_network_stream():
         'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no'
     })
+
+@app.route('/api/adapters/bulk_hide', methods=['POST'])
+def bulk_hide_adapters():
+    """Hides multiple adapters at once, ensuring safety constraints are met."""
+    macs = request.json.get('macs', [])
+    if not macs:
+        return jsonify({"status": "error", "message": "No adapters provided."}), 400
+
+    # Remove any invalid/empty MACs (like virtual adapters that can't be saved)
+    macs = [m for m in macs if m and m != '-']
+    if not macs:
+        return jsonify({"status": "error", "message": "Cannot configure adapters without MAC addresses."}), 400
+
+    with sqlite3.connect(DB_NAME) as conn:
+        # 1. Prevent hiding a pinned adapter
+        placeholders = ','.join(['?'] * len(macs))
+        pinned = conn.execute(f"SELECT mac_address FROM adapter_settings WHERE is_primary=1 AND mac_address IN ({placeholders})", macs).fetchone()
+        if pinned:
+            return jsonify({"status": "error", "message": "One or more selected adapters are pinned. Unpin them before hiding."}), 400
+
+        # 2. Prevent hiding the last usable adapter
+        interfaces = psutil.net_if_addrs()
+        valid_keys = []
+        for iface_name, addrs in interfaces.items():
+            if "Loopback" in iface_name or "vEthernet" in iface_name or iface_name == "lo": 
+                continue
+            temp_mac = "-"
+            for a in addrs:
+                if a.family == psutil.AF_LINK: 
+                    temp_mac = a.address
+            key = temp_mac if (temp_mac and temp_mac != "-") else iface_name
+            valid_keys.append(key)
+            
+        hidden_rows = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_visible = 0").fetchall()
+        hidden_keys = set(r[0] for r in hidden_rows)
+        
+        # Add the new ones the user is attempting to hide
+        hidden_keys.update(macs)
+        
+        visible_count = sum(1 for k in valid_keys if k not in hidden_keys)
+        
+        if visible_count == 0:
+            return jsonify({"status": "error", "message": "You cannot hide all adapters. At least one must remain visible."}), 400
+
+        # 3. Apply the bulk hide
+        for mac in macs:
+            conn.execute("""
+                INSERT INTO adapter_settings (mac_address, is_visible)
+                VALUES (?, 0)
+                ON CONFLICT(mac_address) DO UPDATE SET is_visible=0
+            """, (mac,))
+        conn.commit()
+
+    return jsonify({"status": "success"})
+
+@app.route('/api/networks/devices/delete', methods=['POST'])
+def delete_network_devices():
+    """Deletes selected or offline devices from a specific network."""
+    d = request.json
+    net_id = d.get('network_id')
+    macs = d.get('macs', [])
+    mode = d.get('mode', 'selected')
+    
+    if not net_id:
+        return jsonify({"error": "Network ID required"}), 400
+        
+    with sqlite3.connect(DB_NAME) as conn:
+        if mode == 'offline':
+            # Delete all devices marked offline for this network
+            conn.execute("DELETE FROM devices WHERE network_id=? AND is_online=0", (net_id,))
+        elif macs:
+            # Delete specifically selected MACs from this network
+            placeholders = ','.join(['?'] * len(macs))
+            # Safely pass net_id as the first parameter, followed by the MACs
+            conn.execute(f"DELETE FROM devices WHERE network_id=? AND mac_address IN ({placeholders})", [net_id] + macs)
+        conn.commit()
+        
+    return jsonify({"status": "success"})
 
 if __name__ == '__main__':
     if platform.system() == "Darwin":

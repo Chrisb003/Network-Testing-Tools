@@ -22,26 +22,13 @@
         
         .log-container { max-height: 400px; overflow-y: auto; }
         #history-table tr, #network-list tr { cursor: pointer; }
-        /* Wi-Fi History Table Styling */
-.wifi-res-preview { 
-    max-width: 250px; 
-    overflow: hidden; 
-    text-overflow: ellipsis; 
-    white-space: nowrap; 
-    display: inline-block; 
-}
+
 
 #wifi-history-table tr td {
     padding-top: 12px;
     padding-bottom: 12px;
 }
 
-.badge-wifi-count {
-    background-color: var(--bs-primary-bg-subtle);
-    color: var(--bs-primary);
-    border: 1px solid var(--bs-primary-border-subtle);
-    font-size: 0.75rem;
-}
 
 /* Touch Screen View Adjustments */
 body.touch-mode .btn {
