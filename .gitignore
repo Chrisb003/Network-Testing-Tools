@@ -18,3 +18,4 @@ resetpassword
 cleardatabase
 webport
 workers
+logs/

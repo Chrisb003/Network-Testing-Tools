@@ -33,6 +33,52 @@ from werkzeug.security import generate_password_hash, check_password_hash
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
+# ---------------------------------------------------------
+# --- LOGGING SETUP (Redirects ALL terminal output to file) ---
+# ---------------------------------------------------------
+def setup_file_logging():
+    import glob
+    from datetime import timedelta
+    
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+
+    # 1. Delete logs older than 7 days
+    cutoff_date = datetime.now() - timedelta(days=7)
+    for log_file in glob.glob(os.path.join(log_dir, '*.log')):
+        try:
+            if datetime.fromtimestamp(os.path.getmtime(log_file)) < cutoff_date:
+                os.remove(log_file)
+        except: pass
+
+    # 2. Create a new log file for this session
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_path = os.path.join(log_dir, f"app_run_{timestamp}.log")
+
+    # 3. Hijack stdout and stderr to suppress terminal output and write to file
+    class LogWriter:
+        def __init__(self, filename):
+            self.file = open(filename, 'a', encoding='utf-8')
+        def write(self, text):
+            self.file.write(text)
+            self.file.flush() # Ensure live writing
+        def flush(self):
+            self.file.flush()
+
+    custom_logger = LogWriter(log_path)
+    sys.stdout = custom_logger
+    sys.stderr = custom_logger
+
+    # 4. Catch internal library logs (Waitress, Flask) and pipe them to the file too
+    logging.basicConfig(
+        stream=custom_logger,
+        level=logging.INFO,
+        format='[%(asctime)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+setup_file_logging()
 
 # --- Configuration ---
 APP_VERSION = "0.10.0"
