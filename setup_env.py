@@ -343,10 +343,10 @@ def install_npcap_windows():
             print("[!] Please manually install Npcap from https://npcap.com/")
 
 def run_application(base_dir, venv_python):
-    """Launches the main app and waits for the server to be ready before opening the browser."""
+    """Launches the main app, force-stops any hung instances, and auto-restarts on crash."""
     app_path = base_dir / APP_FILENAME
     print("\n" + "="*60)
-    print(f"   LAUNCHING DASHBOARD (Setup v{SETUP_VERSION})")
+    print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
     print("="*60)
     
     cmd = [str(venv_python), str(app_path)]
@@ -356,42 +356,62 @@ def run_application(base_dir, venv_python):
         print("[*] Elevating privileges for network scanning...")
         cmd = ["sudo"] + cmd
         
+    first_launch = True
+    
     try:
-        # Get the initial port, but note that app.py might change it during boot!
-        actual_port = get_configured_port(base_dir)
-        
-        # Start the app as a subprocess so we can monitor it
-        process = subprocess.Popen(cmd)
-        
-        print("[*] Waiting for the server to spin up...")
-        
-        # Check if the port is open, trying once per second for up to 60 seconds
-        server_ready = False
-        for _ in range(60):
-            # --- FIXED: Re-fetch the port every second in case app.py changed it to resolve a conflict ---
-            actual_port = get_configured_port(base_dir)
+        while True:
+            current_port = get_configured_port(base_dir)
+            
+            # --- FORCE STOP / CLEANUP: Kill any stale process blocking the port ---
             try:
-                # Attempt to connect to the local port
-                with socket.create_connection(("127.0.0.1", actual_port), timeout=1):
-                    server_ready = True
-                    break
-            except (ConnectionRefusedError, TimeoutError, OSError):
-                time.sleep(1)
-        
-        if server_ready:
-            if get_autostart_setting(base_dir):
-                print(f"[✓] Server is ready on port {actual_port}! Opening browser...")
-                webbrowser.open(f"http://127.0.0.1:{actual_port}")
-            else:
-                print(f"[✓] Server is ready! Access remotely via http://<your_device_ip>:{actual_port}")
-        else:
-            print(f"[!] Could not verify server status. You can try opening http://127.0.0.1:{actual_port} manually.")
+                for conn in psutil.net_connections(kind='inet'):
+                    if conn.laddr.port == current_port and conn.status == 'LISTEN':
+                        print(f"[*] Force-stopping stale process on port {current_port} (PID: {conn.pid})...")
+                        proc = psutil.Process(conn.pid)
+                        proc.terminate()
+                        proc.wait(timeout=3)
+            except Exception:
+                pass
 
-        # Keep this setup script open as long as the dashboard is running
-        process.wait()
-        
+            print(f"[*] Starting main application instance...")
+            process = subprocess.Popen(cmd)
+            
+            print(f"[*] Waiting for server to spin up on port {current_port}...")
+            server_ready = False
+            for _ in range(30):
+                current_port = get_configured_port(base_dir)
+                try:
+                    with socket.create_connection(("127.0.0.1", current_port), timeout=1):
+                        server_ready = True
+                        break
+                except (ConnectionRefusedError, TimeoutError, OSError):
+                    time.sleep(1)
+            
+            if server_ready and first_launch:
+                if get_autostart_setting(base_dir):
+                    print(f"[✓] Server is ready on port {current_port}! Opening browser...")
+                    webbrowser.open(f"http://127.0.0.1:{current_port}")
+                first_launch = False
+            elif server_ready:
+                print(f"[✓] Application successfully restarted on port {current_port}.")
+            
+            # Wait for the application process to terminate or crash
+            process.wait()
+            
+            # If we reach here, the app died or crashed
+            print(f"\n[!] WARNING: Main application stopped unexpectedly (Exit code: {process.returncode}).")
+            print("[*] Restarting application loop in 3 seconds...\n")
+            
+            # Ensure the dead process is fully cleaned up before looping
+            try:
+                process.kill()
+            except:
+                pass
+                
+            time.sleep(3)
+            
     except KeyboardInterrupt:
-        print("\n[!] Dashboard stopped by user.")
+        print("\n[!] Dashboard supervisor stopped by user.")
 
 def fix_permissions(path):
     """

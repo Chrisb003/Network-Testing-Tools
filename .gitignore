@@ -20,3 +20,5 @@ webport
 workers
 logs/
 rollback.zip
+boot_attempts.txt
+boot_attempts
