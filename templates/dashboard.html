@@ -1,4 +1,4 @@
-<!-- Version number 0.11.0 -->
+<!-- Version number 0.11.1 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -623,8 +623,7 @@
                     <div class="small mb-3 d-flex align-items-center">
                         <strong class="me-2 text-muted">Updating From:</strong>
                         <select id="update-channel-select" class="form-select form-select-sm w-auto" onchange="changeUpdateChannel()">
-                            <option value="stable">Production (Stable)</option>
-                            <option value="dev">Development (Dev)</option>
+                            <!-- Options populated dynamically by JS -->
                         </select>
                     </div>
                     
@@ -770,13 +769,12 @@
 <div class="version-footer">
     <div>Network Diagnostics <span class="badge bg-secondary">BETA</span></div>
     <div>
-        <span id="footer-channel-badge" class="ver-tag {% if update_channel == 'dev' %}bg-warning text-dark{% else %}bg-success text-white{% endif %}">
-            {{ 'Dev' if update_channel == 'dev' else 'Production' }}
+        <span id="footer-channel-badge" class="ver-tag {% if 'dev' in update_channel.lower() %}bg-warning text-dark{% else %}bg-success text-white{% endif %}">
+            {{ update_channel_name }}
         </span>
         <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Running V{{ global_version | replace('DEV', '') }}</span>
     </div>
 </div>
-<!-- Card 3: System Updates -->
 
 <div class="modal fade" id="devHistModal" tabindex="-1">
     <div class="modal-dialog modal-lg">

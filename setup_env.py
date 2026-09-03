@@ -18,7 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "0.11.0"
+SETUP_VERSION = "0.11.1"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
@@ -34,28 +34,65 @@ REQUIREMENTS = BASE_REQUIREMENTS
 
 APP_FILENAME = "app.py"
 
-# GITHUB PRIVATE REPO CONFIGURATION
-GITHUB_SETTINGS = {
-    "owner": "Chrisb003",
-    "repo": "Network-Testing-Tools",
-    "token": "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",
-    "branch": "main"
+# GITHUB DEFAULT FALLBACK CONFIGURATION
+DEFAULT_GITHUB_CONFIG = {
+    "stable": {
+        "display_name": "Production (Stable)",
+        "owner": "Chrisb003",
+        "repo": "Network-Testing-Tools",
+        "token": "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",
+        "branch": "main"
+    },
+    "dev": {
+        "display_name": "Development (Dev)",
+        "owner": "Chrisb003",
+        "repo": "Network-Testing-Tools",
+        "token": "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",
+        "branch": "dev"
+    }
 }
 
-GITHUB_SETTINGS_DEV = {
-    "owner": "Chrisb003",
-    "repo": "Network-Testing-Tools",
-    "token": "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",
-    "branch": "dev"
-}
+def is_dev_build(base_dir):
+    """Determines if the system is on the DEV channel to route database and GitHub checks."""
+    if (base_dir / "dev").exists():
+        return True
+    version_file = base_dir / "version.json"
+    if version_file.exists():
+        try:
+            import json
+            with open(version_file, "r") as f:
+                data = json.load(f)
+                if "DEV" in data.get("version", "").upper(): return True
+        except: pass
+    return False
+
+def ensure_github_settings(base_dir):
+    """Creates the github_settings.json file if it is missing."""
+    settings_file = base_dir / "github_settings.json"
+    if not settings_file.exists():
+        try:
+            import json
+            with open(settings_file, "w") as f:
+                json.dump(DEFAULT_GITHUB_CONFIG, f, indent=4)
+        except Exception as e:
+            print(f"[*] Failed to create github_settings.json: {e}")
 
 def get_active_github_settings(base_dir):
-    """Checks if a 'dev' file exists to determine which GitHub repo to pull from."""
-    dev_file_path = base_dir / "dev"
-    if dev_file_path.exists():
-        print("[*] 'dev' file detected. Using Development repository.")
-        return GITHUB_SETTINGS_DEV
-    return GITHUB_SETTINGS
+    """Reads the active settings from github_settings.json or the setup defaults."""
+    ensure_github_settings(base_dir)
+    settings_file = base_dir / "github_settings.json"
+    channel = "dev" if is_dev_build(base_dir) else "stable"
+    
+    try:
+        import json
+        with open(settings_file, "r") as f:
+            data = json.load(f)
+            if channel in data:
+                return data[channel]
+    except: pass
+    
+    return DEFAULT_GITHUB_CONFIG.get(channel, DEFAULT_GITHUB_CONFIG["stable"])
+
 
 def setup_supervisor_logging(base_dir):
     """Initializes a dual-logger for the setup script and sets the environment sync variable."""
@@ -106,8 +143,10 @@ def setup_supervisor_logging(base_dir):
             
         def write(self, text):
             # Always print to the terminal so the user can see what's happening
-            self.terminal.write(text)
-            self.terminal.flush()
+            try:
+                self.terminal.write(text)
+                self.terminal.flush()
+            except: pass
             
             if self.file:
                 # Dynamically check if we should write this line to the log file
@@ -120,7 +159,8 @@ def setup_supervisor_logging(base_dir):
                     except: pass
                 
         def flush(self):
-            self.terminal.flush()
+            try: self.terminal.flush()
+            except: pass
             if self.file:
                 try: self.file.flush()
                 except: pass
@@ -461,14 +501,13 @@ def run_application(base_dir, venv_python):
             
             if server_ready and first_launch:
                 if get_autostart_setting(base_dir):
-                    print(f"[✓] Server is ready on port {current_port}! Opening browser...")
+                    print(f"[*] Server is ready on port {current_port}! Opening browser...")
                     webbrowser.open(f"http://127.0.0.1:{current_port}")
                 else:
-                    # --- FIXED: Explicitly tell the user it is ready when Auto-start is OFF ---
-                    print(f"\n[✓] Server is ready! Access it manually at: http://127.0.0.1:{current_port}\n")
+                    print(f"\n[*] Server is ready! Access it manually at: http://127.0.0.1:{current_port}\n")
                 first_launch = False
             elif server_ready:
-                print(f"\n[✓] Application successfully restarted on port {current_port}.\n")
+                print(f"\n[*] Application successfully restarted on port {current_port}.\n")
             
             # Wait for the application process to terminate or crash
             process.wait()
@@ -486,7 +525,7 @@ def run_application(base_dir, venv_python):
             time.sleep(3)
             
     except KeyboardInterrupt:
-        print("\n[!] Dashboard supervisor stopped by user.")
+        print("\n[*] Dashboard supervisor stopped by user.")
 
 def fix_permissions(path):
     """
@@ -551,7 +590,6 @@ def get_configured_port(base_dir):
         try:
             with open(port_file, "r") as f:
                 val = f.read(10).strip() # Limit read
-                # ADDED STRICT VALIDATION
                 if val.isdigit() and 1 <= int(val) <= 65535: 
                     return int(val)
         except: pass
@@ -561,7 +599,7 @@ def get_configured_port(base_dir):
     if db_path.exists():
         try:
             import sqlite3
-            with sqlite3.connect(db_path) as conn:
+            with sqlite3.connect(db_path, timeout=10.0) as conn:
                 row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
                 if row: return int(row[0])
         except: pass

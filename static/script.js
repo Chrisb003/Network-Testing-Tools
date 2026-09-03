@@ -77,6 +77,7 @@
         loadNetworks();
         loadConnectionTypes();
         loadSystemAlerts();
+        loadUpdateChannels();
         const savedTouchMode = localStorage.getItem('touchMode') === 'true';
         if (savedTouchMode) document.body.classList.add('touch-mode');
         updateTouchIcon(savedTouchMode);
@@ -691,9 +692,10 @@ let allNetworks = []; // Global array to hold the network data
                     <td class="font-monospace">${x.result_ip}</td>
                     <td><span class="badge ${x.status==='Resolved'?'bg-success-subtle text-success':'bg-danger-subtle text-danger'}">${x.status}</span></td>
                     <td><small>${x.router_ip || '-'}</small></td>
-                    <td><small>${x.network_name || '-'}</small></td>
+                    <td><small>${escapeHTML(x.network_name) || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
-                    <td class="text-end">
+                    <td class="text-end text-nowrap">
+                        <button class="btn btn-sm btn-outline-secondary border-0" onclick="editToolLogNetwork('dns', ${x.id}, '${escapeJS(x.network_name || '')}')" title="Edit Network Name"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('dns', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </td>
                 </tr>`}).join('') : '<tr><td colspan="9" class="text-center p-4">No logs found.</td></tr>';
@@ -709,14 +711,35 @@ let allNetworks = []; // Global array to hold the network data
                     <td>${x.latency}</td>
                     <td>${x.packet_loss}</td>
                     <td><small>${x.router_ip || '-'}</small></td>
-                    <td><small>${x.network_name || '-'}</small></td>
+                    <td><small>${escapeHTML(x.network_name) || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
-                    <td class="text-end">
+                    <td class="text-end text-nowrap">
+                        <button class="btn btn-sm btn-outline-secondary border-0" onclick="editToolLogNetwork('ping', ${x.id}, '${escapeJS(x.network_name || '')}')" title="Edit Network Name"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('ping', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </td>
                 </tr>`}).join('') : '<tr><td colspan="10" class="text-center p-4">No logs found.</td></tr>';
         }
         updateMasterCheckbox(type, paginatedData.map(x => x.id));
+    }
+
+    function editToolLogNetwork(type, id, oldName) {
+        const newName = prompt("Edit Network Name:", oldName);
+        if (newName === null || newName === oldName) return; // Cancelled or unchanged
+        
+        fetch('/api/tool_logs/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: type, id: id, name: newName })
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === 'success') {
+                fetchToolLogs(type); // Refresh the table
+            } else {
+                alert("Error updating network name: " + d.error);
+            }
+        })
+        .catch(err => alert("Communication error: " + err.message));
     }
 
     // --- 5. UNIFIED BULK EXPORT & DELETE HELPERS ---
@@ -2324,24 +2347,44 @@ let currentModalWifiNetData = [];
     }
 
 
+function loadUpdateChannels() {
+    fetch('/api/settings/channels')
+        .then(r => r.json())
+        .then(data => {
+            const select = document.getElementById('update-channel-select');
+            if (!select) return;
+            
+            select.innerHTML = '';
+            data.channels.forEach(ch => {
+                const opt = document.createElement('option');
+                opt.value = ch.id;
+                opt.textContent = ch.name;
+                select.appendChild(opt);
+            });
+            
+            // Set the active channel once populated
+            if (window.APP_CONFIG.updateChannel) {
+                select.value = window.APP_CONFIG.updateChannel;
+            }
+        })
+        .catch(err => console.error("Error loading update channels:", err));
+}
+
 function changeUpdateChannel() {
     const select = document.getElementById('update-channel-select');
     const newChannel = select.value;
+    const newChannelName = select.options[select.selectedIndex].text;
     const oldChannel = window.APP_CONFIG.updateChannel || 'stable';
 
-    // 1. Display Warnings Based on the Selection
-    if (newChannel === 'dev' && oldChannel !== 'dev') {
-        const devWarning = "The Development version may be unstable or broken. It is used for test with before it is release to the Production version\n\nUse at your own risk.\n\nThe database may be different and not backwards compatible.";
-        if (!confirm(devWarning)) {
+    // 1. Display Dynamic Warnings
+    if (newChannel !== oldChannel) {
+        const warning = `Are you sure you want to switch the update channel to ${newChannelName}?\n\nThe database or configurations may be different and not backwards compatible.`;
+        if (!confirm(warning)) {
             select.value = oldChannel; // Revert the dropdown
             return;
         }
-    } else if (newChannel === 'stable' && oldChannel === 'dev') {
-        const prodWarning = "Are you sure you want to switch back to Production version, database may be incompatible?";
-        if (!confirm(prodWarning)) {
-            select.value = oldChannel; // Revert the dropdown
-            return;
-        }
+    } else {
+        return; // No change made
     }
 
     // 2. Proceed with the API call if confirmed
@@ -2360,18 +2403,17 @@ function changeUpdateChannel() {
             // Instantly update the Footer Badge
             const badge = document.getElementById('footer-channel-badge');
             if (badge) {
-                if (newChannel === 'dev') {
-                    badge.innerText = 'Dev';
+                badge.innerText = newChannelName;
+                if (newChannel.toLowerCase().includes('dev')) {
                     badge.className = 'badge bg-warning text-dark me-2';
                 } else {
-                    badge.innerText = 'Production';
                     badge.className = 'badge bg-success me-2';
                 }
             }
             
             // Automatically re-check for updates against the new repository
             checkUpdates();
-            alert(`Update channel switched to ${newChannel === 'dev' ? 'Development' : 'Production'}.`);
+            alert(`Update channel switched to: ${newChannelName}.`);
         }
     })
     .catch(err => {

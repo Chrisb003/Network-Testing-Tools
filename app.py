@@ -55,13 +55,22 @@ def setup_file_logging():
                 os.remove(log_file)
         except: pass
 
-    # 2. Check Database for Full Logging preference (Fallback if setup_env missed it)
+   # 2. Check Database for Full Logging preference (Fallback if setup_env missed it)
     if "APP_FULL_LOGGING" not in os.environ:
         full_log = False
         try:
-            db_name = "network_data_dev.db" if os.path.exists("dev") else "network_data.db"
-            if os.path.exists(db_name):
-                with sqlite3.connect(db_name, timeout=2.0) as conn:
+            # Safely check if we are in DEV mode before picking the DB
+            is_dev_log = False
+            if os.path.exists("dev"): 
+                is_dev_log = True
+            elif os.path.exists("version.json"):
+                with open("version.json", "r") as f:
+                    if "DEV" in json.load(f).get("version", "").upper(): 
+                        is_dev_log = True
+                        
+            db_name_log = "network_data_dev.db" if is_dev_log else "network_data.db"
+            if os.path.exists(db_name_log):
+                with sqlite3.connect(db_name_log, timeout=2.0) as conn:
                     row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
                     if row and row[0] == '1': full_log = True
         except: pass
@@ -127,23 +136,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.11.0"
-
-# GITHUB CONFIGURATION
-# Ensure your Personal Access Token (PAT) has 'repo' scope
-GITHUB_SETTINGS = {
-    "owner": "Pancool",
-    "repo": "Network-Testing-Tools",
-    "token": "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",
-    "branch": "main"
-}
-
-GITHUB_SETTINGS_DEV = {
-    "owner": "Chrisb003",
-    "repo": "Network-Testing-Tools",
-    "token": "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",
-    "branch": "dev"
-}
+APP_VERSION = "0.11.1"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -159,10 +152,26 @@ def get_global_version():
     except:
         return "Error"
 
+# Dynamically set the database file based on the version tag or the trigger file
+is_dev_global = False
+if os.path.exists("dev"): 
+    is_dev_global = True
+elif os.path.exists("version.json"):
+    try:
+        with open("version.json", "r") as f:
+            if "DEV" in json.load(f).get("version", "").upper(): 
+                is_dev_global = True
+    except: pass
+
+if is_dev_global:
+    DB_NAME = "network_data_dev.db"
+else:
+    DB_NAME = "network_data.db"
+
 app = Flask(__name__)
 
-# Dynamically set the database file based on the version tag
-if "DEV" in get_global_version().upper():
+# Dynamically set the database file based on the version tag or the trigger file
+if "DEV" in get_global_version().upper() or os.path.exists("dev"):
     DB_NAME = "network_data_dev.db"
 else:
     DB_NAME = "network_data.db"
@@ -1287,6 +1296,20 @@ def check_webport_file():
         except Exception as e:
             print(f"[X] Failed to process webport file: {e}")
 
+def check_dev_file():
+    """Checks for a 'dev' trigger file, updates the DB channel, and removes it."""
+    dev_file = os.path.join(app.root_path, "dev")
+    if os.path.exists(dev_file):
+        print("[*] 'dev' file detected. Updating database channel to 'dev'...")
+        try:
+            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('update_channel', 'dev')")
+                conn.commit()
+            os.remove(dev_file)
+            print("[✓] Channel set to 'dev' and trigger file removed.")
+        except Exception as e:
+            print(f"[X] Failed to process dev file: {e}")
+
 def get_current_port():
     """Reads the current port for Waitress to bind to."""
     try:
@@ -1336,6 +1359,10 @@ def index():
         row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
         current_channel = row[0] if row else 'stable'
 
+    # Get the display name for the footer
+    all_settings = get_all_github_settings()
+    channel_display_name = all_settings.get(current_channel, {}).get("display_name", current_channel.capitalize())
+
     return render_template('dashboard.html', 
                            local_ip=get_local_ip(), 
                            wan_ip=info['ip'], 
@@ -1346,7 +1373,8 @@ def index():
                            setup_version=get_setup_version(), 
                            app_version=APP_VERSION,
                            html_version=get_html_version(),
-                           update_channel=current_channel) # NEW VARIABLE
+                           update_channel=current_channel,
+                           update_channel_name=channel_display_name) # NEW VARIABLE
 
 @app.route('/api/system/cleanup', methods=['POST'])
 def cleanup_database():
@@ -2120,6 +2148,27 @@ def clear_dns_logs():
         conn.execute("DELETE FROM dns_logs")
         conn.commit()
     return jsonify({"status": "success"})
+
+@app.route('/api/tool_logs/update', methods=['POST'])
+def update_tool_log():
+    """Updates the network name of a DNS or Ping log entry."""
+    d = request.json or {}
+    log_type = d.get('type')
+    item_id = d.get('id')
+    new_name = str(d.get('name', '')).strip()[:50] # Safely limit to 50 characters
+    
+    if log_type not in ['dns', 'ping']:
+        return jsonify({"error": "Invalid log type"}), 400
+        
+    table = 'dns_logs' if log_type == 'dns' else 'ping_logs'
+    
+    try:
+        with sqlite3.connect(DB_NAME, timeout=5.0) as conn:
+            conn.execute(f"UPDATE {table} SET network_name = ? WHERE id = ?", (new_name, item_id))
+            conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/ping/run', methods=['POST'])
 def run_ping():
@@ -3072,17 +3121,56 @@ def get_update_channel():
     except:
         return 'stable'
 
+GITHUB_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "github_settings.json")
+
+def get_all_github_settings():
+    """Reads all available update channels from the external settings file."""
+    try:
+        if os.path.exists(GITHUB_SETTINGS_FILE):
+            with open(GITHUB_SETTINGS_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[*] Error reading github_settings.json: {e}")
+        
+    # Fallback: Safely import the defaults from setup_env.py if the file is missing/corrupt
+    try:
+        import setup_env
+        if hasattr(setup_env, 'DEFAULT_GITHUB_CONFIG'):
+            return setup_env.DEFAULT_GITHUB_CONFIG
+    except: pass
+        
+    return {}
+
 def get_github_settings():
-    """Routes updates to the Dev repo settings if selected."""
+    """Routes updates to the active channel's settings."""
     channel = get_update_channel()
-    if channel == 'dev':
-        return GITHUB_SETTINGS_DEV
-    return GITHUB_SETTINGS
+    all_settings = get_all_github_settings()
+    
+    # If the user's saved channel exists in the JSON, use it
+    if channel in all_settings:
+        return all_settings[channel]
+        
+    # Fallback to the first available repo (usually 'stable') if their channel got deleted from the JSON
+    if all_settings:
+        return all_settings.get("stable", list(all_settings.values())[0])
+    return None
+
+@app.route('/api/settings/channels', methods=['GET'])
+def get_channels():
+    """Returns the dynamic list of available update channels for the UI Dropdown."""
+    all_settings = get_all_github_settings()
+    channels = []
+    for key, val in all_settings.items():
+        channels.append({
+            "id": key,
+            "name": val.get("display_name", key.capitalize())
+        })
+    return jsonify({"channels": channels})
 
 @app.route('/api/settings/channel', methods=['POST'])
 def handle_update_channel():
     """API endpoint to switch the update channel."""
-    channel = request.json.get('channel', 'stable')
+    channel = (request.json or {}).get('channel', 'stable')
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('update_channel', ?)", (channel,))
         conn.commit()
@@ -4315,6 +4403,7 @@ if __name__ == '__main__':
     init_db()
     check_password_reset()
     check_webport_file()
+    check_dev_file()
     check_disk_space()
     
     current_port = get_current_port()
