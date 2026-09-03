@@ -1,3 +1,5 @@
+0.11.1- - Testing release.
+
 0.11.0 - Fixed various bugs and added various fail safes should the app fail to start up correctly. Various UI fixes. You can now protect speed test, ping and dns lookup results from the database clear tool if removing data older than a certain amount of time. Stopped user being able to hide all adaptors, you need to have atleast one visable. Also stop it from being able to use a hidden adaptor for anything.
 
 0.10.0 - Major fixes and changes to improve and fix issues. This can now be run on a raspberry pi. Although I dont recommend anything earlier than a pi 4 due to preformance and hardware limitation it should still run on a pi 3. Major rework to the network scanning part, improving responsiveness and functionality.

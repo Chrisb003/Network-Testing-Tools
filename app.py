@@ -42,7 +42,10 @@ def setup_file_logging():
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.join(base_dir, 'logs')
-    os.makedirs(log_dir, exist_ok=True)
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        os.chmod(log_dir, 0o777)
+    except: pass
 
     # 1. Delete logs older than 7 days
     cutoff_date = datetime.now() - timedelta(days=7)
@@ -52,27 +55,57 @@ def setup_file_logging():
                 os.remove(log_file)
         except: pass
 
-    # 2. Create a new log file for this session
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = os.path.join(log_dir, f"app_run_{timestamp}.log")
+    # 2. Check Database for Full Logging preference (Fallback if setup_env missed it)
+    if "APP_FULL_LOGGING" not in os.environ:
+        full_log = False
+        try:
+            db_name = "network_data_dev.db" if os.path.exists("dev") else "network_data.db"
+            if os.path.exists(db_name):
+                with sqlite3.connect(db_name, timeout=2.0) as conn:
+                    row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
+                    if row and row[0] == '1': full_log = True
+        except: pass
+        os.environ["APP_FULL_LOGGING"] = "1" if full_log else "0"
 
-    # 3. Hijack stdout and stderr to suppress terminal output and write to file
+    # 3. Create a new log file for this session
+    timestamp = os.environ.get("APP_LOG_TIME", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    log_path = os.path.join(log_dir, f"system_run_{timestamp}.log")
+
+    # 4. Hijack stdout and stderr to suppress terminal output and conditionally write to file
     class LogWriter:
-        def __init__(self, filename):
-            self.file = open(filename, 'a', encoding='utf-8')
+        def __init__(self, filename, is_stderr=False):
+            self.is_stderr = is_stderr
+            self.file = None
+            try:
+                self.file = open(filename, 'a', encoding='utf-8')
+                os.chmod(filename, 0o666) # Ensure everyone can read/write to the log
+            except Exception: pass
+            
         def write(self, text):
-            self.file.write(text)
-            self.file.flush() # Ensure live writing
+            if self.file:
+                # Dynamically check if we should write this line to the log file
+                is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
+                is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning'])
+                
+                if is_full or is_error:
+                    try:
+                        self.file.write(text)
+                        self.file.flush() # Ensure live writing
+                    except: pass
+                
         def flush(self):
-            self.file.flush()
+            if self.file:
+                try: self.file.flush()
+                except: pass
 
-    custom_logger = LogWriter(log_path)
-    sys.stdout = custom_logger
-    sys.stderr = custom_logger
+    custom_logger_out = LogWriter(log_path, is_stderr=False)
+    custom_logger_err = LogWriter(log_path, is_stderr=True)
+    sys.stdout = custom_logger_out
+    sys.stderr = custom_logger_err
 
-    # 4. Catch internal library logs (Waitress, Flask) and pipe them to the file too
+    # 5. Catch internal library logs (Waitress, Flask) and pipe them to the file too
     logging.basicConfig(
-        stream=custom_logger,
+        stream=custom_logger_out,
         level=logging.INFO,
         format='[%(asctime)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -3967,6 +4000,82 @@ def delete_network_devices():
         conn.commit()
         
     return jsonify({"status": "success"})
+
+@app.route('/api/settings/logging', methods=['GET'])
+def get_logging_settings():
+    """Fetches the current logging preference and calculates total log size."""
+    full_log = False
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+        try:
+            row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
+            full_log = row[0] == '1' if row else False
+        except sqlite3.OperationalError:
+            pass
+            
+    # Calculate log folder size
+    log_dir = os.path.join(app.root_path, 'logs')
+    total_size = 0
+    if os.path.exists(log_dir):
+        for f in os.listdir(log_dir):
+            fp = os.path.join(log_dir, f)
+            if os.path.isfile(fp):
+                total_size += os.path.getsize(fp)
+    size_mb = total_size / (1024 * 1024)
+
+    return jsonify({"full_logging": full_log, "size_mb": f"{size_mb:.2f}"})
+
+@app.route('/api/settings/logging', methods=['POST'])
+def set_logging_settings():
+    """Saves the logging preference and immediately updates the live environment variable."""
+    enable = '1' if request.json.get('enable') else '0'
+    os.environ["APP_FULL_LOGGING"] = enable
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('full_logging', ?)", (enable,))
+        conn.commit()
+    return jsonify({"status": "success"})
+
+@app.route('/api/system/logs/download')
+def download_logs():
+    """Packages all available diagnostic logs into a zip file and downloads them."""
+    log_dir = os.path.join(app.root_path, 'logs')
+    if not os.path.exists(log_dir):
+        return "No logs found.", 404
+        
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(log_dir):
+            for file in files:
+                if file.endswith('.log'):
+                    file_path = os.path.join(root, file)
+                    zf.write(file_path, os.path.relpath(file_path, log_dir))
+                    
+    memory_file.seek(0)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(memory_file, download_name=f"system_logs_{timestamp}.zip", as_attachment=True)
+
+@app.route('/api/system/logs/delete', methods=['POST'])
+def delete_system_logs():
+    """Deletes all system diagnostic log files. Safely handles locked files on Windows."""
+    log_dir = os.path.join(app.root_path, 'logs')
+    if not os.path.exists(log_dir):
+        return jsonify({"status": "success", "message": "No logs to delete."})
+        
+    try:
+        # We use pathlib to easily iterate through the log files
+        for file_path in Path(log_dir).glob('*.log'):
+            try:
+                # Try to physically delete the file
+                file_path.unlink()
+            except PermissionError:
+                # If Windows locks the active log file, we just wipe its contents to 0 bytes instead
+                with open(file_path, 'w') as f:
+                    f.truncate(0)
+            except Exception as e:
+                print(f"[!] Could not clear log file {file_path}: {e}")
+                
+        return jsonify({"status": "success", "message": "System logs deleted successfully."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 def manage_boot_counter():
     """

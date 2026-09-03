@@ -54,6 +54,15 @@
                 document.getElementById('header-isp').innerText = d.isp;
         });
 
+        // Fetch Logging Setting
+        fetch('/api/settings/logging')
+            .then(res => res.json())
+            .then(data => {
+                const toggle = document.getElementById('logging-toggle');
+                if (toggle) toggle.checked = data.full_logging;
+            })
+            .catch(err => console.error("Error fetching logging setting:", err));
+
         // Start Loops
         setInterval(updateLiveRatesOnly, 3000);
         loadWorkerSettings();
@@ -1822,7 +1831,8 @@ function checkUpdates() {
                     const t = document.getElementById('ver-global');
                     if (t) {
                         t.classList.add('ver-update');
-                        t.innerHTML = `Global: ${local.replace('DEV', '')} <i class="bi bi-exclamation-circle-fill"></i>`;
+                        // --- FIXED: Match the new "Running V" format ---
+                        t.innerHTML = `Running V${local.replace('DEV', '')} <i class="bi bi-exclamation-circle-fill"></i>`;
                     }
                 }
             }
@@ -2607,3 +2617,48 @@ function toggleProtection(type, id, currentState) {
         if(type === 'wifi') loadWifiHistory();
     });
 }
+
+// Handle Logging toggle
+    function toggleLogging() {
+        const toggle = document.getElementById('logging-toggle');
+        const isEnabled = toggle.checked;
+        
+        fetch('/api/settings/logging', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enable: isEnabled })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.status !== "success") {
+                alert("Failed to update logging setting.");
+                toggle.checked = !isEnabled;
+            }
+        })
+        .catch(err => { toggle.checked = !isEnabled; });
+    }
+
+    // Handle clearing the system diagnostic logs
+    function deleteSystemLogs() {
+        if (!confirm("Are you sure you want to delete all system diagnostic logs?")) return;
+        
+        const btn = event.currentTarget;
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Clearing...';
+        btn.disabled = true;
+
+        fetch('/api/system/logs/delete', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === "success") {
+                    alert("System logs have been successfully cleared.");
+                } else {
+                    alert("Error: " + d.message);
+                }
+            })
+            .catch(err => alert("Communication error: " + err.message))
+            .finally(() => {
+                btn.innerHTML = originalHtml;
+                btn.disabled = false;
+            });
+    }

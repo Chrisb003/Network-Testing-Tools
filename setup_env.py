@@ -15,6 +15,7 @@ import time
 import webbrowser
 from pathlib import Path
 import sqlite3
+from datetime import datetime, timedelta
 
 # --- Configuration ---
 SETUP_VERSION = "0.11.0"
@@ -55,6 +56,78 @@ def get_active_github_settings(base_dir):
         print("[*] 'dev' file detected. Using Development repository.")
         return GITHUB_SETTINGS_DEV
     return GITHUB_SETTINGS
+
+def setup_supervisor_logging(base_dir):
+    """Initializes a dual-logger for the setup script and sets the environment sync variable."""
+    log_dir = base_dir / 'logs'
+    try:
+        log_dir.mkdir(exist_ok=True)
+        os.chmod(log_dir, 0o777) # Ensure normal users can access the folder
+    except: pass
+
+    # 1. Clean up old logs (older than 7 days)
+    cutoff_date = datetime.now() - timedelta(days=7)
+    for log_file in log_dir.glob('*.log'):
+        try:
+            if datetime.fromtimestamp(log_file.stat().st_mtime) < cutoff_date:
+                log_file.unlink()
+        except: pass
+
+    # 2. Check Database for Full Logging preference
+    full_log = False
+    db_path = base_dir / "network_data.db"
+    if (base_dir / "dev").exists(): db_path = base_dir / "network_data_dev.db"
+    try:
+        if db_path.exists():
+            with sqlite3.connect(db_path, timeout=2.0) as conn:
+                row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
+                if row and row[0] == '1': full_log = True
+    except: pass
+    os.environ["APP_FULL_LOGGING"] = "1" if full_log else "0"
+
+    # 3. Generate synchronized timestamp
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    os.environ["APP_LOG_TIME"] = timestamp
+    log_path = log_dir / f"system_run_{timestamp}.log"
+
+    # 4. TeeLogger to print to terminal AND conditionally write to file
+    class TeeLogger:
+        def __init__(self, filename, terminal, is_stderr=False):
+            self.terminal = terminal
+            self.is_stderr = is_stderr
+            self.file = None
+            try:
+                self.file = open(filename, 'a', encoding='utf-8')
+                os.chmod(filename, 0o666) # Ensure everyone can read/write to the log
+            except PermissionError:
+                pass # If owned by root, silently skip file logging for setup script
+            except Exception:
+                pass
+            
+        def write(self, text):
+            # Always print to the terminal so the user can see what's happening
+            self.terminal.write(text)
+            self.terminal.flush()
+            
+            if self.file:
+                # Dynamically check if we should write this line to the log file
+                is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
+                is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning'])
+                
+                if is_full or is_error:
+                    try:
+                        self.file.write(text)
+                        self.file.flush()
+                    except: pass
+                
+        def flush(self):
+            self.terminal.flush()
+            if self.file:
+                try: self.file.flush()
+                except: pass
+
+    sys.stdout = TeeLogger(log_path, sys.stdout, is_stderr=False)
+    sys.stderr = TeeLogger(log_path, sys.stderr, is_stderr=True)
 
 def is_admin():
     """Checks if the script is running with administrative privileges."""
@@ -391,9 +464,12 @@ def run_application(base_dir, venv_python):
                 if get_autostart_setting(base_dir):
                     print(f"[✓] Server is ready on port {current_port}! Opening browser...")
                     webbrowser.open(f"http://127.0.0.1:{current_port}")
+                else:
+                    # --- FIXED: Explicitly tell the user it is ready when Auto-start is OFF ---
+                    print(f"\n[✓] Server is ready! Access it manually at: http://127.0.0.1:{current_port}\n")
                 first_launch = False
             elif server_ready:
-                print(f"[✓] Application successfully restarted on port {current_port}.")
+                print(f"\n[✓] Application successfully restarted on port {current_port}.\n")
             
             # Wait for the application process to terminate or crash
             process.wait()
@@ -495,6 +571,10 @@ def get_configured_port(base_dir):
 
 def main():
     base_dir = Path(__file__).parent.resolve()
+    
+    # --- NEW: Start logging immediately ---
+    setup_supervisor_logging(base_dir)
+    
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
 
     # Flag to track if we need to run the final permission loop
