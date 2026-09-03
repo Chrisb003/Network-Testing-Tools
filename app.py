@@ -128,7 +128,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.11.1"
+APP_VERSION = "0.11.2"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -4178,6 +4178,29 @@ def bulk_hide_adapters():
                 INSERT INTO adapter_settings (mac_address, is_visible)
                 VALUES (?, 0)
                 ON CONFLICT(mac_address) DO UPDATE SET is_visible=0
+            """, (mac,))
+        conn.commit()
+
+    return jsonify({"status": "success"})
+
+@app.route('/api/adapters/bulk_unhide', methods=['POST'])
+def bulk_unhide_adapters():
+    """Unhides multiple adapters at once."""
+    macs = request.json.get('macs', [])
+    if not macs:
+        return jsonify({"status": "error", "message": "No adapters provided."}), 400
+
+    # Remove any invalid/empty MACs (like virtual adapters that can't be saved)
+    macs = [m for m in macs if m and m != '-']
+    if not macs:
+        return jsonify({"status": "error", "message": "Cannot configure adapters without MAC addresses."}), 400
+
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+        for mac in macs:
+            conn.execute("""
+                INSERT INTO adapter_settings (mac_address, is_visible)
+                VALUES (?, 1)
+                ON CONFLICT(mac_address) DO UPDATE SET is_visible=1
             """, (mac,))
         conn.commit()
 

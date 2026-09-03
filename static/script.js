@@ -2534,6 +2534,54 @@ function bulkHideAdapters() {
     });
 }
 
+// Controls the visibility of the Unhide button
+function toggleShowHidden() {
+    const isChecked = document.getElementById('showHiddenCheck').checked;
+    const unhideBtn = document.getElementById('btn-bulk-unhide');
+    
+    if (unhideBtn) {
+        if (isChecked) {
+            unhideBtn.classList.remove('hidden');
+        } else {
+            unhideBtn.classList.add('hidden');
+        }
+    }
+    fetchAdapters(); // Proceed with normal table reload
+}
+
+// Submits the unhide request to the backend
+function bulkUnhideAdapters() {
+    const selectedMacs = Array.from(tableState.adapters.selected);
+    
+    if (!selectedMacs.length) return alert("Please select at least one adapter to unhide.");
+    if (!confirm(`Are you sure you want to unhide ${selectedMacs.length} selected adapter(s)?`)) return;
+
+    const btn = event.currentTarget;
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Unhiding...';
+    btn.disabled = true;
+
+    fetch('/api/adapters/bulk_unhide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ macs: selectedMacs })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            tableState.adapters.selected.clear();
+            refreshNetworkInfo(); // Force UI refresh
+        } else {
+            alert("Error: " + d.message);
+        }
+    })
+    .catch(err => alert("Failed to connect: " + err.message))
+    .finally(() => {
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+    });
+}
+
 function deleteSelectedDeviceHistory() {
     if (selectedDevHistMacs.size === 0) {
         return alert("Please select at least one device to delete.");
