@@ -8,7 +8,7 @@ For manual installation instructions or to bypass the automated launcher scripts
 
 ## 💻 Platform & OS Support
 
-* <img src="https://cdn.simpleicons.org/windows11/0078D4" width="18" align="top" /> **Windows 11**: Fully supported (requires running as Administrator and Location Services enabled). Performing a Wi-Fi scan temporarily resets the Wi-Fi adapter via PowerShell to retrieve the available network list[cite: 13].
+* <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="18" align="top" /> **Windows 11**: Fully supported (requires running as Administrator and Location Services enabled). Performing a Wi-Fi scan temporarily resets the Wi-Fi adapter via PowerShell to retrieve the available network list[cite: 13].
 * <img src="https://cdn.simpleicons.org/apple/999999" width="18" align="top" /> **macOS**: Fully supported (requires admin permissions and Location permissions). *Due to an OS limitation, Wi-Fi scans cannot list the MAC addresses (BSSIDs) of surrounding networks*[cite: 13].
 * <img src="https://cdn.simpleicons.org/linux/FCC624" width="18" align="top" /> **Linux & Raspberry Pi**: Fully supported (tested on Linux Mint and Debian-based distros via `apt-get`)[cite: 13].
 
@@ -37,7 +37,7 @@ The repository includes automated wrapper scripts to handle environment setup au
 
 | OS | Script | Description |
 |---|---|---|
-| <img src="https://cdn.simpleicons.org/windows11/0078D4" width="16" align="top" /> **Windows** | `Windows Launcher.bat` | Requests Administrator privileges, ensures Python is installed (opening the Microsoft Store if missing), checks internet connectivity, installs `pip-system-certs` to bypass corporate SSL blocks, and launches the setup script[cite: 13]. |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="16" align="top" /> **Windows** | `Windows Launcher.bat` | Requests Administrator privileges, ensures Python is installed (opening the Microsoft Store if missing), checks internet connectivity, installs `pip-system-certs` to bypass corporate SSL blocks, and launches the setup script[cite: 13]. |
 | <img src="https://cdn.simpleicons.org/apple/999999" width="16" align="top" /> **macOS** | `Linux and MacOS Launcher.sh` | Detects macOS, checks for Python 3, automatically downloads and installs the official Python package from python.org if missing, and launches the setup script[cite: 13]. |
 | <img src="https://cdn.simpleicons.org/linux/FCC624" width="16" align="top" /> **Linux** | `Linux and MacOS Launcher.sh` | Detects Debian/Ubuntu-based systems, uses `sudo apt-get` to install Python 3, `python3-venv`, `python3-pip`, and `git`, then launches the setup script[cite: 13]. |
 

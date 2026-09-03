@@ -9,8 +9,7 @@ The core `setup_env.py` script creates the local `venv` (virtual environment) an
 If you prefer to set up the environment manually without the wrapper scripts, follow the platform-specific instructions below[cite: 11].
 
 ---
-
-## <img src="https://cdn.simpleicons.org/windows11/0078D4" width="28" align="top" /> Windows
+## <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="28" align="top" /> Windows
 
 ### Prerequisites
 Install or enable the following before running the setup script:
