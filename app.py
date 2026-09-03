@@ -71,9 +71,10 @@ def setup_file_logging():
     timestamp = os.environ.get("APP_LOG_TIME", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     log_path = os.path.join(log_dir, f"system_run_{timestamp}.log")
 
-    # 4. Hijack stdout and stderr to suppress terminal output and conditionally write to file
-    class LogWriter:
-        def __init__(self, filename, is_stderr=False):
+    # 4. TeeLogger to print to terminal AND conditionally write to file
+    class TeeLogger:
+        def __init__(self, filename, terminal, is_stderr=False):
+            self.terminal = terminal
             self.is_stderr = is_stderr
             self.file = None
             try:
@@ -82,6 +83,12 @@ def setup_file_logging():
             except Exception: pass
             
         def write(self, text):
+            # Print to the live terminal so you can see the startup banners
+            try:
+                self.terminal.write(text)
+                self.terminal.flush()
+            except: pass
+            
             if self.file:
                 # Dynamically check if we should write this line to the log file
                 is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
@@ -94,12 +101,18 @@ def setup_file_logging():
                     except: pass
                 
         def flush(self):
+            try: self.terminal.flush()
+            except: pass
             if self.file:
                 try: self.file.flush()
                 except: pass
 
-    custom_logger_out = LogWriter(log_path, is_stderr=False)
-    custom_logger_err = LogWriter(log_path, is_stderr=True)
+    # Save original terminal outputs before overwriting
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+
+    custom_logger_out = TeeLogger(log_path, original_stdout, is_stderr=False)
+    custom_logger_err = TeeLogger(log_path, original_stderr, is_stderr=True)
     sys.stdout = custom_logger_out
     sys.stderr = custom_logger_err
 
@@ -4136,7 +4149,7 @@ def delete_system_logs():
 def manage_boot_counter():
     """
     Crash loop protection: Increments a counter on boot. 
-    If it hits 3, restores the previous version (if updated), worker settings, and safe port.
+    If it hits 5, restores the previous version (if updated), worker settings, and safe port.
     """
     base_dir = app.root_path
     counter_file = os.path.join(base_dir, "boot_attempts.txt")
@@ -4148,7 +4161,7 @@ def manage_boot_counter():
                 attempts = int(f.read().strip())
         except: pass
         
-    if attempts >= 3:
+    if attempts >= 5:
         print("\n[!] CRASH LOOP DETECTED! Restoring safe settings...")
         
         # --- NEW: 1. Rollback Failed Update ---
