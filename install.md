@@ -1,121 +1,100 @@
-# Manual Installation
+# <img src="static/Logo.png" width="40" align="top" alt="Logo" /> Manual Installation Guide
 
-The launcher scripts are optional convenience wrappers. They locate the project directory, check for Python, install a few platform prerequisites when possible, and then start `setup_env.py`.
+The launcher scripts (`Windows Launcher.bat` and `Linux and MacOS Launcher.sh`) are optional convenience wrappers[cite: 11]. They locate the project directory, check for Python, install platform prerequisites, and then start `setup_env.py`[cite: 11].
 
-`setup_env.py` creates the local `venv` environment and installs the Python dependencies used by the dashboard: `flask`, `psutil`, `scapy`, and `waitress`. On macOS it also installs `pyobjc-framework-CoreWLAN` and `pyobjc-framework-CoreLocation`. It downloads the appropriate Ookla Speedtest CLI during setup. Internet access is therefore required for a first-time installation.
+The core `setup_env.py` script creates the local `venv` (virtual environment) and installs the required Python dependencies: `flask`, `psutil`, `scapy`, and `waitress`[cite: 11]. It also handles OS-specific requirements, such as macOS CoreWLAN bindings and downloading the correct Ookla Speedtest CLI binary[cite: 11]. 
 
-## Windows
+> **⚠️ Important:** Internet access is strictly required for a first-time installation to download dependencies[cite: 11].
 
-### What the Windows launcher does
+If you prefer to set up the environment manually without the wrapper scripts, follow the platform-specific instructions below[cite: 11].
 
-`windows launcher.bat`:
+---
 
-1. Requests Administrator privileges.
-2. Changes to the folder containing the launcher.
-3. Checks for Python. If Python is missing, it opens the Microsoft Store and waits for Python to be installed.
-4. Checks internet connectivity.
-5. When online, installs `pip-system-certs` to help with certificate errors on some corporate networks.
-6. Runs `setup_env.py`.
+## <img src="https://cdn.simpleicons.org/windows/0078D4" width="28" align="top" /> Windows
 
-### Install manually
-
+### Prerequisites
 Install or enable the following before running the setup script:
 
-- **Python 3.12 or newer**, with the option to add Python to `PATH` enabled. Verify with `python --version`.
-- **Git for Windows**. The setup script can install it through Chocolatey, but install it manually if you do not want automated package installation.
-- **Npcap**, with WinPcap API-compatible mode enabled if offered. Scapy uses it for packet-based network discovery.
-- An internet connection for the initial dependency and Speedtest CLI downloads.
-- Administrator access. Windows setup and some network scanning features require elevation.
+* **Python 3.12 or newer**, with the option to **add Python to `PATH`** enabled. Verify with `python --version`[cite: 11].
+* **Git for Windows**. The setup script can install it through Chocolatey, but install it manually if you want to avoid automated package managers[cite: 11].
+* **Npcap**, with *WinPcap API-compatible mode* enabled if offered. Scapy requires this for packet-based network discovery[cite: 11].
+* **Administrator access**. Windows setup and low-level Scapy network scanning features require elevation[cite: 11].
 
-The Python packages, virtual environment, and Speedtest CLI are installed by `setup_env.py`; they do not need to be installed globally. If your network uses certificate inspection, you may also install the optional certificate helper:
+*Note: The Python packages, virtual environment, and Speedtest CLI are installed by `setup_env.py`; they do not need to be installed globally[cite: 11].*
 
-```powershell
-python -m pip install pip-system-certs
-```
+> **Corporate Networks:** If your network uses deep packet inspection or corporate certificates, you may optionally install the certificate helper inside your environment[cite: 11]:
+> ```powershell
+> python -m pip install pip-system-certs
+> ```
 
-From the project folder, run:
-
+### Launch Command
+From the project folder, open an **Administrator terminal** and run[cite: 11]:
 ```powershell
 python setup_env.py
 ```
 
-## macOS
+---
 
-### What the macOS launcher does
+## <img src="https://cdn.simpleicons.org/apple/999999" width="28" align="top" /> macOS
 
-`Linux and MacOS Launcher.sh`:
-
-1. Changes to the folder containing the launcher and detects macOS.
-2. Checks for Python 3.
-3. If Python is missing, downloads the Python `3.14.7` macOS installer from python.org and installs it with Administrator privileges.
-4. Runs `python3 setup_env.py`.
-
-### Install manually
-
+### Prerequisites
 Install or enable the following before running the setup script:
 
-- **Python 3**, preferably Python `3.14.7` to match the launcher. Verify with `python3 --version`.
-- **Git**. Install Git directly or install Homebrew first and then run `brew install git`. The setup script can install Homebrew and Git when online, but this is optional when preparing the machine manually.
-- An internet connection for Python package and Speedtest CLI downloads.
-- Administrator access for network scanning.
-- **Location Services** for the terminal or application running the dashboard. macOS requires this for Wi-Fi scanning.
+* **Python 3**, ideally the latest stable release (e.g., 3.12+). Verify with `python3 --version`[cite: 11].
+* **Git**. Install Git directly or install Homebrew first and then run `brew install git`[cite: 11].
+* **Administrator access** via `sudo` to allow Scapy to read ARP tables and network interfaces[cite: 11].
+* **Location Services** permissions granted to your Terminal or IDE. *macOS strictly requires Location Services for Wi-Fi scanning functions to return data*[cite: 11].
 
-The setup script installs the Python packages, including the macOS CoreWLAN and CoreLocation bindings, and installs Speedtest CLI through Homebrew when required.
+*Note: The setup script installs the standard Python packages alongside the macOS specific `pyobjc-framework-CoreWLAN` and `pyobjc-framework-CoreLocation` bindings[cite: 11].*
 
-From the project folder, run:
-
+### Launch Command
+From the project folder, open your terminal and run[cite: 11]:
 ```bash
-python3 setup_env.py
+sudo python3 setup_env.py
 ```
 
-## Linux
+---
 
-### What the Linux launcher does
+## <img src="https://cdn.simpleicons.org/linux/FCC624" width="28" align="top" /> Linux
 
-`Linux and MacOS Launcher.sh`:
+### Prerequisites
+For Debian, Ubuntu, Linux Mint, and Raspberry Pi OS, you must manually install the native system build packages so Python can successfully compile `psutil` and `scapy`[cite: 11].
 
-1. Changes to the folder containing the launcher and detects Linux.
-2. On Debian- or Ubuntu-based systems, checks for Python 3 and the `venv` module.
-3. If required, uses `sudo apt-get` to install Python 3, `python3-venv`, `python3-pip`, and Git.
-4. Runs `python3 setup_env.py`.
-
-The setup script performs additional Debian/Ubuntu setup when online: it installs `python3-venv`, `python3-pip`, `python3-dev`, `build-essential`, `git`, and `net-tools`.
-
-### Install manually
-
-For Debian, Ubuntu, Linux Mint, and Raspberry Pi OS, install the base packages with:
-
+Install the base packages with[cite: 11]:
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential git net-tools
 ```
 
-Also provide:
+Also ensure you have:
+* **`sudo` access**. The application requires elevated privileges to bind to network interfaces for discovery[cite: 11].
+* **A supported network interface**. Wi-Fi scan results heavily depend on the adapter's capabilities and supported bands[cite: 11].
 
-- An internet connection for Python package and Speedtest CLI downloads.
-- `sudo` access. The application uses elevated privileges for Scapy-based network discovery when it is not already running as root.
-- A supported network interface. Wi-Fi scan results depend on the adapter and its supported bands.
+### Raspberry Pi Notes
 
-The setup script installs the Python packages and selects the Ookla Speedtest CLI for the detected Linux architecture. No global Python package installation is required.
+* Use **Raspberry Pi OS 64-bit** where possible and keep the OS fully updated[cite: 11].
+* The setup script will automatically select the ARMHF Speedtest binary for 32-bit Pi OS, and the AArch64 binary for 64-bit Pi OS[cite: 11].
+* For packet capture or low-level network features, ensure `libpcap` is installed[cite: 11]:
+  ```bash
+  sudo apt-get install -y libpcap-dev
+  ```
+* If Wi-Fi scanning fails, ensure your wireless adapter and driver support monitor/scanning operations. A USB Wi-Fi adapter may be required for 5GHz/6GHz bands on older Pi models[cite: 11].
 
-### Raspberry Pi notes
-
-- Use **Raspberry Pi OS 64-bit** where possible and keep the OS fully updated.
-- On a 32-bit Raspberry Pi OS installation, the setup script selects the ARMHF Speedtest binary; on a 64-bit installation it selects the AArch64 binary. The binary must match the OS architecture, not just the Pi model.
-- For packet capture or low-level network features, install libpcap support if it is not already present:
-
+### Launch Command
+From the project folder, open your terminal and run[cite: 11]:
 ```bash
-sudo apt-get install -y libpcap-dev
+sudo python3 setup_env.py
 ```
 
-- If Wi-Fi scanning is unavailable, check that the wireless adapter and driver support monitor/scanning operations. A USB Wi-Fi adapter may be needed for additional bands or capabilities.
+---
 
-From the project folder, run:
+## 🎉 After Setup
 
-```bash
-python3 setup_env.py
+Once the setup completes, the Waitress WSGI server will spin up[cite: 11]. 
+
+The dashboard natively starts on port `81`. Open your web browser to[cite: 11]:
+```text
+[http://127.0.0.1:81](http://127.0.0.1:81)
 ```
 
-## After Setup
-
-The dashboard normally starts on port `81`. Open `http://127.0.0.1:81` in a browser. The setup process may restart the application automatically after crashes; press `Ctrl+C` in the setup terminal to stop it.
+> **💡 Tip:** The setup supervisor is designed to automatically capture crashes and restart the application if it fails. Press `Ctrl+C` in the setup terminal to gracefully stop the dashboard supervisor[cite: 11].
