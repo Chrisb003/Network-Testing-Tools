@@ -1,37 +1,64 @@
-This is an app I created for basic network testing. I put it together mainly so I had a tool I could use to do basic network tests for trouble shooting issues at home, at church and various people I support with tech bits. My coding skills are not great, I can understand it but not write much of it so I really on the use of AI for most of my coding and I can’t guarantee it works perfectly or there isn’t bugs.
-I built this mainly to run on Windows but also Mac OS. Linux support is there and it seems to function but not a priority.
-Internet is required the first time it runs so it can install all the requirements but after that it can function without internet.
+# Network Diagnostics Dashboard
 
-It lists local IP, router IP and wan IP, ISP name. It can also be used to run speed tests with using speedtest cli (this is used to support download/upload speeds higher than 1G), it lists network adaptors and what IP address and dns each have. It can do a network scan and list network devices IP address and mac addresses. Store a history of speed tests completed which can be exported as a csv. Do ping test, DNS lookups.
-All data is stored in a .db file using sqlite and you can export more bits as csv files should you need to.
+A robust, fault-tolerant network diagnostic dashboard designed for troubleshooting network issues across home, church, and managed environments. Built using Python, Flask, SQLite, and Scapy.[cite: 11].
+If you prefer to not to use the automated wrapper scripts (`windows launcher.bat`[cite: 13] and `Linux and MacOS Launcher.sh`), you can read the install.md file for instructions on what to do to launch it. Should you want an overview of what the scripts do see bellow.
 
-Not all features will work with all OS's. Below is a list of what works with what so far. It will need to run directly on a host OS. I don’t think it will function if made into a docker app.
+## Platform & OS Support
 
-This app runss on port 81. To access it once started open a web broswer and go to 127.0.0.1:81
+* **Windows 11**: Fully supported (requires running as Administrator and Location Services enabled). Performing a Wi-Fi scan temporarily resets the Wi-Fi adapter via PowerShell to retrieve the available network list[cite: 8, 11].
+* **macOS**: Fully supported (requires admin permissions and Location permissions). Due to an OS limitation, Wi-Fi scans cannot list the MAC addresses (BSSIDs) of surrounding networks[cite: 11].
+* **Linux & Raspberry Pi (ARM/x64)**: Fully supported (tested on Linux Mint and Debian-based distros via `apt-get`)[cite: 11].
 
-I have no plans to add https. It is meant to be run and accessed from the same device so no need for the secure web page.
+## Automated Launcher Scripts Overview
+### What the Windows launcher does
+`windows launcher.bat`:
+1. Requests Administrator privileges.
+2. Changes to the folder containing the launcher.
+3. Checks for Python. If Python is missing, it opens the Microsoft Store and waits for Python to be installed.
+4. Checks internet connectivity.
+5. When online, installs `pip-system-certs` to help with certificate errors on some corporate networks.
+6. Runs `setup_env.py`.
 
-I have included a .sh script for mac/linux to make sure python is installed and then run the setup script which should install the rest. You need to make sure you use "chmod ugo+x" on the .sh file to make it executable then run it from the terminal.
-There is also a bat file for windows to install python and then start the setup script.
+### What the macOS part of the launcher does
+`Linux and MacOS Launcher.sh`:
+1. Changes to the folder containing the launcher and detects macOS.
+2. Checks for Python 3.
+3. If Python is missing, downloads the Python `3.14.7` macOS installer from python.org and installs it with Administrator privileges.
+4. Runs `python3 setup_env.py`.
 
-Fully seems to works with Windows 11 haven’t verified with previous versions. Just need to have python installed and run the setup script it should install the rest of the requirements. Or run the bat file and it will install python for you and run the app. In order for the network scanning to work you need to make sure location services are enabled and the script needs to run as admin.
+### What the Linux part of the launcher does
+`Linux and MacOS Launcher.sh`:
+1. Changes to the folder containing the launcher and detects Linux.
+2. On Debian- or Ubuntu-based systems, checks for Python 3 and the `venv` module.
+3. If required, uses `sudo apt-get` to install Python 3, `python3-venv`, `python3-pip`, and Git.
+4. Runs `python3 setup_env.py`.
 
-Works with Mac OS. Just install python and run the script it should install the rest. WIFI network scanning will require you allowing location permissions. Network scanning requires admin permissions. Due to a limitation within Mac OS although the wifi scan works it cant list the Mac addresses (BSSID) of the networks.
+## Core Features
 
-Linux, Tested with Linux Mint. Everything functions as far as I can tell. Speed test should download on its own but if it fails you may need to download it separately. Ran as sudo due to need to setup packages but unsure if can run without. Can’t be sure it will run on every distro but I have tested with Linux mint and setup script uses apt-get to install requirements so using a distro that doesn’t have that will mean you will need to install the required packages manually.
-It may work on a raspberry pi to but this has not been tested.
+* **Dashboard Overview**: Tracks local LAN IP, WAN IP, ISP name, Router gateway IP, and DNS servers with primary adapter pinning[cite: 11].
+* **Touch Friendly**: Has option to toggle a touch mode which increase size of buttons etc to make it easier to use with a touch screen[cite: 11].
+* **Light and Dark Mode**: The UI defaults to dark mode but if you are someone who prefers it there is a light mode to.[cite: 11].
+* **Speed Tests**: Integrates Ookla Speedtest CLI for high-bandwidth connections (>1Gbps), custom location tagging, and connection types[cite: 11].
+* **Network Adapters**: Manages active interfaces, link speeds, MAC addresses, IPs, gateways, and DNS with visibility toggles[cite: 11].
+* **Device Discovery**: Scans subnets via Scapy and ping sweep fallback to list hostnames, vendors, open ports/services, and history tracking[cite: 11].
+* **Diagnostic Tools**: Built-in DNS lookup and Ping tools featuring network context logging, CSV exports, and editable network names[cite: 11].
+* **Wi-Fi Scanning**: Scans across 2.4GHz, 5GHz, and 6GHz bands with signal strength metrics, channel details, security types, and scan history (The wifi adapter needs to support these bands to see them)[cite: 11].
+* **Backup & Migration**: Uses a sqllite database and features, smart change-detection hashing, quota-managed rolling backups, semantic version checks, and auto-corruption recovery[cite: 7].
+* **System Management**: Provides log management, update channel switching (stable/dev), worker thread optimization, database maintenance cleanups, and crash-loop auto-rollback via `rollback.zip`[cite: 7, 8, 11].
+* **Access Control**: Optional HTTP Basic Authentication with secure password hashing[cite: 8].
+* **Logs**: Option to enable detailed log files for troubleshooting issues with the application[cite: 8].
 
-On my list to add/get working. 
-Currently the app functions as I want it. Until I am fully happy with it then it will remain a beta. The only changes that may happen now are general bug fixes. If I choose to release this publicly I will switch to the github being public so I will update the updater script to update from it.
+## Accessing the Dashboard
 
+The application runs on port 81 by default[cite: 11]. Open a web browser and navigate to `http://127.0.0.1:81`[cite: 11].
 
-There are a few useful bits I have added where you can add files with specific names into the main folder and it will have various actions on startup.
-autostart - This file will be created automatically anyway but if you create it before you first run the application. By have a 0 in the file it will disable the automatic opening to the webpage for the dashboard when the app starts. It can also be changed in the settings but a useful thing if you want to run it on a seperate machine and run it headless.
+## Startup & Control Files
 
-dev - this will force the setup script to download from the dev branch rather than release. This only does something if you do not have the rest of the files downloaded.
+Create these optional text files in the root directory before startup to trigger automated actions[cite: 11]:
 
-resetpassword - This will disable and reset the user account
-
-cleardatabase - This deletes your entire database
-
-webport - The application defaults to 81 but should you need to change this before opening the app create a file called webport and in the file enter the port number you want it to use.
+* **`autostart`**: Set to `1` to automatically open the browser on startup, or `0` for headless mode[cite: 11].
+* **`dev`**: Forces the setup script to download from the development branch[cite: 11].
+* **`passwordreset`**: Resets authentication credentials and disables login requirements on boot[cite: 11].
+* **`cleardatabase`**: Completely wipes the database and temporary files on startup[cite: 11].
+* **`webport`**: Contains a numeric port value (e.g., `8080`) to override the default web port[cite: 11].
+* **`reinstall`**: If there is an issue with the application, this will clear all files and redownload a fresh copy of the app. The database is recreated to[cite: 11].

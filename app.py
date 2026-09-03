@@ -27,6 +27,7 @@ import logging
 import tempfile
 import re
 import base64
+import filecmp
 from flask import stream_with_context
 from concurrent.futures import as_completed
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -55,20 +56,11 @@ def setup_file_logging():
                 os.remove(log_file)
         except: pass
 
-   # 2. Check Database for Full Logging preference (Fallback if setup_env missed it)
+    # 2. Check Database for Full Logging preference
     if "APP_FULL_LOGGING" not in os.environ:
         full_log = False
         try:
-            # Safely check if we are in DEV mode before picking the DB
-            is_dev_log = False
-            if os.path.exists("dev"): 
-                is_dev_log = True
-            elif os.path.exists("version.json"):
-                with open("version.json", "r") as f:
-                    if "DEV" in json.load(f).get("version", "").upper(): 
-                        is_dev_log = True
-                        
-            db_name_log = "network_data_dev.db" if is_dev_log else "network_data.db"
+            db_name_log = "network_data.db"
             if os.path.exists(db_name_log):
                 with sqlite3.connect(db_name_log, timeout=2.0) as conn:
                     row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
@@ -152,29 +144,10 @@ def get_global_version():
     except:
         return "Error"
 
-# Dynamically set the database file based on the version tag or the trigger file
-is_dev_global = False
-if os.path.exists("dev"): 
-    is_dev_global = True
-elif os.path.exists("version.json"):
-    try:
-        with open("version.json", "r") as f:
-            if "DEV" in json.load(f).get("version", "").upper(): 
-                is_dev_global = True
-    except: pass
-
-if is_dev_global:
-    DB_NAME = "network_data_dev.db"
-else:
-    DB_NAME = "network_data.db"
+# Unified Global Database
+DB_NAME = "network_data.db"
 
 app = Flask(__name__)
-
-# Dynamically set the database file based on the version tag or the trigger file
-if "DEV" in get_global_version().upper() or os.path.exists("dev"):
-    DB_NAME = "network_data_dev.db"
-else:
-    DB_NAME = "network_data.db"
 
 # --- Database & Migrations ---
 ALERTS_FILE = "system_alerts.json"
@@ -218,209 +191,266 @@ def check_db_size():
     except Exception as e:
         print(f"[*] Could not check DB size: {e}")
 
-def init_db():
-    """Initializes the database with WAL mode for concurrency and creates all tables."""
-    # Check for corruption and self-heal before touching tables
-    if not check_db_integrity():
-        print("\n[!] DATABASE CORRUPTION DETECTED! Backing up and resetting...")
-        backup_name = f"{DB_NAME}.corrupted_{int(time.time())}.bak"
-        try:
-            shutil.copy2(DB_NAME, backup_name)
-            os.remove(DB_NAME)
-            for ext in ["-wal", "-shm"]:
-                temp_file = f"{DB_NAME}{ext}"
-                if os.path.exists(temp_file): os.remove(temp_file)
-            add_system_alert(f"Database corrupted. Old file backed up to '{backup_name}' and new database created.")
-        except Exception as e:
-            print(f"[X] Failed to backup corrupted database: {e}")
+def get_safe_channel():
+    """Reads the update channel safely for backup naming without crashing on locks."""
+    try:
+        if os.path.exists(DB_NAME):
+            with sqlite3.connect(DB_NAME, timeout=2.0) as conn:
+                row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
+                return row[0] if row else 'stable'
+    except: pass
+    return 'stable'
 
-    # --- NEW: Check database size on boot ---
+def is_version_compatible(backup_ver, current_ver):
+    """Compares semantic versions. Returns True if backup_ver <= current_ver."""
+    def parse_ver(v):
+        return [int(x) for x in re.sub(r'[^\d.]', '', str(v)).split('.') if x]
+    
+    b_parts = parse_ver(backup_ver)
+    c_parts = parse_ver(current_ver)
+    
+    for i in range(max(len(b_parts), len(c_parts))):
+        b = b_parts[i] if i < len(b_parts) else 0
+        c = c_parts[i] if i < len(c_parts) else 0
+        if b > c: return False
+        if b < c: return True
+    return True
+
+def manage_backup_rotation(category, max_count):
+    """Sorts backups by category prefix and enforces strict quotas."""
+    backup_dir = os.path.join(app.root_path, 'backups')
+    os.makedirs(backup_dir, exist_ok=True)
+    files = [os.path.join(backup_dir, f) for f in os.listdir(backup_dir) if category in f and f.endswith('.back')]
+    files.sort(key=os.path.getmtime, reverse=True) 
+    
+    for f in files[max_count:]:
+        try: os.remove(f)
+        except: pass
+
+def get_newest_backup():
+    """Returns the path to the absolute newest backup file across all categories."""
+    backup_dir = os.path.join(app.root_path, 'backups')
+    if not os.path.exists(backup_dir): return None
+    
+    files = [os.path.join(backup_dir, f) for f in os.listdir(backup_dir) if f.endswith('.back') and "temp_snapshot" not in f]
+    if not files: return None
+    return max(files, key=os.path.getmtime)
+
+def execute_backup(prefix, max_count, force=False):
+    """Takes a snapshot of the database. Skips if identical to newest backup."""
+    if not os.path.exists(DB_NAME) or not check_db_integrity(): return None
+    
+    backup_dir = os.path.join(app.root_path, 'backups')
+    os.makedirs(backup_dir, exist_ok=True)
+    temp_backup = os.path.join(backup_dir, "temp_snapshot.back")
+    
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10) as source:
+            with sqlite3.connect(temp_backup) as dest:
+                source.backup(dest) 
+    except Exception as e:
+        print(f"[!] Database snapshot failed: {e}")
+        if os.path.exists(temp_backup): 
+            try: os.remove(temp_backup)
+            except: pass
+        return None
+
+    if not force:
+        newest_existing = get_newest_backup()
+        if newest_existing and os.path.exists(newest_existing):
+            try:
+                if filecmp.cmp(temp_backup, newest_existing, shallow=False):
+                    os.remove(temp_backup)
+                    print(f"[*] No new data since last backup. Skipping {prefix} backup.")
+                    return None
+            except Exception as e:
+                pass
+
+    channel = get_safe_channel()
+    ts = int(time.time())
+    final_name = os.path.join(backup_dir, f"network_data_{prefix}_{channel}_v{APP_VERSION}_{ts}.back")
+    
+    try:
+        os.rename(temp_backup, final_name)
+        print(f"[*] Database backup created: {os.path.basename(final_name)}")
+        manage_backup_rotation(prefix, max_count)
+        return final_name
+    except Exception as e:
+        if os.path.exists(temp_backup): 
+            try: os.remove(temp_backup)
+            except: pass
+        return None
+
+def perform_startup_backup():
+    execute_backup("startup_good", 10, force=False)
+
+def schedule_routine_backups():
+    """Runs a silent background thread that creates a backup every 7 days if the app is left open."""
+    def backup_loop():
+        while True:
+            time.sleep(86400) # Sleep 24 hours
+            newest = get_newest_backup()
+            should_backup = False
+            
+            if not newest:
+                should_backup = True
+            else:
+                if time.time() - os.path.getmtime(newest) >= 7 * 86400:
+                    should_backup = True
+                    
+            if should_backup:
+                print("[*] 7 days have passed since the last backup. Running routine background backup...")
+                execute_backup("routine_good", 10, force=False)
+
+    t = threading.Thread(target=backup_loop, daemon=True)
+    t.start()
+
+def init_db():
+    """Initializes the database, handles automatic backup recovery, and runs migrations."""
+    # --- 1. CORRUPTION & AUTO-RECOVERY SYSTEM ---
+    if not check_db_integrity():
+        print("\n[!] DATABASE CORRUPTION DETECTED! Initiating emergency recovery...")
+        backup_dir = os.path.join(app.root_path, 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # A. Save the corrupted DB to the error rotation
+        channel = get_safe_channel()
+        ts = int(time.time())
+        corrupt_name = os.path.join(backup_dir, f"network_data_error_{channel}_v{APP_VERSION}_{ts}.back")
+        try:
+            shutil.copy2(DB_NAME, corrupt_name)
+            manage_backup_rotation("error_", 2)
+        except: pass
+        
+        # B. Safely wipe the broken database files
+        for ext in ["", "-wal", "-shm"]:
+            temp_file = f"{DB_NAME}{ext}"
+            if os.path.exists(temp_file): 
+                try: os.remove(temp_file)
+                except: pass
+                
+        # C. Find valid restore candidates (Must be "good" and Compatible)
+        candidates = []
+        if os.path.exists(backup_dir):
+            for f in os.listdir(backup_dir):
+                if "_good_" in f and f.endswith(".back"):
+                    file_path = os.path.join(backup_dir, f)
+                    match = re.search(r'_v([\d\.]+)_', f)
+                    if match and is_version_compatible(match.group(1), APP_VERSION):
+                        candidates.append(file_path)
+        
+        # D. Restore the newest valid backup or start fresh
+        if candidates:
+            best_backup = max(candidates, key=os.path.getmtime)
+            best_name = os.path.basename(best_backup)
+            try:
+                shutil.copy2(best_backup, DB_NAME)
+                msg = f"Database corruption detected. Successfully recovered using backup: '{best_name}'."
+                print(f"[✓] {msg}")
+                add_system_alert(msg)
+            except Exception as e:
+                msg = f"Database corruption detected. Backup restoration failed. A fresh database was created. Error: {e}"
+                print(f"[X] {msg}")
+                add_system_alert(msg)
+        else:
+            msg = "Database corruption detected. No compatible backups found. A fresh database was created."
+            print(f"[!] {msg}")
+            add_system_alert(msg)
+
+    # --- 2. SIZE CHECK ---
     check_db_size()
 
-# Ensure connections wait up to 10 seconds instead of immediately crashing on locks
+    # --- 3. TABLE CREATION ---
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         c = conn.cursor()
         c.execute("PRAGMA journal_mode=WAL;") 
-        c.execute("PRAGMA busy_timeout = 5000;") # Wait up to 5 seconds for locks to clear
+        c.execute("PRAGMA busy_timeout = 5000;")
         
-        # 1. History Table (Speed Tests)
-        # Added device_ip to store the local interface IP used for the test
         c.execute('''CREATE TABLE IF NOT EXISTS history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT, 
-                        network_name TEXT, 
-                        connection_type TEXT,
-                        download TEXT, 
-                        upload TEXT, 
-                        ping TEXT, 
-                        wan_ip TEXT, 
-                        device_ip TEXT,
-                        isp TEXT
-                    )''')
-        
-        # 2. Adapter Settings Table
+                        timestamp TEXT, network_name TEXT, connection_type TEXT,
+                        download TEXT, upload TEXT, ping TEXT, 
+                        wan_ip TEXT, device_ip TEXT, isp TEXT)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS adapter_settings (
-                        mac_address TEXT PRIMARY KEY, 
-                        custom_name TEXT, 
-                        is_visible INTEGER DEFAULT 1,
-                        is_primary INTEGER DEFAULT 0
-                    )''')
-
-        # 3. Networks Table 
+                        mac_address TEXT PRIMARY KEY, custom_name TEXT, 
+                        is_visible INTEGER DEFAULT 1, is_primary INTEGER DEFAULT 0)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS networks (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        gateway_mac TEXT,
-                        name TEXT, 
-                        last_scan TEXT, 
-                        gateway_ip TEXT
-                    )''')
-
-        # 4. Devices Table
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, gateway_mac TEXT,
+                        name TEXT, last_scan TEXT, gateway_ip TEXT)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS devices (
-                        mac_address TEXT, 
-                        network_id INTEGER, 
-                        hostname TEXT,
-                        custom_name TEXT, 
-                        ip_address TEXT, 
-                        last_seen TEXT,
-                        services TEXT, 
-                        is_online INTEGER DEFAULT 0,
-                        previous_ip TEXT,
-                        discovery_status TEXT DEFAULT 'New Device',
-                        vendor TEXT,
-                        PRIMARY KEY (mac_address, network_id),
-                        FOREIGN KEY(network_id) REFERENCES networks(id) ON DELETE CASCADE
-                    )''')
-        
-        # 5. Global Device Names
+                        mac_address TEXT, network_id INTEGER, hostname TEXT,
+                        custom_name TEXT, ip_address TEXT, last_seen TEXT,
+                        services TEXT, is_online INTEGER DEFAULT 0,
+                        previous_ip TEXT, discovery_status TEXT DEFAULT 'New Device',
+                        vendor TEXT, PRIMARY KEY (mac_address, network_id),
+                        FOREIGN KEY(network_id) REFERENCES networks(id) ON DELETE CASCADE)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS global_device_names (
-                        mac_address TEXT PRIMARY KEY, 
-                        custom_name TEXT
-                    )''')
-        
-        # 6. DNS Logs
+                        mac_address TEXT PRIMARY KEY, custom_name TEXT)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS dns_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        timestamp TEXT, 
-                        domain TEXT,
-                        result_ip TEXT, 
-                        record_type TEXT, 
-                        status TEXT,
-                        router_ip TEXT, 
-                        network_name TEXT, 
-                        lan_ip TEXT
-                    )''')
-        
-        # 7. Ping Logs
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, 
+                        domain TEXT, result_ip TEXT, record_type TEXT, status TEXT,
+                        router_ip TEXT, network_name TEXT, lan_ip TEXT)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS ping_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        timestamp TEXT, 
-                        target TEXT,
-                        status TEXT, 
-                        latency TEXT, 
-                        packet_loss TEXT, 
-                        network_context TEXT,
-                        router_ip TEXT, 
-                        network_name TEXT, 
-                        lan_ip TEXT
-                    )''')
-
-        # 8. Wi-Fi Scan History Table
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, 
+                        target TEXT, status TEXT, latency TEXT, packet_loss TEXT, 
+                        network_context TEXT, router_ip TEXT, network_name TEXT, lan_ip TEXT)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS wifi_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        scan_name TEXT,
-                        comments TEXT,
-                        results_json TEXT
-                    )''')
-        
-        # 9. Connection Types (For Speed Tests)
+                        scan_name TEXT, comments TEXT, results_json TEXT)''')
+                        
         c.execute('''CREATE TABLE IF NOT EXISTS connection_types (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT UNIQUE
-                    )''')
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
         
-        # Pre-populate connection types if the table is empty
         c.execute("SELECT COUNT(*) FROM connection_types")
         if c.fetchone()[0] == 0:
             for t in ["Ethernet", "Wi-Fi", "Mobile data"]:
                 c.execute("INSERT INTO connection_types (name) VALUES (?)", (t,))
 
-        # 10. System Settings
-        c.execute('''CREATE TABLE IF NOT EXISTS system_settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT
-                    )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
         c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('update_channel', 'stable')")
         
-        # --- MIGRATIONS (Updates existing databases safely) ---
-        
-        # VLAN Support Migration (Removes UNIQUE constraint from gateway_mac)
+        # --- 4. DATA MIGRATIONS ---
         try:
             c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='networks'")
             row = c.fetchone()
             if row and "gateway_mac TEXT UNIQUE" in row[0]:
                 print("[*] Migrating database for VLAN support...")
                 c.execute("ALTER TABLE networks RENAME TO networks_old")
-                c.execute('''CREATE TABLE networks (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                                gateway_mac TEXT, 
-                                name TEXT, 
-                                last_scan TEXT, 
-                                gateway_ip TEXT
-                            )''')
+                c.execute('''CREATE TABLE networks (id INTEGER PRIMARY KEY AUTOINCREMENT, gateway_mac TEXT, name TEXT, last_scan TEXT, gateway_ip TEXT)''')
                 c.execute("INSERT INTO networks (id, gateway_mac, name, last_scan, gateway_ip) SELECT id, gateway_mac, name, last_scan, gateway_ip FROM networks_old")
                 c.execute("DROP TABLE networks_old")
-                print("[✓] VLAN migration successful.")
-        except Exception as e:
-            print(f"[!] Migration check failed: {e}")
+        except Exception as e: pass
 
-        # Add inside init_db():
-        c.execute('''CREATE TABLE IF NOT EXISTS global_device_vendors (
-                        mac_address TEXT PRIMARY KEY, 
-                        custom_vendor TEXT
-                    )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS global_device_vendors (mac_address TEXT PRIMARY KEY, custom_vendor TEXT)''')
 
-        # Column Migrations for History Table
-        try: c.execute("ALTER TABLE history ADD COLUMN isp TEXT"); 
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE history ADD COLUMN connection_type TEXT"); 
-        except sqlite3.OperationalError: pass
-        # NEW: Migration to add device_ip to existing history tables
-        try: c.execute("ALTER TABLE history ADD COLUMN device_ip TEXT"); 
-        except sqlite3.OperationalError: pass
-        
-        # Adapter Settings Migrations
-        try: c.execute("ALTER TABLE adapter_settings ADD COLUMN is_visible INTEGER DEFAULT 1"); 
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE adapter_settings ADD COLUMN is_primary INTEGER DEFAULT 0"); 
-        except sqlite3.OperationalError: pass
+        for col in ["isp TEXT", "connection_type TEXT", "device_ip TEXT"]:
+            try: c.execute(f"ALTER TABLE history ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
+            
+        for col in ["is_visible INTEGER DEFAULT 1", "is_primary INTEGER DEFAULT 0"]:
+            try: c.execute(f"ALTER TABLE adapter_settings ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
 
-        # Tool Log Context Migrations
         for table in ['dns_logs', 'ping_logs']:
-            for col in ['router_ip', 'network_name', 'lan_ip']:
-                try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+            for col in ['router_ip TEXT', 'network_name TEXT', 'lan_ip TEXT']:
+                try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                 except sqlite3.OperationalError: pass 
 
-        # --- NEW: Protection Flags for Cleanup Tool ---
-        try: c.execute("ALTER TABLE history ADD COLUMN is_protected INTEGER DEFAULT 0")
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE wifi_history ADD COLUMN is_protected INTEGER DEFAULT 0")
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE dns_logs ADD COLUMN is_protected INTEGER DEFAULT 0")
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE ping_logs ADD COLUMN is_protected INTEGER DEFAULT 0")
-        except sqlite3.OperationalError: pass
+        for table in ['history', 'wifi_history', 'dns_logs', 'ping_logs']:
+            try: c.execute(f"ALTER TABLE {table} ADD COLUMN is_protected INTEGER DEFAULT 0")
+            except sqlite3.OperationalError: pass
 
-        # Device History Migrations
-        try: c.execute("ALTER TABLE devices ADD COLUMN previous_ip TEXT"); 
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE devices ADD COLUMN discovery_status TEXT DEFAULT 'New Device'"); 
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE devices ADD COLUMN vendor TEXT"); 
-        except sqlite3.OperationalError: pass
-        try: c.execute("ALTER TABLE devices ADD COLUMN custom_vendor TEXT"); 
-        except sqlite3.OperationalError: pass
+        for col in ["previous_ip TEXT", "discovery_status TEXT DEFAULT 'New Device'", "vendor TEXT", "custom_vendor TEXT"]:
+            try: c.execute(f"ALTER TABLE devices ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
 
         conn.commit()
         
@@ -3272,6 +3302,10 @@ def get_changelog():
     content = fetch_github_file("Changelog") 
     return jsonify({"status": "success", "changelog": content}) if content else jsonify({"status": "error"})
 
+def backup_for_update():
+    """Takes a safe DB snapshot right before updating (Max 5). Forces a backup."""
+    execute_backup("update_good", 5, force=True)
+
 @app.route('/api/update/apply', methods=['POST'])
 def update_software():
     """
@@ -3285,7 +3319,10 @@ def update_software():
         
         base_dir = app.root_path
         
-        # --- NEW: Create a Rollback Backup ---
+        # --- 1. Run the Database Backup System ---
+        backup_for_update()
+        
+        # --- 2. Create a System Rollback Backup ---
         print("[*] Creating rollback backup before updating...")
         rollback_zip = os.path.join(base_dir, "rollback.zip")
         try:
@@ -3294,11 +3331,11 @@ def update_software():
                     # Ignore heavy/unnecessary directories
                     if "venv" in dirs: dirs.remove("venv")
                     if "logs" in dirs: dirs.remove("logs")
+                    if "backups" in dirs: dirs.remove("backups") # Skip the new backup folder
                     if "__pycache__" in dirs: dirs.remove("__pycache__")
                     if ".git" in dirs: dirs.remove(".git")
                     
                     for file in files:
-                        # Ignore databases and existing backups
                         if file.endswith(".db") or file.endswith(".db-wal") or file.endswith(".db-shm"): continue
                         if file.endswith(".bak") or file == "rollback.zip": continue
                         
@@ -3306,11 +3343,8 @@ def update_software():
                         zipf.write(file_path, os.path.relpath(file_path, base_dir))
         except Exception as e:
             print(f"[!] Rollback backup warning: {e}")
-
-        # --- 1. Snapshot the state BEFORE updating ---
-        was_dev = "DEV" in get_global_version().upper()
         
-        # 1. Download
+        # 3. Download from GitHub
         req = urllib.request.Request(f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/zipball/{gh_set['branch']}")
         if gh_set.get('token'): req.add_header("Authorization", f"token {gh_set['token']}")
         
@@ -3318,7 +3352,7 @@ def update_software():
             with urllib.request.urlopen(req) as response: zip_data = io.BytesIO(response.read())
         except Exception as e: return jsonify({"error": f"Download failed: {e}"}), 500
 
-        # 2. Extract & Install
+        # 4. Extract & Install
         import tempfile
         with tempfile.TemporaryDirectory() as temp_dir:
             with zipfile.ZipFile(zip_data) as zip_ref:
@@ -3330,7 +3364,6 @@ def update_software():
                     rel_path = os.path.relpath(root, source_root)
                     dest_dir = os.path.join(base_dir, rel_path)
                     
-                    # Create directory and set 777
                     if not os.path.exists(dest_dir):
                         os.makedirs(dest_dir)
                     fix_permissions(dest_dir)
@@ -3352,27 +3385,8 @@ def update_software():
                                         shutil.move(src_file, dest_file)
                             else: shutil.move(src_file, dest_file)
                             
-                            # Apply Full R/W/X Permissions
                             fix_permissions(dest_file)
-                            
                         except Exception as e: print(f"[!] Update copy failed for {file}: {e}")
-
-        # --- 2. Database Copy Logic (Post-Extraction) ---
-        is_now_dev = "DEV" in get_global_version().upper()
-        
-        if not was_dev and is_now_dev:
-            prod_db = os.path.join(app.root_path, "network_data.db")
-            dev_db = os.path.join(app.root_path, "network_data_dev.db")
-            bak_db = dev_db + ".back"
-            
-            if os.path.exists(prod_db):
-                if os.path.exists(dev_db):
-                    if os.path.exists(bak_db):
-                        os.remove(bak_db) 
-                    os.rename(dev_db, bak_db)
-                
-                shutil.copy2(prod_db, dev_db)
-                print("[*] Transitioned to DEV: Copied Production DB to Dev DB.")
 
         print("[✓] Update applied. Permissions set to Read/Write/Execute for all.")
         threading.Thread(target=restart_server).start()
@@ -4234,6 +4248,62 @@ def delete_system_logs():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/system/backups/info', methods=['GET'])
+def get_backups_info():
+    """Returns the total size and file count of the local backups folder."""
+    backup_dir = os.path.join(app.root_path, 'backups')
+    total_size = 0
+    count = 0
+    if os.path.exists(backup_dir):
+        for f in os.listdir(backup_dir):
+            fp = os.path.join(backup_dir, f)
+            if os.path.isfile(fp) and f.endswith('.back'):
+                total_size += os.path.getsize(fp)
+                count += 1
+    size_mb = total_size / (1024 * 1024)
+    return jsonify({"size_mb": f"{size_mb:.2f}", "count": count})
+
+@app.route('/api/system/backups/create', methods=['POST'])
+def create_manual_backup():
+    """Generates a manual snapshot of the database (Max 5). Skips if no new data."""
+    try:
+        res = execute_backup("manual_good", 5, force=False)
+        if res:
+            return jsonify({"status": "success", "message": "Manual backup created successfully."})
+        else:
+            return jsonify({"status": "success", "message": "Database is already backed up (no new data detected)."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/system/backups/delete', methods=['POST'])
+def delete_backups():
+    """Deletes backups based on the selected mode (all vs keep_latest)."""
+    mode = (request.json or {}).get('mode', 'all')
+    backup_dir = os.path.join(app.root_path, 'backups')
+    
+    if not os.path.exists(backup_dir):
+        return jsonify({"status": "success", "message": "No backups to delete."})
+    
+    try:
+        files = [os.path.join(backup_dir, f) for f in os.listdir(backup_dir) if f.endswith('.back')]
+        
+        if mode == 'keep_latest':
+            safe_files = [f for f in files if "_good_" in f]
+            if safe_files:
+                latest_safe = max(safe_files, key=os.path.getmtime)
+                files.remove(latest_safe) 
+        
+        deleted_count = 0
+        for f in files:
+            try: 
+                os.remove(f)
+                deleted_count += 1
+            except: pass
+            
+        return jsonify({"status": "success", "message": f"{deleted_count} backup(s) deleted successfully."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def manage_boot_counter():
     """
     Crash loop protection: Increments a counter on boot. 
@@ -4311,31 +4381,30 @@ def manage_boot_counter():
         except: pass
 
 def clear_boot_counter():
-    """Clears the boot counter if the server survives startup and saves the port as known-good."""
+    """Clears the boot counter if the server survives startup, saves port, and triggers startup backup."""
     base_dir = app.root_path
     counter_file = os.path.join(base_dir, "boot_attempts.txt")
     
-    # 1. Clear the crash counter
     if os.path.exists(counter_file):
         try:
             os.remove(counter_file)
             print("[*] Server stable. Boot counter cleared.")
         except: pass
         
-    # --- NEW: Delete rollback file since boot was successful ---
     rollback_zip = os.path.join(base_dir, "rollback.zip")
     if os.path.exists(rollback_zip):
-        try:
-            os.remove(rollback_zip)
+        try: os.remove(rollback_zip)
         except: pass
         
-    # 2. Save the current port as the "last known good port"
     try:
         current_port = get_current_port()
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('last_good_port', ?)", (str(current_port),))
             conn.commit()
     except: pass
+    
+    # 4. Trigger the safe startup backup
+    perform_startup_backup()
 
 def get_available_port(start_port):
     """
@@ -4405,6 +4474,7 @@ if __name__ == '__main__':
     check_webport_file()
     check_dev_file()
     check_disk_space()
+    schedule_routine_backups()
     
     current_port = get_current_port()
 

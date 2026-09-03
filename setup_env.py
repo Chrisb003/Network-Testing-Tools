@@ -113,10 +113,9 @@ def setup_supervisor_logging(base_dir):
     # 2. Check Database for Full Logging preference
     full_log = False
     db_path = base_dir / "network_data.db"
-    if (base_dir / "dev").exists(): db_path = base_dir / "network_data_dev.db"
     try:
         if db_path.exists():
-            with sqlite3.connect(db_path, timeout=2.0) as conn:
+            with sqlite3.connect(db_path, timeout=5.0) as conn:
                 row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
                 if row and row[0] == '1': full_log = True
     except: pass
@@ -599,7 +598,7 @@ def get_configured_port(base_dir):
     if db_path.exists():
         try:
             import sqlite3
-            with sqlite3.connect(db_path, timeout=10.0) as conn:
+            with sqlite3.connect(db_path, timeout=5.0) as conn:
                 row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
                 if row: return int(row[0])
         except: pass
@@ -607,6 +606,69 @@ def get_configured_port(base_dir):
     return 81
 
 def main():
+    # --- Reinstall / Factory Reset Handler ---
+    reinstall_file = base_dir / "reinstall"
+    if reinstall_file.exists():
+        print("[*] 'reinstall' trigger detected! Initiating complete factory reset...")
+        
+        # Force Production (Stable/Main) channel configuration
+        prod_config = DEFAULT_GITHUB_CONFIG["stable"]
+        
+        print(f"[*] Downloading latest production release from {prod_config['repo']} ({prod_config['branch']})...")
+        zip_url = f"https://api.github.com/repos/{prod_config['owner']}/{prod_config['repo']}/zipball/{prod_config['branch']}"
+        req = urllib.request.Request(zip_url)
+        if prod_config.get('token'):
+            req.add_header("Authorization", f"token {prod_config['token']}")
+        req.add_header("Accept", "application/vnd.github.v3+json")
+        
+        try:
+            with urllib.request.urlopen(req) as response:
+                zip_data = io.BytesIO(response.read())
+            
+            with zipfile.ZipFile(zip_data) as zip_ref:
+                top_folder = zip_ref.namelist()[0]
+                
+                # Stage files: Extract everything except setup_env.py first
+                for member in zip_ref.infolist():
+                    if member.filename == top_folder: continue
+                    filename = Path(member.filename).relative_to(top_folder)
+                    
+                    if filename.name == "setup_env.py":
+                        setup_target_staging = base_dir / "setup_env_new.py"
+                        with zip_ref.open(member) as source, open(setup_target_staging, "wb") as target:
+                            shutil.copyfileobj(source, target)
+                        continue
+                        
+                    target_path = base_dir / filename
+                    if member.is_dir():
+                        target_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        with zip_ref.open(member) as source, open(target_path, "wb") as target:
+                            shutil.copyfileobj(source, target)
+            
+            # Wipe old runtime environment, database, logs, and backups
+            print("[*] Wiping old database, virtual environment, and runtime logs...")
+            for target_name in ["network_data.db", "network_data.db-wal", "network_data.db-shm", "venv", "logs", "backups", "rollback.zip", "boot_attempts.txt", "workers", "autostart"]:
+                p = base_dir / target_name
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                elif p.is_file():
+                    p.unlink(missing_ok=True)
+            
+            # Safely replace setup_env.py last
+            new_setup_staging = base_dir / "setup_env_new.py"
+            if new_setup_staging.exists():
+                new_setup_staging.replace(base_dir / "setup_env.py")
+            
+            # Clean up trigger file
+            reinstall_file.unlink(missing_ok=True)
+            print("[✓] Factory reset and clean reinstallation completed successfully.")
+            
+        except Exception as e:
+            print(f"[X] Reinstall failed: {e}")
+            sys.exit(1)
+
     base_dir = Path(__file__).parent.resolve()
     
     # --- NEW: Start logging immediately ---
@@ -633,14 +695,49 @@ def main():
         ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
         sys.exit(0)
 
-    # 3. RUN ONLINE-ONLY TASKS
+# 3. RUN ONLINE-ONLY TASKS
     if online:
         ensure_linux_prerequisites()
         install_git()
-        # If the main app file doesn't exist, we download it and trigger the permission flag
+        
+        # Check if the app files are missing and we need to fetch from GitHub
         if not (base_dir / APP_FILENAME).exists():
+            # --- Self-Containment / Isolation Check ---
+            known_app_items = {
+                "setup_env.py", "app.py", "version.json", "github_settings.json", 
+                "README.md", "Changelog", "templates", "static", "logs", "backups", 
+                "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
+                "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
+                "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
+                "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "Windows Launcher.bat"
+            }
+            
+            current_items = set(os.listdir(base_dir))
+            foreign_items = [item for item in current_items if item not in known_app_items and not item.startswith('.')]
+            
+            if foreign_items:
+                app_folder = base_dir / "NetworkDiagnostics"
+                app_folder.mkdir(exist_ok=True)
+                print(f"[*] Foreign files detected. Isolating application into: {app_folder}")
+                
+                for item in current_items:
+                    if item in known_app_items and item != "NetworkDiagnostics":
+                        src = base_dir / item
+                        dst = app_folder / item
+                        if src.exists() and not dst.exists():
+                            shutil.move(str(src), str(dst))
+                
+                new_setup = app_folder / "setup_env.py"
+                if not new_setup.exists():
+                    shutil.copy2(base_dir / "setup_env.py", new_setup)
+                
+                print(f"[*] Restarting setup script from isolated folder...")
+                os.chdir(app_folder)
+                subprocess.run([sys.executable, str(new_setup)] + sys.argv[1:])
+                sys.exit(0)
+            
             fetch_latest_from_github(base_dir)
-            needs_permission_fix = True 
+            needs_permission_fix = True
     
     # 4. ENVIRONMENT SETUP
     venv_path = base_dir / VENV_DIR_NAME

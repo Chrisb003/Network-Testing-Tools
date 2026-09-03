@@ -78,6 +78,8 @@
         loadConnectionTypes();
         loadSystemAlerts();
         loadUpdateChannels();
+        loadBackupInfo();
+
         const savedTouchMode = localStorage.getItem('touchMode') === 'true';
         if (savedTouchMode) document.body.classList.add('touch-mode');
         updateTouchIcon(savedTouchMode);
@@ -2651,6 +2653,60 @@ function dismissSystemAlert(msg, btnElement) {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({message: msg})
+    });
+}
+
+function loadBackupInfo() {
+    fetch('/api/system/backups/info')
+        .then(r => r.json())
+        .then(d => {
+            const badge = document.getElementById('backup-size-badge');
+            if (badge) badge.innerText = `${d.size_mb} MB (${d.count} files)`;
+        }).catch(e => console.error(e));
+}
+
+function createLocalBackup() {
+    const btn = event.currentTarget;
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
+    btn.disabled = true;
+    
+    fetch('/api/system/backups/create', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === 'success') {
+                alert(d.message);
+                loadBackupInfo(); 
+            } else {
+                alert("Error: " + d.error);
+            }
+        })
+        .finally(() => { 
+            btn.innerHTML = origHtml; 
+            btn.disabled = false; 
+        });
+}
+
+function deleteLocalBackups(mode) {
+    let msg = mode === 'all' 
+        ? "Are you sure you want to delete ALL local backups?" 
+        : "Are you sure you want to delete all local backups EXCEPT the latest good one?";
+        
+    if(!confirm(msg)) return;
+    
+    fetch('/api/system/backups/delete', {
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: mode })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            alert(d.message);
+            loadBackupInfo(); 
+        } else {
+            alert("Error: " + (d.error || d.message));
+        }
     });
 }
 

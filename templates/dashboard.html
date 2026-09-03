@@ -568,20 +568,44 @@
                     <h5 class="mb-0"><i class="bi bi-database-fill-gear"></i> Backup & Migration</h5>
                 </div>
                 <div class="card-body">
-                    <p class="small text-muted">Export your entire database to a file or merge data from another device.</p>
+                    <!-- Local Backups Section -->
+                    <p class="small text-muted mb-2">Manage automated and manual local database backups.</p>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small fw-bold text-muted">Local Backup Storage:</span>
+                        <span id="backup-size-badge" class="badge bg-secondary">0.00 MB (0 files)</span>
+                    </div>
+                    
+                    <div class="d-grid gap-2 mb-3">
+                        <button class="btn btn-sm btn-outline-success" onclick="createLocalBackup()">
+                            <i class="bi bi-save"></i> Create Local Backup Now
+                        </button>
+                        <div class="btn-group w-100">
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteLocalBackups('keep_latest')">
+                                Keep Latest Only
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteLocalBackups('all')">
+                                Delete All Backups
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <hr>
+                    
+                    <!-- External Export/Import Section -->
+                    <p class="small text-muted mb-2">Export or Merge External Database Files</p>
                     <div class="d-grid gap-2">
-                        <button class="btn btn-outline-primary" onclick="location.href='/api/system/export_db'">
+                        <button class="btn btn-sm btn-outline-primary" onclick="location.href='/api/system/export_db'">
                             <i class="bi bi-cloud-download"></i> Export Database (.db)
                         </button>
                         <input type="file" id="db-import-input" class="hidden" accept=".db" onchange="handleImport(this)">
-                        <button class="btn btn-outline-warning" onclick="document.getElementById('db-import-input').click()">
+                        <button class="btn btn-sm btn-outline-warning" onclick="document.getElementById('db-import-input').click()">
                             <i class="bi bi-cloud-upload"></i> Import/Merge Database
                         </button>
                     </div>
                 </div>
             </div>
         </div>
-
+        
         <!-- Card 2: Database Maintenance -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-warning">
