@@ -4,7 +4,7 @@ The launcher scripts (`Windows Launcher.bat` and `Linux and MacOS Launcher.sh`) 
 
 The core `setup_env.py` script creates the local `venv` (virtual environment) and installs the required Python dependencies: `flask`, `psutil`, `scapy`, and `waitress`. It also handles OS-specific requirements, such as macOS CoreWLAN bindings and downloading the correct Ookla Speedtest CLI binary. 
 
-> **⚠️ Important:** Internet access is strictly required for a first-time installation to download dependencies.
+> **⚠️ Important:** Internet access is required for a first-time installation to download dependencies.
 
 If you prefer to set up the environment manually without the wrapper scripts, follow the platform-specific instructions below.
 

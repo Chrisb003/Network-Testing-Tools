@@ -4,6 +4,8 @@
 
 For manual installation instructions or to bypass the automated launcher scripts, please refer to the [Installation Guide](install.md).
 
+> **⚠️ Important:** Internet access is required for a first-time installation to download dependencies.
+
 ---
 
 ## 💻 Platform & OS Support
@@ -28,6 +30,7 @@ For manual installation instructions or to bypass the automated launcher scripts
 * **Data Protection**: Users can "lock" specific speed tests or Wi-Fi scans to protect them from being wiped during automated database cleanups.
 * **Access Control**: Optional HTTP Basic Authentication with secure password hashing.
 * **Accessible UI**: Includes Light/Dark mode toggles and a dedicated "Touch Mode" to increase button targets for tablets and mobile devices.
+* **No internet required for most features**: Once the app is setup it can run offline. Speed test wont work without internet nor will the feature to fetch the vendors for devices after a network scan.
 
 ---
 
