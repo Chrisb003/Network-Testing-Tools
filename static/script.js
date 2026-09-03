@@ -32,6 +32,16 @@
             .replace(/>/g, "&gt;");
     }
 
+    const SERVICE_PORT_MAP = {
+    "SSH": "22", "HTTP": "80", "HTTPS": "443", "HTTP (8080)": "8080", 
+    "HTTPS (8443)": "8443", "Flask/UPnP": "5000", "Portainer/Admin": "9000"
+    };
+
+    function convertServicesToPorts(servicesStr) {
+        if (!servicesStr || servicesStr === "None" || servicesStr === "NONE") return "None";
+        return servicesStr.split(',').map(s => SERVICE_PORT_MAP[s.trim()] || s.trim()).join(', ');
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
         setTheme(localStorage.getItem('theme') || 'dark');
         
@@ -1116,7 +1126,7 @@ function viewDeviceDetails(mac, name, vendor) {
     const tbody = document.getElementById('devHistModalBody');
     const exportBtn = document.getElementById('btn-export-dev-modal');
     
-    tbody.innerHTML = '<tr><td colspan="4" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
     exportBtn.style.display = 'none'; // Hide export until data is loaded
     
     devHistModal.show();
@@ -1160,17 +1170,22 @@ function viewDeviceDetails(mac, name, vendor) {
                 else if (x.previous_ip) historyHtml = `<span class="badge bg-warning text-dark">IP Changed <small>(${x.previous_ip})</small></span>`;
                 else historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
 
+                let serviceHtml = x.services && x.services !== "None" && x.services !== "NONE" 
+                    ? `<span class="small">${escapeHTML(x.services)}</span>` 
+                    : '<span class="text-muted">-</span>';
+
                 return `
                 <tr>
                     <td><strong>${escapeHTML(x.network_name)}</strong></td>
                     <td class="font-monospace">${escapeHTML(x.ip_address)}</td>
+                    <td>${serviceHtml}</td>
                     <td>${historyHtml}</td>
                     <td><small>${escapeHTML(x.last_seen)}</small></td>
                 </tr>`;
-            }).join('') : '<tr><td colspan="4" class="text-center p-3">No data available.</td></tr>';
+            }).join('') : '<tr><td colspan="5" class="text-center p-3">No data available.</td></tr>';
         })
         .catch(err => {
-            tbody.innerHTML = `<tr><td colspan="4" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
         });
 }
 
@@ -1182,11 +1197,12 @@ function exportSingleDeviceHistory(mac, name) {
             if (x.previous_ip) historyText = `IP Changed (${x.previous_ip})`;
 
             return {
-                "Network Name": x.network_name,
-                "IP Address": x.ip_address,
-                "Status": historyText,
-                "Last Seen": x.last_seen
-            };
+            "Network Name": x.network_name,
+            "IP Address": x.ip_address,
+            "Services (Ports)": convertServicesToPorts(x.services), // <-- Updated
+            "Status": historyText,
+            "Last Seen": x.last_seen
+        };
         });
 
         fetch('/api/devices/export', {
@@ -1268,7 +1284,7 @@ function exportSpecificNetwork(id, name) {
             "IP Address": d.ip_address || "0.0.0.0",
             "MAC Address": d.mac_address || "Unknown",
             "Status": d.is_online ? "Online" : "Offline",
-            "Services": d.services || "None",
+            "Services (Ports)": convertServicesToPorts(d.services), // <-- Updated
             "History": historyText
         };
     });
@@ -1604,7 +1620,7 @@ function resolveMissingVendors(devices) {
             "IP Address": d.ip_address || "0.0.0.0",
             "MAC Address": d.mac_address || "Unknown",
             "Status": d.is_online ? "Online" : "Offline",
-            "Services": d.services || "None",
+            "Services (Ports)": convertServicesToPorts(d.services), // <-- Updated
             "History": historyText
         };
     });
