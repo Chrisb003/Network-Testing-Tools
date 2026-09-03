@@ -16,6 +16,7 @@ import webbrowser
 from pathlib import Path
 import sqlite3
 from datetime import datetime, timedelta
+import sys; print(sys.version); import psutil; print(psutil.__version__)
 
 # --- Configuration ---
 SETUP_VERSION = "0.11.1"
@@ -455,6 +456,8 @@ def install_npcap_windows():
 
 def run_application(base_dir, venv_python):
     """Launches the main app, force-stops any hung instances, and auto-restarts on crash."""
+    import psutil
+
     app_path = base_dir / APP_FILENAME
     print("\n" + "="*60)
     print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
@@ -606,6 +609,8 @@ def get_configured_port(base_dir):
     return 81
 
 def main():
+    base_dir = Path(__file__).parent.resolve()
+
     # --- Reinstall / Factory Reset Handler ---
     reinstall_file = base_dir / "reinstall"
     if reinstall_file.exists():
@@ -665,11 +670,13 @@ def main():
             reinstall_file.unlink(missing_ok=True)
             print("[✓] Factory reset and clean reinstallation completed successfully.")
             
+            # --- CRITICAL FIX: RESTART THE SETUP SCRIPT FRESH ---
+            print("[*] Restarting setup script with fresh environment...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+            
         except Exception as e:
             print(f"[X] Reinstall failed: {e}")
             sys.exit(1)
-
-    base_dir = Path(__file__).parent.resolve()
     
     # --- NEW: Start logging immediately ---
     setup_supervisor_logging(base_dir)
@@ -695,7 +702,7 @@ def main():
         ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
         sys.exit(0)
 
-# 3. RUN ONLINE-ONLY TASKS
+    # 3. RUN ONLINE-ONLY TASKS
     if online:
         ensure_linux_prerequisites()
         install_git()
@@ -783,6 +790,7 @@ def main():
 
     # 7. LAUNCH
     run_application(base_dir, paths["python"])
+
 
 if __name__ == "__main__":
     main()
