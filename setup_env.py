@@ -709,7 +709,8 @@ def main():
                 "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
                 "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
                 "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
-                "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "Windows Launcher.bat"
+                "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "Windows Launcher.bat",
+                "install.md"
             }
             
             current_items = set(os.listdir(base_dir))
