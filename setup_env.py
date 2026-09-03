@@ -112,8 +112,7 @@ def setup_supervisor_logging(base_dir):
             if self.file:
                 # Dynamically check if we should write this line to the log file
                 is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
-                is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning'])
-                
+                is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning', 'audit'])
                 if is_full or is_error:
                     try:
                         self.file.write(text)

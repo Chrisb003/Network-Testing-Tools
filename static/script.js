@@ -54,12 +54,18 @@
                 document.getElementById('header-isp').innerText = d.isp;
         });
 
-        // Fetch Logging Setting
+// Fetch Logging Setting
         fetch('/api/settings/logging')
             .then(res => res.json())
             .then(data => {
                 const toggle = document.getElementById('logging-toggle');
                 if (toggle) toggle.checked = data.full_logging;
+                
+                // NEW: Populate the log size badge
+                const sizeBadge = document.getElementById('log-size-badge');
+                if (sizeBadge && data.size_mb) {
+                    sizeBadge.innerText = data.size_mb + ' MB';
+                }
             })
             .catch(err => console.error("Error fetching logging setting:", err));
 
@@ -2639,6 +2645,7 @@ function toggleProtection(type, id, currentState) {
     }
 
     // Handle clearing the system diagnostic logs
+// Handle clearing the system diagnostic logs
     function deleteSystemLogs() {
         if (!confirm("Are you sure you want to delete all system diagnostic logs?")) return;
         
@@ -2652,6 +2659,9 @@ function toggleProtection(type, id, currentState) {
             .then(d => {
                 if (d.status === "success") {
                     alert("System logs have been successfully cleared.");
+                    // NEW: Instantly reset the size badge on the UI
+                    const sizeBadge = document.getElementById('log-size-badge');
+                    if (sizeBadge) sizeBadge.innerText = '0.00 MB';
                 } else {
                     alert("Error: " + d.message);
                 }

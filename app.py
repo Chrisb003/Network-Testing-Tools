@@ -85,8 +85,8 @@ def setup_file_logging():
             if self.file:
                 # Dynamically check if we should write this line to the log file
                 is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
-                is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning'])
-                
+                is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning', 'audit'])
+
                 if is_full or is_error:
                     try:
                         self.file.write(text)
@@ -131,6 +131,10 @@ GITHUB_SETTINGS_DEV = {
     "token": "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",
     "branch": "dev"
 }
+
+# Chrome, Firefox, and Edge restricted ports
+RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
+
 
 def get_global_version():
     """Reads the current global version from local version.json."""
@@ -600,14 +604,13 @@ def get_linux_dns(interface_name):
         return "Unknown"
 
 def restart_server():
-    """Restarts the current Python script robustly on Windows, Linux, and macOS."""
+    """Signals the supervisor to restart the application."""
     print("[*] Triggering application restart in 2 seconds...")
     time.sleep(2)  # Allow the HTTP response to finish sending
     
-    python = sys.executable
-    # os.execl replaces the current process with a new one
-    # compatible with Windows (creates new process) and Unix (replaces process)
-    os.execl(python, python, *sys.argv)
+    # Simply exit the process. The setup_env.py supervisor will catch this
+    # and automatically spin up a fresh instance after clearing the port.
+    os._exit(0)
 
 def get_extended_iface_info():
     """
@@ -1721,6 +1724,44 @@ def get_wifi_rates():
         print(f"Error in get_wifi_rates: {e}")
     return rates
 
+# --- Audit Logging Middleware ---
+@app.after_request
+def audit_logger(response):
+    """Automatically logs configuration changes, deletions, and exports."""
+    # Only track successful state-changing or export requests
+    if response.status_code in [200, 201] and (request.method in ['POST', 'DELETE'] or 'export' in request.path or 'download' in request.path):
+        
+        # Ignore background polling and raw tool execution (we already log Ping, DNS, etc. manually)
+        ignore_paths = ['/api/speedtest', '/api/scan_network', '/api/dns/lookup', '/api/ping/run', '/api/vendor/lookup', '/api/wifi/save', '/api/live_bandwidth']
+        if any(p in request.path for p in ignore_paths) and 'export' not in request.path:
+            return response
+        
+        action = "System Action"
+        path = request.path
+        
+        if 'export' in path or 'download' in path: action = "Data Export"
+        elif 'delete' in path or 'clear' in path or 'cleanup' in path: action = "Data Deletion"
+        elif 'update' in path or 'rename' in path or 'settings' in path or 'bulk_hide' in path: action = "Configuration Change"
+        elif 'toggle_protection' in path: action = "Record Protection Toggled"
+        elif 'import' in path: action = "Database Merged"
+        
+        # Capture the payload context if it's a small JSON request
+        context = ""
+        if request.is_json:
+            try:
+                data = request.get_json()
+                if data:
+                    # Mask sensitive or huge data in the log
+                    if 'password' in data: data['password'] = '******'
+                    if 'results' in data: data.pop('results') 
+                    if 'rows' in data: data['rows'] = f"[{len(data['rows'])} items]"
+                    context = f" | Context: {json.dumps(data)}"
+            except: pass
+        
+        print(f"[*] Audit: {action} ({path}){context}")
+        
+    return response
+
 # --- Network & Device Management Routes ---
 
 @app.route('/api/networks')
@@ -2048,6 +2089,7 @@ def dns_lookup():
             (ts, domain, ip, "A", status, router_ip, net_name, lan_ip))
         conn.commit()
     
+    print(f"[*] DNS Lookup: {domain} -> {ip} ({status})")
     return jsonify({"timestamp": ts, "domain": domain, "ip": ip, "status": status})
 
 @app.route('/api/dns/logs')
@@ -2144,6 +2186,7 @@ def run_ping():
             (ts, target, status, latency, loss, net_name, router_ip, net_name, lan_ip))
         conn.commit()
 
+    print(f"[*] Ping {target}: {status} (Latency: {latency}, Loss: {loss})")
     return jsonify({
         "timestamp": ts, 
         "target": target, 
@@ -2546,6 +2589,7 @@ def get_wifi_networks():
         except Exception as db_err:
             print(f"[!] Database Auto-log Error: {db_err}")
 
+    print(f"[*] Wi-Fi Scan Complete. Full Results:\n{json.dumps(final_networks, indent=2)}")
     return jsonify(final_networks)
 
 @app.route('/api/speedtest', methods=['POST'])
@@ -2683,6 +2727,7 @@ def run_speedtest():
             """, (ts, name, conn_type, down, up, ping, wan, device_ip, isp))
             conn.commit()
             
+        print(f"[*] Speedtest Results: Down {down} | Up {up} | Ping {ping}")
         return jsonify({"download": down, "upload": up, "ping": ping})
 
     except subprocess.CalledProcessError as e:
@@ -3883,6 +3928,7 @@ def scan_network_stream():
                         conn.commit()
 
                     # Yield event immediately to browser
+                    print(f"[*] Active Device Found: {dev['mac']} ({dev['ip']}) - {dev['hostname']}")
                     yield f"data: {json.dumps({'type': 'device', 'device': dev})}\n\n"
                 except Exception:
                     pass
@@ -3914,7 +3960,11 @@ def scan_network_stream():
                 offline_devices.append(dev)
 
         # Attach the offline devices to the final complete packet
-        yield f"data: {json.dumps({'type': 'complete', 'network_id': network_id, 'network_name': final_network_name, 'offline_devices': offline_devices})}\n\n"
+        print(f"[*] Network Scan Complete. Appending {len(offline_devices)} offline devices to list.")
+        if offline_devices:
+            print(f"[*] Offline Devices Data:\n{json.dumps(offline_devices, indent=2)}")
+            
+        yield f"data: {json.dumps({'type': 'complete', 'network_id': network_id, 'network_name': final_network_name, 'offline_devices': offline_devices})}\n\n"     
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache',
@@ -4061,18 +4111,24 @@ def delete_system_logs():
         return jsonify({"status": "success", "message": "No logs to delete."})
         
     try:
-        # We use pathlib to easily iterate through the log files
         for file_path in Path(log_dir).glob('*.log'):
             try:
-                # Try to physically delete the file
                 file_path.unlink()
             except PermissionError:
-                # If Windows locks the active log file, we just wipe its contents to 0 bytes instead
                 with open(file_path, 'w') as f:
                     f.truncate(0)
             except Exception as e:
-                print(f"[!] Could not clear log file {file_path}: {e}")
-                
+                pass
+        
+        # IMPORTANT: Reset the active file pointer to zero so we don't create a massive file filled with blank space!
+        if hasattr(sys.stdout, 'file') and sys.stdout.file:
+            try: sys.stdout.file.seek(0)
+            except: pass
+        if hasattr(sys.stderr, 'file') and sys.stderr.file:
+            try: sys.stderr.file.seek(0)
+            except: pass
+            
+        # The Audit Middleware will automatically trigger right after this return statement!
         return jsonify({"status": "success", "message": "System logs deleted successfully."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -4183,11 +4239,17 @@ def clear_boot_counter():
 def get_available_port(start_port):
     """
     Checks for an available port starting from start_port up to 90.
-    If the start_port is already above 90, it will check the next 9 ports.
+    Explicitly skips known browser-restricted ports.
     """
     max_port = max(start_port + 9, 90)
     for port in range(start_port, max_port + 1):
+        if port in RESTRICTED_PORTS:
+            print(f"[*] Port {port} skipped (browser-restricted unsafe port).")
+            continue
+            
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # Tell the OS we are allowed to test ports that are in a TIME_WAIT state
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(('0.0.0.0', port))
                 return port
@@ -4264,17 +4326,23 @@ if __name__ == '__main__':
         
         sys.exit(1)
         
-    if available_port != current_port:
-        conflict_msg = f"Port conflict on {current_port}. Automatically fell back to open port {available_port}."
-        print(f"[*] {conflict_msg}")
-        add_system_alert(conflict_msg)
-        try:
-            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(available_port),))
-                conn.commit()
-        except: pass
-        current_port = available_port
-
+        if available_port != current_port:
+            # Check if the port was changed because it was restricted or just in use
+            if current_port in RESTRICTED_PORTS:
+                conflict_msg = f"Port {current_port} is restricted by browsers. Automatically migrated to safe port {available_port}."
+            else:
+                conflict_msg = f"Port conflict on {current_port}. Automatically fell back to open port {available_port}."
+                
+            print(f"[*] {conflict_msg}")
+            add_system_alert(conflict_msg)
+            
+            try:
+                with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                    conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(available_port),))
+                    conn.commit()
+            except: pass
+            current_port = available_port
+                
     # --- 2. Start a timer to clear the boot counter if the app stays alive for 5 seconds ---
     threading.Timer(5.0, clear_boot_counter).start()
 
