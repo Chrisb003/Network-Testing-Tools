@@ -4561,12 +4561,24 @@ if __name__ == '__main__':
 
     # Try to use the production-ready Waitress server
     try:
-            from waitress import serve
-            print("\n" + "="*60)
-            print(f"   DASHBOARD ACTIVE: http://0.0.0.0:{current_port}")
-            print("   (Production WSGI Server - No Warnings)")
-            print("="*60 + "\n")
-            worker_cfg = get_worker_config()
-            serve(app, host='0.0.0.0', port=current_port, threads=worker_cfg['server_threads'])
+        from waitress import serve
+        
+        # --- NEW: Get the real LAN IP for the console output ---
+        lan_ip = get_local_ip()
+        
+        print("\n" + "="*60)
+        print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
+        print(f"   (Local Access: http://127.0.0.1:{current_port})")
+        print("   (Production WSGI Server - No Warnings)")
+        print("="*60 + "\n")
+        
+        worker_cfg = get_worker_config()
+        # We still bind to 0.0.0.0 so other devices on the network can access it
+        serve(app, host='0.0.0.0', port=current_port, threads=worker_cfg['server_threads'])
     except ImportError:
+        lan_ip = get_local_ip()
+        print("\n" + "="*60)
+        print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
+        print("   (Development Server)")
+        print("="*60 + "\n")
         app.run(debug=True, host='0.0.0.0', port=current_port)

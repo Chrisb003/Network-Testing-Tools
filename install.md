@@ -10,7 +10,7 @@ If you prefer to set up the environment manually without the wrapper scripts, fo
 
 ---
 
-## <img src="https://cdn.simpleicons.org/windows/0078D4" width="28" align="top" /> Windows
+## <img src="https://cdn.simpleicons.org/windows11/0078D4" width="28" align="top" /> Windows
 
 ### Prerequisites
 Install or enable the following before running the setup script:
