@@ -192,12 +192,15 @@ def check_db_size():
         print(f"[*] Could not check DB size: {e}")
 
 def get_safe_channel():
-    """Reads the update channel safely for backup naming without crashing on locks."""
+    """Reads the update channel safely and sanitizes it for safe file naming."""
     try:
         if os.path.exists(DB_NAME):
             with sqlite3.connect(DB_NAME, timeout=2.0) as conn:
                 row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
-                return row[0] if row else 'stable'
+                if row and row[0]:
+                    # STRIP ODD CHARACTERS: Only allow letters, numbers, underscores, and dashes
+                    clean_channel = re.sub(r'[^a-zA-Z0-9_\-]', '', str(row[0]))
+                    return clean_channel if clean_channel else 'stable'
     except: pass
     return 'stable'
 
@@ -215,6 +218,13 @@ def is_version_compatible(backup_ver, current_ver):
         if b > c: return False
         if b < c: return True
     return True
+
+def get_safe_filename(name):
+    """Strips Windows/Mac/Linux invalid file path characters from a string."""
+    if not name: return "Unknown"
+    # Removes \ / * ? : " < > | and replaces spaces with underscores
+    safe = re.sub(r'[\\/*?:"<>|]', '', str(name)).replace(" ", "_")
+    return safe if safe else "Export"
 
 def manage_backup_rotation(category, max_count):
     """Sorts backups by category prefix and enforces strict quotas."""
@@ -268,10 +278,13 @@ def execute_backup(prefix, max_count, force=False):
 
     channel = get_safe_channel()
     ts = int(time.time())
+    
+    # OS-Agnostic Safe Naming
     final_name = os.path.join(backup_dir, f"network_data_{prefix}_{channel}_v{APP_VERSION}_{ts}.back")
     
     try:
-        os.rename(temp_backup, final_name)
+        # CHANGED: os.replace is safer than os.rename on Windows (prevents FileExistsError)
+        os.replace(temp_backup, final_name)
         print(f"[*] Database backup created: {os.path.basename(final_name)}")
         manage_backup_rotation(prefix, max_count)
         return final_name
@@ -2921,7 +2934,7 @@ def bulk_export_networks():
                 net = conn.execute("SELECT name FROM networks WHERE id=?", (net_id,)).fetchone()
                 if not net: continue
                 
-                net_name = net['name'].replace(" ", "_")
+                net_name = get_safe_filename(net['name'])
                # Replace the inner CSV writing loop in bulk_export_networks:
                 devices = conn.execute("SELECT hostname, custom_name, ip_address, previous_ip, discovery_status, mac_address, is_online, services FROM devices WHERE network_id=?", (net_id,)).fetchall()
                 
@@ -2953,7 +2966,7 @@ def bulk_export_wifi():
                 scan = conn.execute("SELECT scan_name, results_json FROM wifi_history WHERE id=?", (scan_id,)).fetchone()
                 if not scan: continue
                 
-                scan_name = scan['scan_name'].replace(" ", "_")
+                scan_name = get_safe_filename(scan['scan_name'])
                 results = json.loads(scan['results_json'])
                 
                 csv_out = io.StringIO()
@@ -3053,7 +3066,7 @@ def export_database():
 def import_database():
     """
     Imports data from another database file and merges it.
-    Uses 'IS' for NULL-safe comparisons and updates device metadata.
+    Validates file integrity before performing a backup and merge.
     """
     if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
@@ -3064,18 +3077,47 @@ def import_database():
         tmp_path = tmp.name
 
     try:
-        conn_local = sqlite3.connect(DB_NAME, timeout=10.0)
+        # --- 1. VALIDATE THE UPLOADED FILE FIRST ---
         conn_remote = sqlite3.connect(tmp_path)
-        conn_remote.row_factory = sqlite3.Row
-        
-        cursor_l = conn_local.cursor()
         cursor_r = conn_remote.cursor()
+        
+        try:
+            # A. Check if it's a valid, uncorrupted SQLite database
+            cursor_r.execute("PRAGMA integrity_check;")
+            res = cursor_r.fetchone()
+            if not res or res[0].lower() != "ok":
+                conn_remote.close()
+                os.remove(tmp_path)
+                return jsonify({"error": "Uploaded file is corrupted or is not a valid SQLite database."}), 400
+                
+            # B. Check if it's OUR database by looking for a core table
+            cursor_r.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='networks';")
+            if not cursor_r.fetchone():
+                conn_remote.close()
+                os.remove(tmp_path)
+                return jsonify({"error": "Invalid database format. Missing required application tables."}), 400
+                
+        except sqlite3.DatabaseError:
+            # Catches cases where a completely random file (like an image) was uploaded
+            conn_remote.close()
+            os.remove(tmp_path)
+            return jsonify({"error": "Uploaded file is not a valid database."}), 400
 
-        # 1. Merge Networks (ID Mapping)
+        # --- 2. VALIDATION PASSED: CREATE SAFETY BACKUP ---
+        print("[*] Uploaded database verified. Creating pre-import backup...")
+        execute_backup("pre_import_good", 5, force=True)
+        
+        # Re-initialize the remote cursor with Row factory for the merge process
+        conn_remote.row_factory = sqlite3.Row
+        cursor_r = conn_remote.cursor()
+        
+        conn_local = sqlite3.connect(DB_NAME, timeout=10.0)
+        cursor_l = conn_local.cursor()
+
+        # 3. Merge Networks (ID Mapping)
         network_map = {} 
         remote_networks = cursor_r.execute("SELECT * FROM networks").fetchall()
         for net in remote_networks:
-            # Use 'IS' to handle cases where Gateway MAC/IP might be NULL
             cursor_l.execute("SELECT id FROM networks WHERE gateway_mac IS ? AND gateway_ip IS ?", 
                              (net['gateway_mac'], net['gateway_ip']))
             exists = cursor_l.fetchone()
@@ -3086,7 +3128,7 @@ def import_database():
                                  (net['gateway_mac'], net['name'], net['last_scan'], net['gateway_ip']))
                 network_map[net['id']] = cursor_l.lastrowid
 
-        # 2. Merge Devices (Updating metadata)
+        # 4. Merge Devices (Updating metadata)
         remote_devices = cursor_r.execute("SELECT * FROM devices").fetchall()
         for dev in remote_devices:
             new_net_id = network_map.get(dev['network_id'])
@@ -3105,7 +3147,7 @@ def import_database():
                 """, (dev['mac_address'], new_net_id, dev['hostname'], dev['custom_name'], 
                       dev['ip_address'], dev['last_seen'], dev['services'], dev['is_online']))
 
-        # 3. Merge Logs (History, Ping, DNS)
+        # 5. Merge Logs (History, Ping, DNS)
         tables_to_append = {
             'history': ['timestamp', 'network_name', 'connection_type', 'download', 'upload', 'ping', 'wan_ip', 'device_ip', 'isp'],
             'dns_logs': ['timestamp', 'domain', 'result_ip', 'record_type', 'status', 'router_ip', 'network_name', 'lan_ip'],
@@ -3116,7 +3158,6 @@ def import_database():
         for table, cols in tables_to_append.items():
             remote_data = cursor_r.execute(f"SELECT * FROM {table}").fetchall()
             for row in remote_data:
-                # NULL-safe duplicate check using 'IS'
                 placeholders = " AND ".join([f"{c} IS ?" for c in cols])
                 cursor_l.execute(f"SELECT 1 FROM {table} WHERE {placeholders}", [row[c] for c in cols])
                 if not cursor_l.fetchone():
@@ -3124,7 +3165,7 @@ def import_database():
                     val_placeholders = ", ".join(["?" for _ in cols])
                     cursor_l.execute(f"INSERT INTO {table} ({col_str}) VALUES ({val_placeholders})", [row[c] for c in cols])
 
-        # 4. Global Settings
+        # 6. Global Settings
         remote_global = cursor_r.execute("SELECT * FROM global_device_names").fetchall()
         for g in remote_global:
             cursor_l.execute("INSERT OR REPLACE INTO global_device_names (mac_address, custom_name) VALUES (?, ?)", 
@@ -3134,7 +3175,7 @@ def import_database():
         conn_local.close()
         conn_remote.close()
         os.remove(tmp_path)
-        return jsonify({"status": "success", "message": "Database merged successfully!"})
+        return jsonify({"status": "success", "message": "Database merged successfully! A backup was created prior to the merge."})
 
     except Exception as e:
         if os.path.exists(tmp_path): os.remove(tmp_path)
@@ -3497,7 +3538,7 @@ def export_wifi_csv(scan_id):
         if not row:
             return "Scan not found", 404
 
-        scan_name = row[0].replace(" ", "_")
+        scan_name = get_safe_filename(row[0])
         results = json.loads(row[1])
 
         output = io.StringIO()

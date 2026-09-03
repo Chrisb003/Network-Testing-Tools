@@ -6,7 +6,7 @@ import platform
 import shutil
 import urllib.request
 import zipfile
-import tarfile  # Added for Linux .tgz support
+import tarfile
 import io
 import ctypes
 import stat
@@ -15,8 +15,8 @@ import time
 import webbrowser
 from pathlib import Path
 import sqlite3
+import psutil
 from datetime import datetime, timedelta
-import sys; print(sys.version); import psutil; print(psutil.__version__)
 
 # --- Configuration ---
 SETUP_VERSION = "0.11.1"
@@ -611,6 +611,15 @@ def get_configured_port(base_dir):
 def main():
     base_dir = Path(__file__).parent.resolve()
 
+    # --- VENV EXECUTION SAFEGUARD ---
+    # Prevents silent crashes by ensuring the script doesn't delete the python interpreter it is actively using.
+    venv_dir_full = (base_dir / VENV_DIR_NAME).resolve()
+    if str(venv_dir_full) in str(Path(sys.executable).resolve()):
+        system_py = shutil.which("python3") or shutil.which("python")
+        if system_py and Path(system_py).resolve() != Path(sys.executable).resolve():
+            print("[*] Detected execution inside venv. Re-launching with system Python...")
+            os.execv(system_py, [system_py] + sys.argv)
+
     # --- Reinstall / Factory Reset Handler ---
     reinstall_file = base_dir / "reinstall"
     if reinstall_file.exists():
@@ -652,38 +661,56 @@ def main():
                         with zip_ref.open(member) as source, open(target_path, "wb") as target:
                             shutil.copyfileobj(source, target)
             
-            # Wipe old runtime environment, database, logs, and backups
+            # Wipe old runtime environment, database, logs, and backups (Cross-Platform Safe)
             print("[*] Wiping old database, virtual environment, and runtime logs...")
             for target_name in ["network_data.db", "network_data.db-wal", "network_data.db-shm", "venv", "logs", "backups", "rollback.zip", "boot_attempts.txt", "workers", "autostart"]:
                 p = base_dir / target_name
                 if p.is_dir():
                     shutil.rmtree(p, ignore_errors=True)
-                elif p.is_file():
-                    p.unlink(missing_ok=True)
+                elif p.exists():
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass # Safely ignore locked files
             
-            # Safely replace setup_env.py last
+            # Safely replace setup_env.py last (Handles Windows Execution Locks)
             new_setup_staging = base_dir / "setup_env_new.py"
-            if new_setup_staging.exists():
-                new_setup_staging.replace(base_dir / "setup_env.py")
+            target_setup = base_dir / "setup_env.py"
             
-            # Clean up trigger file
-            reinstall_file.unlink(missing_ok=True)
+            if new_setup_staging.exists():
+                try:
+                    if target_setup.exists():
+                        try:
+                            target_setup.unlink()
+                        except OSError:
+                            # Windows fallback: Rename the currently running script so we can overwrite it
+                            target_setup.rename(base_dir / f"setup_env_{int(time.time())}.old")
+                    new_setup_staging.rename(target_setup)
+                except Exception as e:
+                    print(f"[!] Warning: Could not cleanly replace setup_env.py: {e}")
+            
+            # Clean up trigger file safely
+            try:
+                reinstall_file.unlink()
+            except OSError:
+                pass
+                
             print("[✓] Factory reset and clean reinstallation completed successfully.")
             
             # --- CRITICAL FIX: RESTART THE SETUP SCRIPT FRESH ---
             print("[*] Restarting setup script with fresh environment...")
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            system_py = shutil.which("python3") or shutil.which("python") or sys.executable
+            os.execv(system_py, [system_py] + sys.argv)
             
         except Exception as e:
             print(f"[X] Reinstall failed: {e}")
             sys.exit(1)
     
-    # --- NEW: Start logging immediately ---
+    # --- Start logging immediately ---
     setup_supervisor_logging(base_dir)
     
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
 
-    # Flag to track if we need to run the final permission loop
     needs_permission_fix = False
 
     # 1. INTERNET CONNECTIVITY CHECK
@@ -716,7 +743,7 @@ def main():
                 "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
                 "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
                 "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
-                "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "Windows Launcher.bat",
+                "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "windows launcher.bat",
                 "install.md"
             }
             
@@ -733,7 +760,10 @@ def main():
                         src = base_dir / item
                         dst = app_folder / item
                         if src.exists() and not dst.exists():
-                            shutil.move(str(src), str(dst))
+                            try:
+                                shutil.move(str(src), str(dst))
+                            except Exception as e:
+                                print(f"[!] Warning: Could not move {item}: {e}")
                 
                 new_setup = app_folder / "setup_env.py"
                 if not new_setup.exists():
@@ -741,7 +771,8 @@ def main():
                 
                 print(f"[*] Restarting setup script from isolated folder...")
                 os.chdir(app_folder)
-                subprocess.run([sys.executable, str(new_setup)] + sys.argv[1:])
+                system_py = shutil.which("python3") or shutil.which("python") or sys.executable
+                subprocess.run([system_py, str(new_setup)] + sys.argv[1:])
                 sys.exit(0)
             
             fetch_latest_from_github(base_dir)
@@ -764,7 +795,6 @@ def main():
         install_speedtest_cli(paths["bin_dir"])
     
     # 6. CONDITIONAL PERMISSION FIX
-    # Only runs if files were just downloaded from GitHub
     if needs_permission_fix:
         print("[*] New files detected. Verifying file system permissions...")
         success_count = 0
@@ -790,7 +820,6 @@ def main():
 
     # 7. LAUNCH
     run_application(base_dir, paths["python"])
-
 
 if __name__ == "__main__":
     main()
