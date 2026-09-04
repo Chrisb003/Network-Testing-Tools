@@ -611,17 +611,47 @@ def get_configured_port(base_dir):
 def main():
     base_dir = Path(__file__).parent.resolve()
 
-    # --- VENV EXECUTION SAFEGUARD ---
-    # Prevents silent crashes by ensuring the script doesn't delete the python interpreter it is actively using.
+    # --- VENV EXECUTION SAFEGUARD (SMART TRIGGER) ---
+    # Only break out of the virtual environment if we are performing a destructive 
+    # action that requires deleting or moving the venv folder.
+    reinstall_file = base_dir / "reinstall"
+    needs_factory_reset = reinstall_file.exists()
+    
+    needs_isolation = False
+    if not (base_dir / APP_FILENAME).exists():
+        known_app_items = {
+            "setup_env.py", "app.py", "version.json", "github_settings.json", 
+            "README.md", "Changelog", "templates", "static", "logs", "backups", 
+            "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
+            "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
+            "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
+            "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "windows launcher.bat",
+            "install.md", "NetworkDiagnostics"
+        }
+        current_items = set(os.listdir(base_dir))
+        foreign_items = [item for item in current_items if item not in known_app_items and not item.startswith('.')]
+        if foreign_items:
+            needs_isolation = True
+
     venv_dir_full = (base_dir / VENV_DIR_NAME).resolve()
-    if str(venv_dir_full) in str(Path(sys.executable).resolve()):
+    is_in_venv = str(venv_dir_full) in str(Path(sys.executable).resolve())
+
+    if is_in_venv and (needs_factory_reset or needs_isolation):
+        # Extremely robust debugger detection via active modules
+        is_debugging = sys.gettrace() is not None or 'debugpy' in sys.modules or 'pydevd' in sys.modules
+        if is_debugging:
+            print("\n[!] DEBUGGER DETECTED DURING A DESTRUCTIVE BOOT!")
+            print("[!] The script needs to delete/move the 'venv' folder for a Factory Reset or File Isolation.")
+            print("[!] This will crash your active debugger due to file locks on Windows.")
+            print("[!] Please run the script normally (without debugging) to complete this action.\n")
+            sys.exit(1)
+
         system_py = shutil.which("python3") or shutil.which("python")
         if system_py and Path(system_py).resolve() != Path(sys.executable).resolve():
-            print("[*] Detected execution inside venv. Re-launching with system Python...")
+            print("[*] Destructive boot detected. Re-launching with system Python to release venv file locks...")
             os.execv(system_py, [system_py] + sys.argv)
 
     # --- Reinstall / Factory Reset Handler ---
-    reinstall_file = base_dir / "reinstall"
     if reinstall_file.exists():
         print("[*] 'reinstall' trigger detected! Initiating complete factory reset...")
         
