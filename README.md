@@ -60,7 +60,7 @@ The application runs on port **81** by default. Open a web browser and navigate 
 You can create these optional text files in the root directory before startup to trigger automated actions. *Once triggered, the system will automatically delete the file*:
 
 * `autostart`: Set the contents to `1` to automatically open the browser on startup, or `0` for headless mode.
-* `dev`: Forces the database to switch to the development update channel.
+* `dev`: Forces it to download from the development update channel if freshly downloading it.
 * `passwordreset`: Resets authentication credentials and disables login requirements on boot.
 * `cleardatabase`: Completely wipes the database and all temporary WAL/SHM files on startup.
 * `webport`: Contains a numeric port value (e.g., `8080`) to override the default web server port.
