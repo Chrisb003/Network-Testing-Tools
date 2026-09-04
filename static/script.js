@@ -1445,6 +1445,10 @@ function scanDevices() {
             b.disabled = false;
             b.innerHTML = '<i class="bi bi-search"></i> Scan';
             alert(data.message || 'Scan failed.');
+            // Add table reset here
+            if (allDevices.length === 0) {
+                tb.innerHTML = `<tr><td colspan="9" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> ${data.message}</td></tr>`;
+            }
         }
     };
 
@@ -1452,6 +1456,12 @@ function scanDevices() {
         eventSource.close();
         b.disabled = false;
         b.innerHTML = '<i class="bi bi-search"></i> Scan';
+        // NEW: Fix the table getting stuck visually if the stream crashes
+        if (allDevices.length === 0) {
+            tb.innerHTML = '<tr><td colspan="9" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> Connection to scanner lost.</td></tr>';
+        } else {
+            renderDevices(allDevices); // Render whatever was found before crash
+        }
     };
 }
 
