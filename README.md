@@ -65,3 +65,4 @@ You can create these optional text files in the root directory before startup to
 * `cleardatabase`: Completely wipes the database and all temporary WAL/SHM files on startup.
 * `webport`: Contains a numeric port value (e.g., `8080`) to override the default web server port.
 * `reinstall`: Triggers a complete factory reset. Wipes all files, environments, and databases, then re-downloads a fresh copy of the application from GitHub.
+* `workers`: Auto generated when the app starts but can be edited to change the number of workers for various functions. If set to high and app not loading it can be edited here.
