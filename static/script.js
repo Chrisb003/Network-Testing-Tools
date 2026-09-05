@@ -101,7 +101,6 @@
             .catch(err => console.error("Error fetching logging setting:", err));
 
         // Start Loops
-        setInterval(updateLiveRatesOnly, 3000);
         loadWorkerSettings();
         fetchAdapters(); 
         checkUpdates(); 
@@ -311,12 +310,26 @@ function deleteConnectionType(id) {
     }).then(loadConnectionTypes);
 }
 
-// Ensure the showPage function handles the new 'system' page
 function showPage(id, link) {
+    // Hide all pages
     document.querySelectorAll('.page-section').forEach(p => p.classList.add('hidden'));
+    
+    // Remove active class from all main nav links AND dropdown items
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    document.querySelectorAll('.dropdown-item').forEach(l => l.classList.remove('active'));
+    
+    // Show target page
     document.getElementById(id).classList.remove('hidden'); 
+    
+    // Highlight the clicked link
     link.classList.add('active');
+    
+    // If it's a dropdown item, also highlight its parent 'nav-link'
+    const parentDropdown = link.closest('.dropdown');
+    if (parentDropdown) {
+        const toggle = parentDropdown.querySelector('.nav-link.dropdown-toggle');
+        if (toggle) toggle.classList.add('active');
+    }
     
     // Refresh data based on page
     if(id === 'history') fetchHistory();
@@ -326,7 +339,6 @@ function showPage(id, link) {
     if(id === 'wifi-history') loadWifiHistory();
     if(id === 'device-history-page') loadDeviceHistory();
     if(id === 'wifi-networks-history') loadWifiNetworksHistory();
-    // System page doesn't need auto-refresh on load
 }
 
     // --- Core UI Helpers ---
@@ -612,7 +624,7 @@ let allNetworks = []; // Global array to hold the network data
         renderNetworks();
     }
 
-    function renderNetworks() {
+function renderNetworks() {
         const tb = document.getElementById('network-list');
         if(!tb) return;
         const paginatedData = getPaginatedData('networks');
@@ -620,6 +632,8 @@ let allNetworks = []; // Global array to hold the network data
         tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
             const safeName = escapeJS(n.name);
             const isChecked = tableState.networks.selected.has(String(n.id)) ? 'checked' : '';
+            const isProtected = n.is_protected ? 1 : 0; // NEW
+            
             return `
             <tr>
                 <td onclick="event.stopPropagation()"><input type="checkbox" class="networks-check" value="${n.id}" onchange="toggleSelection('networks', this)" ${isChecked}></td>
@@ -628,8 +642,11 @@ let allNetworks = []; // Global array to hold the network data
                 <td>${n.gateway_ip}</td>
                 <td><span class="badge bg-secondary">${n.device_count}</span></td>
                 <td><small>${n.last_scan}</small></td>
-                <td>
+                <td class="text-end">
                     <div class="btn-group">
+                        <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('networks', ${n.id}, ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                            <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${safeName}')" title="View Devices"><i class="bi bi-eye"></i> Load</button> 
                         <button class="btn btn-sm btn-outline-secondary" onclick="exportSpecificNetwork(${n.id}, '${safeName}')" title="Export Devices CSV"><i class="bi bi-download"></i></button> 
                         <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${safeName}')" title="Rename"><i class="bi bi-pencil"></i></button> 
@@ -1709,26 +1726,7 @@ function resolveMissingVendors(devices) {
         });
     });
 }
-    
-    f// Overrides the existing updateDeviceName so it refreshes BOTH tables if needed
-function updateDeviceName(mac, old) { 
-    const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
-    if(n !== null) {
-        fetch('/api/devices/update_name', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify({mac: mac, network_id: currentNetworkId || null, name: n})
-        }).then(() => {
-            // Refresh whichever page we are currently looking at
-            if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
-                loadNetworkDevices(currentNetworkId, ""); 
-            }
-            if (!document.getElementById('device-history-page').classList.contains('hidden')) {
-                loadDeviceHistory();
-            }
-        }); 
-    }
-}
+
 
     function filterDevices() { 
         const q = document.getElementById('device-filter').value.toLowerCase(); 
@@ -2372,6 +2370,8 @@ function renderWifiNetworksHistory() {
         tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
             const isChecked = tableState.wifiNetHist.selected.has(n.ssid) ? 'checked' : '';
             const safeSSID = escapeJS(n.ssid);
+            const isProtected = n.is_protected ? 1 : 0; // NEW
+            
             return `
             <tr style="cursor: pointer;" onclick="viewWifiNetworkDetails('${safeSSID}')">
                 <td onclick="event.stopPropagation()"><input type="checkbox" class="wifiNetHist-check" value="${n.ssid}" onchange="toggleSelection('wifiNetHist', this)" ${isChecked}></td>
@@ -2382,6 +2382,9 @@ function renderWifiNetworksHistory() {
                 <td><small class="text-muted">${n.first_seen}</small></td>
                 <td><small>${n.last_seen}</small></td>
                 <td class="text-end text-nowrap" onclick="event.stopPropagation()">
+                    <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('wifi_ssid', '${safeSSID}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock SSID (Protect from Cleanup)'}">
+                        <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                    </button>
                     <button class="btn btn-sm btn-outline-danger" onclick="deleteGlobalSSID('${safeSSID}')" title="Delete SSID"><i class="bi bi-trash"></i></button>
                 </td>
             </tr>`;
@@ -2953,26 +2956,6 @@ function deleteLocalBackups(mode) {
             });
     }
 
-    // Overrides the existing updateDeviceName so it refreshes BOTH tables if needed
-function updateDeviceName(mac, old) { 
-    const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
-    if(n !== null) {
-        fetch('/api/devices/update_name', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify({mac: mac, network_id: currentNetworkId || null, name: n})
-        }).then(() => {
-            // Refresh whichever page we are currently looking at
-            if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
-                loadNetworkDevices(currentNetworkId, ""); 
-            }
-            if (!document.getElementById('device-history-page').classList.contains('hidden')) {
-                loadDeviceHistory();
-            }
-        }); 
-    }
-}
-
 // Function to delete an individual SSID from the global history
 function deleteGlobalSSID(ssid) {
     if (!confirm(`Are you sure you want to completely delete "${ssid}" from all past Wi-Fi scans?`)) return;
@@ -2993,6 +2976,7 @@ function deleteGlobalSSID(ssid) {
 }
 
 // Updated toggleProtection to refresh the correct table based on type
+// Updated toggleProtection to refresh the correct table based on type
 function toggleProtection(type, id, currentState) {
     const newState = currentState ? 0 : 1; 
     fetch('/api/system/toggle_protection', {
@@ -3004,6 +2988,8 @@ function toggleProtection(type, id, currentState) {
         if(type === 'wifi') loadWifiHistory();
         if(type === 'dns') fetchToolLogs('dns');
         if(type === 'ping') fetchToolLogs('ping');
+        if(type === 'networks') loadNetworks();
+        if(type === 'wifi_ssid') loadWifiNetworksHistory(); 
         if(type === 'devices') {
             // Refresh the specific table we are looking at
             if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
@@ -3040,3 +3026,22 @@ function loadDatabaseInfo() {
         }
     }
 
+// Overrides the existing updateDeviceName so it refreshes BOTH tables if needed
+function updateDeviceName(mac, old) { 
+    const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
+    if (n !== null) {
+        fetch('/api/devices/update_name', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({mac: mac, network_id: currentNetworkId || null, name: n})
+        }).then(() => {
+            // Refresh whichever page we are currently looking at
+            if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
+                loadNetworkDevices(currentNetworkId, ""); 
+            }
+            if (!document.getElementById('device-history-page').classList.contains('hidden')) {
+                loadDeviceHistory();
+            }
+        }); 
+    }
+}

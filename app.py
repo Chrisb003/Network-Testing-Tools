@@ -429,7 +429,7 @@ def init_db():
 
         c.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
         c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('update_channel', 'stable')")
-
+        c.execute('''CREATE TABLE IF NOT EXISTS protected_wifi_ssids (ssid TEXT PRIMARY KEY)''')
         c.execute('''CREATE TABLE IF NOT EXISTS device_scans (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         mac_address TEXT, network_id INTEGER, 
@@ -1944,9 +1944,12 @@ def list_networks():
         result = []
         for net in networks:
             count = conn.execute("SELECT COUNT(*) FROM devices WHERE network_id=?", (net['id'],)).fetchone()[0]
+            # Convert to dict to safely grab is_protected
+            net_dict = dict(net)
             result.append({
-                "id": net['id'], "name": net['name'], "gateway_mac": net['gateway_mac'],
-                "gateway_ip": net['gateway_ip'], "last_scan": net['last_scan'], "device_count": count
+                "id": net_dict['id'], "name": net_dict['name'], "gateway_mac": net_dict['gateway_mac'],
+                "gateway_ip": net_dict['gateway_ip'], "last_scan": net_dict['last_scan'], "device_count": count,
+                "is_protected": net_dict.get('is_protected', 0)
             })
         return jsonify(result)
 
@@ -1994,7 +1997,8 @@ def update_device_name():
 def get_network_devices(net_id):
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
-        query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, custom_vendor FROM devices WHERE network_id=?"
+        # ADDED is_protected to the SELECT query here:
+        query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, custom_vendor, is_protected FROM devices WHERE network_id=?"
         devices = conn.execute(query, (net_id,)).fetchall()
         
         dev_list = [dict(d) for d in devices]
@@ -3790,24 +3794,29 @@ def get_wifi_history():
 def toggle_protection():
     d = request.json
     
-    # ADDED: 'dns' and 'ping' mapped to their respective tables
     table_map = {
         'history': 'history', 
         'wifi': 'wifi_history', 
         'devices': 'devices', 
         'networks': 'networks',
         'dns': 'dns_logs',
-        'ping': 'ping_logs'
+        'ping': 'ping_logs',
+        'wifi_ssid': 'protected_wifi_ssids' # NEW
     }
     
     table = table_map.get(d.get('type'))
     item_id = d.get('id')
     state = 1 if d.get('state') else 0
     
-    if table and item_id:
+    if table and item_id is not None:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             if table == 'devices':
                 conn.execute("UPDATE devices SET is_protected = ? WHERE mac_address = ?", (state, item_id))
+            elif table == 'protected_wifi_ssids':
+                if state:
+                    conn.execute("INSERT OR IGNORE INTO protected_wifi_ssids (ssid) VALUES (?)", (item_id,))
+                else:
+                    conn.execute("DELETE FROM protected_wifi_ssids WHERE ssid = ?", (item_id,))
             else:
                 conn.execute(f"UPDATE {table} SET is_protected = ? WHERE id = ?", (state, item_id))
             conn.commit()
@@ -4087,6 +4096,14 @@ def api_wifi_networks_history():
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
+            
+            # Fetch protected SSIDs
+            try:
+                protected_rows = conn.execute("SELECT ssid FROM protected_wifi_ssids").fetchall()
+                protected_ssids = {r['ssid'] for r in protected_rows}
+            except:
+                protected_ssids = set()
+            
             # Fetch all scans sorted oldest to newest to track first/last seen dates
             rows = conn.execute("SELECT timestamp, results_json FROM wifi_history ORDER BY timestamp ASC").fetchall()
             
@@ -4126,6 +4143,7 @@ def api_wifi_networks_history():
             for v in networks.values():
                 v["mac_count"] = len(v["macs"])
                 v.pop("macs") # Remove the set so it converts to JSON cleanly
+                v["is_protected"] = 1 if v["ssid"] in protected_ssids else 0 # Add protection status
                 result.append(v)
                 
             # Sort by most recently seen
@@ -4165,7 +4183,7 @@ def api_wifi_network_details():
 
 @app.route('/api/system/cleanup_orphaned_wifi', methods=['POST'])
 def cleanup_orphaned_wifi():
-    """Removes Wi-Fi networks that ONLY exist in deleted scans."""
+    """Removes Wi-Fi networks that ONLY exist in deleted scans, respecting SSID locks."""
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
@@ -4179,6 +4197,12 @@ def cleanup_orphaned_wifi():
                     for net in json.loads(row['results_json']):
                         if net.get('ssid'): active_ssids.add(net['ssid'])
                 except: pass
+                
+            # NEW: Add all protected SSIDs to the "active" list so they are never deleted
+            try:
+                prot_rows = c.execute("SELECT ssid FROM protected_wifi_ssids").fetchall()
+                for pr in prot_rows: active_ssids.add(pr['ssid'])
+            except: pass
             
             # Step 2: Extract JSON from deleted scans and prune them
             c.execute("SELECT id, results_json FROM wifi_history WHERE is_deleted=1")
@@ -4188,15 +4212,12 @@ def cleanup_orphaned_wifi():
             for row in deleted_scans:
                 try:
                     nets = json.loads(row['results_json'])
-                    # Filter out any network that isn't found in an active scan
                     filtered_nets = [n for n in nets if n.get('ssid') in active_ssids]
                     
                     if len(filtered_nets) == 0:
-                        # No active networks left in this JSON blob; hard delete the row completely
                         c.execute("DELETE FROM wifi_history WHERE id=?", (row['id'],))
                         removed_count += 1
                     elif len(filtered_nets) < len(nets):
-                        # Some orphaned networks were removed; update the JSON blob with the survivors
                         c.execute("UPDATE wifi_history SET results_json=? WHERE id=?", (json.dumps(filtered_nets), row['id']))
                         removed_count += 1
                 except:

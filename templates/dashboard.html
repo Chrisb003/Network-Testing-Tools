@@ -90,18 +90,40 @@
     </div>
     </div>
 
-    <ul class="nav nav-pills mb-4 justify-content-center">
+    <ul class="nav nav-pills mb-4 justify-content-center" id="main-nav">
         <li class="nav-item"><a class="nav-link active" onclick="showPage('adapters', this)">Interfaces</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('devices', this)">Devices</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('networks', this)">Networks</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('device-history-page', this)">Device History</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi', this)">Wi-Fi</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi-history', this)">Wi-Fi Scan History</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('wifi-networks-history', this)">Wi-Fi History</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('dns-tool', this)">DNS Lookup</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('ping-tool', this)">Ping Tool</a></li>
+        
+        <!-- Dropdown: Network Scanning -->
+        <li class="nav-item dropdown custom-hover-dropdown">
+            <a class="nav-link dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" aria-expanded="false">Network Scanning</a>
+            <ul class="dropdown-menu shadow">
+                <li><a class="dropdown-item" onclick="showPage('devices', this)">Network Scan</a></li>
+                <li><a class="dropdown-item" onclick="showPage('networks', this)">Network Scan history</a></li>
+                <li><a class="dropdown-item" onclick="showPage('device-history-page', this)">Device History</a></li>
+            </ul>
+        </li>
+
+        <!-- Dropdown: Wifi Scanning -->
+        <li class="nav-item dropdown custom-hover-dropdown">
+            <a class="nav-link dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" aria-expanded="false">Wifi Scanning</a>
+            <ul class="dropdown-menu shadow">
+                <li><a class="dropdown-item" onclick="showPage('wifi', this)">Scan Wi-Fi</a></li>
+                <li><a class="dropdown-item" onclick="showPage('wifi-history', this)">WiFi Scan History</a></li>
+                <li><a class="dropdown-item" onclick="showPage('wifi-networks-history', this)">Wifi History</a></li>
+            </ul>
+        </li>
+
+        <!-- Dropdown: Other Tools -->
+        <li class="nav-item dropdown custom-hover-dropdown">
+            <a class="nav-link dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" aria-expanded="false">Other Tools</a>
+            <ul class="dropdown-menu shadow">
+                <li><a class="dropdown-item" onclick="showPage('dns-tool', this)">DNS Lookup</a></li>
+                <li><a class="dropdown-item" onclick="showPage('ping-tool', this)">Ping Tool</a></li>
+            </ul>
+        </li>
+
         <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">Speed Test History</a></li>
-        <li class="nav-item"><a class="nav-link" onclick="showPage('system', this)">System</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('system', this)">Settings</a></li>
     </ul>
 
     <div id="adapters" class="page-section">
@@ -143,7 +165,7 @@
 <div id="devices" class="page-section hidden">
     <div class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-            <h5 class="mb-0 text-nowrap me-3" id="device-tab-title">Connected Devices</h5>
+            <h5 class="mb-0 text-nowrap me-3" id="device-tab-title">Network Scan</h5>
             <div class="d-flex gap-2 align-items-center">
                 <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
                 
@@ -180,7 +202,7 @@
     <div id="networks" class="page-section hidden">
         <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-                <h5 class="mb-0 text-nowrap me-3">Saved Networks</h5>
+                <h5 class="mb-0 text-nowrap me-3">Network Scan History</h5>
                 <div class="d-flex gap-2 align-items-center">
                     <input type="text" id="networks-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterNetworks()">
                     <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('networks')">Delete Selected</button>
@@ -387,7 +409,7 @@
     <div id="wifi" class="page-section hidden">
         <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Wi-Fi Networks</h5>
+                <h5 class="mb-0">Scan Wi-Fi</h5>
                 <div class="d-flex gap-2">
                     <button class="btn btn-info btn-sm text-white" id="wifi-scan-btn" onclick="scanWifi()">
                         <i class="bi bi-search"></i> Scan Wi-Fi
