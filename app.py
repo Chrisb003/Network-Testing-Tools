@@ -2677,18 +2677,45 @@ def dismiss_system_alert():
 
 # --- Misc (WiFi, Speedtest, History, Update) ---
 
+@app.route('/api/wifi/interfaces')
+def get_wifi_interfaces():
+    """Returns a dynamic list of available Wi-Fi interfaces based on the OS."""
+    ifaces = []
+    sys_plat = platform.system()
+    try:
+        if sys_plat == "Windows":
+            out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True)
+            for line in out.split('\n'):
+                if "Name" in line and ":" in line:
+                    ifaces.append(line.split(":", 1)[1].strip())
+        elif sys_plat == "Linux":
+            out = subprocess.check_output(["nmcli", "-t", "-f", "DEVICE,TYPE", "dev"], text=True)
+            for line in out.strip().split('\n'):
+                parts = line.split(':')
+                if len(parts) >= 2 and parts[1] == "wifi":
+                    ifaces.append(parts[0])
+        elif sys_plat == "Darwin":
+            import CoreWLAN
+            client = CoreWLAN.CWWiFiClient.sharedWiFiClient()
+            interfaces = client.interfaces()
+            if interfaces:
+                for i in interfaces:
+                    ifaces.append(i.interfaceName())
+    except Exception as e:
+        print(f"[*] Error fetching Wi-Fi interfaces: {e}")
+        
+    return jsonify(ifaces)
+
 @app.route('/api/wifi')
 def get_wifi_networks():
     """
     Returns detailed Wi-Fi data grouped by SSID.
-    Locks Band and MAC on the same line to fix HTML desync.
-    Clusters and averages redundant 'Unknown MAC' signals within a 5dBm variance.
-    Enforces strict 2.4GHz -> 5GHz -> 6GHz ordering.
-    Standardizes dBm and Percentage separately for all operating systems.
+    Allows targeting a specific Wi-Fi adapter to prevent dropping live connections.
     """
     global re
     networks_dict = {}
     sys_plat = platform.system()
+    iface = request.args.get('iface') # Extract the target interface from the URL
     
     try:
         # ==========================================
@@ -2699,9 +2726,14 @@ def get_wifi_networks():
                 import CoreWLAN
                 import re
                 
-                wifi_interface = CoreWLAN.CWInterface.interface()
+                # Target specific interface if provided
+                if iface:
+                    wifi_interface = CoreWLAN.CWInterface.interfaceWithName_(iface)
+                else:
+                    wifi_interface = CoreWLAN.CWInterface.interface()
+                    
                 if not wifi_interface:
-                    return jsonify({"error": "Interface Error", "message": "Could not find a Wi-Fi interface."})
+                    return jsonify({"error": "Interface Error", "message": "Could not find the specified Wi-Fi interface."})
                 
                 active_networks, error = wifi_interface.scanForNetworksWithName_error_(None, None)
                 cached_networks = wifi_interface.cachedScanResults()
@@ -2766,11 +2798,19 @@ def get_wifi_networks():
         # 2. Windows Implementation (netsh)
         # ==========================================
         elif sys_plat == "Windows":
-            subprocess.run(["powershell", "-Command", "Get-NetAdapter | Where-Object {$_.MediaType -eq 'Native 802.11'} | Restart-NetAdapter"], capture_output=True)
-            time.sleep(3) 
+            if iface:
+                # Reset ONLY the selected adapter, keeping your primary internet connection alive
+                subprocess.run(["powershell", "-Command", f"Get-NetAdapter -Name '{iface}' | Restart-NetAdapter"], capture_output=True)
+                time.sleep(3) 
+                cmd = f'netsh wlan show networks interface="{iface}" mode=bssid'
+            else:
+                # Legacy fallback: reset all Wi-Fi adapters
+                subprocess.run(["powershell", "-Command", "Get-NetAdapter | Where-Object {$_.MediaType -eq 'Native 802.11'} | Restart-NetAdapter"], capture_output=True)
+                time.sleep(3) 
+                cmd = "netsh wlan show networks mode=bssid"
 
             process = subprocess.Popen(
-                "netsh wlan show networks mode=bssid", 
+                cmd, 
                 shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
                 text=True, encoding='cp437', errors='ignore'
             )
@@ -2830,7 +2870,18 @@ def get_wifi_networks():
         # 3. Linux Implementation (nmcli)
         # ==========================================
         elif sys_plat == "Linux":
-            output = subprocess.check_output(["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi"], text=True)
+            if iface:
+                # Force a fresh scan on the specific interface
+                subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", iface], capture_output=True)
+                time.sleep(2) # Give it time to populate
+                cmd = ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi", "list", "ifname", iface]
+            else:
+                # Global scan fallback
+                subprocess.run(["nmcli", "dev", "wifi", "rescan"], capture_output=True)
+                time.sleep(2)
+                cmd = ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi"]
+                
+            output = subprocess.check_output(cmd, text=True)
             for line in output.strip().split('\n'):
                 parts = re.split(r'(?<!\\):', line)
                 parts = [p.replace('\\:', ':') for p in parts]

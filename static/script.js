@@ -113,6 +113,7 @@
         loadBackupInfo();
         loadDatabaseInfo();
         startLivePolling();
+        loadWifiAdapters();
 
         const savedTouchMode = localStorage.getItem('touchMode') === 'true';
         if (savedTouchMode) document.body.classList.add('touch-mode');
@@ -1841,12 +1842,18 @@ function deleteSingleToolLog(type, id) {
     }
     
     
-    // --- MISSING WIFI LOGIC ADDED HERE ---
-    function scanWifi() { 
+function scanWifi() { 
     const container = document.getElementById('wifi-list'); 
     const btn = document.getElementById('wifi-scan-btn');
     const exportBtn = document.getElementById('btn-wifi-export');
     const commentBtn = document.getElementById('btn-wifi-comment');
+    
+    // Grab the selected adapter
+    const adapterSelect = document.getElementById('wifi-adapter-select');
+    let ifaceQuery = '';
+    if (adapterSelect && adapterSelect.value) {
+        ifaceQuery = `?iface=${encodeURIComponent(adapterSelect.value)}`;
+    }
     
     // 1. Reset UI State
     if(btn) {
@@ -1868,8 +1875,8 @@ function deleteSingleToolLog(type, id) {
             <p class="small text-secondary">Hardware reset initiated to detect all bands (2.4/5/6GHz).</p>
         </div>`;
 
-    // 2. Perform Request to Python Backend
-    fetch('/api/wifi')
+    // 2. Perform Request to Python Backend WITH targeted interface
+    fetch(`/api/wifi${ifaceQuery}`)
         .then(r => {
             if (!r.ok) throw new Error(`HTTP Error! Status: ${r.status}`);
             return r.json();
@@ -3075,4 +3082,21 @@ function updateDeviceName(mac, old) {
             }
         }); 
     }
+}
+
+function loadWifiAdapters() {
+    fetch('/api/wifi/interfaces')
+        .then(r => r.json())
+        .then(data => {
+            const select = document.getElementById('wifi-adapter-select');
+            if (!select) return;
+            
+            // Retain the Auto option
+            let html = '<option value="">Auto (All Adapters)</option>';
+            data.forEach(iface => {
+                html += `<option value="${escapeHTML(iface)}">${escapeHTML(iface)}</option>`;
+            });
+            select.innerHTML = html;
+        })
+        .catch(err => console.error("Error loading Wi-Fi adapters:", err));
 }

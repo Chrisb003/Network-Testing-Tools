@@ -13,8 +13,8 @@ TOKEN="github_pat_11ABTISDQ0kcYPEIGJRKAN_8S0OuvdLHiYBP87pPds50u1tM1XjluVWICYXNmJ
 
 echo "[*] Step 1: Installing system prerequisites (sudo password may be required)..."
 sudo apt-get update
-# Install all underlying OS dependencies required for Python, Scapy, and packet sniffing
-sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential git net-tools libpcap-dev unzip curl
+# Added 'network-manager' to ensure hotspot creation tools are available
+sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential git net-tools libpcap-dev unzip curl network-manager
 
 echo ""
 echo "[*] Step 2: Downloading latest project files from GitHub..."
@@ -43,6 +43,74 @@ echo "[*] Step 4: Configuring headless mode..."
 echo "0" > "$TARGET_DIR/autostart"
 echo "[✓] Headless mode enabled."
 
+# --- NEW: TOGGLEABLE WI-FI HOTSPOT SETUP ---
+echo ""
+echo "--------------------------------------------------------"
+
+# Automatically detect the wireless interface name (usually wlan0)
+WIFI_IFACE=$(iw dev | awk '$1=="Interface"{print $2}' | head -n 1)
+if [ -z "$WIFI_IFACE" ]; then
+    WIFI_IFACE="wlan0"
+fi
+
+HOTSPOT_ACTIVE=false
+
+# Check if a hotspot is currently configured
+if nmcli connection show "Hotspot" &>/dev/null; then
+    read -p "[?] A Wi-Fi Hotspot is currently ENABLED. Do you want to DISABLE it? (y/N): " toggle_hotspot
+    if [[ "$toggle_hotspot" =~ ^[Yy]$ ]]; then
+        sudo nmcli connection delete Hotspot &>/dev/null
+        echo "    [✓] Hotspot successfully disabled and removed."
+    else
+        HOTSPOT_ACTIVE=true
+    fi
+else
+    read -p "[?] Do you want to ENABLE a Wi-Fi Hotspot to access the dashboard? (y/N): " toggle_hotspot
+    if [[ "$toggle_hotspot" =~ ^[Yy]$ ]]; then
+        
+        # Generate default SSID using the last 6 characters of the MAC address
+        MAC_ADDR=$(cat /sys/class/net/$WIFI_IFACE/address 2>/dev/null | tr -d ':')
+        if [ -n "$MAC_ADDR" ]; then
+            MAC_SUFFIX=$(echo "${MAC_ADDR: -6}" | tr 'a-z' 'A-Z')
+        else
+            MAC_SUFFIX=$RANDOM
+        fi
+        DEFAULT_SSID="Network-Dashboard-$MAC_SUFFIX"
+
+        # 1. Ask for Custom SSID
+        read -p "    Enter Hotspot SSID [Default: $DEFAULT_SSID]: " HOTSPOT_SSID
+        HOTSPOT_SSID=${HOTSPOT_SSID:-$DEFAULT_SSID}
+        
+        # 2. Ask for Custom Password (Enforce 8 character minimum for WPA2)
+        while true; do
+            read -p "    Enter Hotspot Password (min 8 chars) [Default: dashboard123]: " HOTSPOT_PASS
+            HOTSPOT_PASS=${HOTSPOT_PASS:-dashboard123}
+            
+            if [ ${#HOTSPOT_PASS} -ge 8 ]; then
+                break
+            else
+                echo "    [!] Invalid password. WPA2 requires a minimum of 8 characters."
+            fi
+        done
+        
+        echo "    [*] Configuring Wi-Fi Hotspot on $WIFI_IFACE..."
+        
+        # Create the AP using NetworkManager's 'shared' IPv4 method
+        sudo nmcli connection add type wifi ifname "$WIFI_IFACE" con-name Hotspot autoconnect yes ssid "$HOTSPOT_SSID" &>/dev/null
+        sudo nmcli connection modify Hotspot 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared
+        sudo nmcli connection modify Hotspot wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOTSPOT_PASS"
+        sudo nmcli connection up Hotspot &>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            echo "    [✓] Hotspot successfully activated!"
+            HOTSPOT_ACTIVE=true
+        else
+            echo "    [X] Failed to bring up Hotspot. Check your Wi-Fi adapter capabilities."
+        fi
+    fi
+fi
+echo "--------------------------------------------------------"
+
 echo ""
 echo "[*] Step 5: Setting up automatic start on boot (systemd)..."
 SERVICE_FILE="/etc/systemd/system/network-dashboard.service"
@@ -69,7 +137,7 @@ EOL
 
 # Reload the system daemon to recognize the new service and enable it on boot
 sudo systemctl daemon-reload
-sudo systemctl enable network-dashboard.service
+sudo systemctl enable network-dashboard.service &>/dev/null
 
 echo ""
 echo "[*] Step 6: Launching setup and dashboard..."
@@ -77,8 +145,8 @@ echo "[!] The service is now starting in the background. It will automatically b
 echo "    the Python environment and download the Speedtest CLI on its first run."
 sudo systemctl start network-dashboard.service
 
-# Get the Pi's local IP to show the user where to connect
-PI_IP=$(hostname -I | awk '{print $1}')
+# Get the Pi's standard local IP (ignoring the 10.42.0.1 hotspot IP)
+PI_IP=$(hostname -I | awk '{for(i=1;i<=NF;i++) if($i !~ /^10\.42\.0\./) {print $i; exit}}')
 
 echo ""
 echo "========================================================"
@@ -86,10 +154,24 @@ echo "   INSTALLATION COMPLETE!"
 echo "========================================================"
 echo "   The dashboard is running securely in the background."
 echo ""
-echo "   You can access the dashboard from any device on your"
-echo "   network by opening a web browser and going to:"
-echo "   http://$PI_IP:81"
-echo ""
+if [ "$HOTSPOT_ACTIVE" = true ]; then
+    # Fetch the live SSID and Password directly from NetworkManager to ensure accuracy
+    DISPLAY_SSID=$(sudo nmcli -g 802-11-wireless.ssid connection show Hotspot 2>/dev/null)
+    DISPLAY_PASS=$(sudo nmcli -s -g wifi-sec.psk connection show Hotspot 2>/dev/null)
+    
+    echo "   📱 CONNECT VIA HOTSPOT:"
+    echo "      1. Connect to Wi-Fi: $DISPLAY_SSID"
+    echo "      2. Password:         $DISPLAY_PASS"
+    echo "      3. Open browser to:  http://10.42.0.1:81"
+    echo ""
+fi
+
+if [ -n "$PI_IP" ]; then
+    echo "   💻 CONNECT VIA LOCAL NETWORK (LAN/WLAN):"
+    echo "      Open a browser to:   http://$PI_IP:81"
+    echo ""
+fi
+
 echo "   To view the live console logs or troubleshoot, run:"
 echo "   sudo journalctl -u network-dashboard.service -f"
 echo "========================================================"
