@@ -127,7 +127,7 @@ def setup_supervisor_logging(base_dir):
     os.environ["APP_LOG_TIME"] = timestamp
     log_path = log_dir / f"system_run_{timestamp}.log"
 
-    # 4. TeeLogger to print to terminal AND conditionally write to file
+    # 4. TeeLogger to print to terminal AND unconditionally write to file
     class TeeLogger:
         def __init__(self, filename, terminal, is_stderr=False):
             self.terminal = terminal
@@ -147,6 +147,21 @@ def setup_supervisor_logging(base_dir):
                 self.terminal.write(text)
                 self.terminal.flush()
             except: pass
+            
+            # --- NEW: Unconditionally log all setup script actions ---
+            # This ensures if a fresh installation fails, the logs are always captured.
+            if self.file:
+                try:
+                    self.file.write(text)
+                    self.file.flush()
+                except: pass
+                
+        def flush(self):
+            try: self.terminal.flush()
+            except: pass
+            if self.file:
+                try: self.file.flush()
+                except: pass
             
             if self.file:
                 # Dynamically check if we should write this line to the log file
