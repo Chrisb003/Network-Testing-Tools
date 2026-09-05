@@ -128,7 +128,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.11.2"
+APP_VERSION = "0.12.0"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -463,16 +463,34 @@ def init_db():
                 try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
                 except sqlite3.OperationalError: pass 
 
-        for table in ['history', 'wifi_history', 'dns_logs', 'ping_logs']:
+        for table in ['history', 'wifi_history', 'dns_logs', 'ping_logs', 'devices', 'networks']:
             try: c.execute(f"ALTER TABLE {table} ADD COLUMN is_protected INTEGER DEFAULT 0")
             except sqlite3.OperationalError: pass
 
-        for col in ["previous_ip TEXT", "discovery_status TEXT DEFAULT 'New Device'", "vendor TEXT", "custom_vendor TEXT"]:
+        # --- UPDATED: New snapshot columns added below ---
+        for col in ["previous_ip TEXT", "discovery_status TEXT DEFAULT 'New Device'", "vendor TEXT", "custom_vendor TEXT", "last_network_name TEXT"]:
             try: c.execute(f"ALTER TABLE devices ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
 
+        for col in ["network_name TEXT"]:
+            try: c.execute(f"ALTER TABLE device_scans ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
+
+        # --- UPDATED: New snapshot columns added below ---
+        for col in ["previous_ip TEXT", "discovery_status TEXT DEFAULT 'New Device'", "vendor TEXT", "custom_vendor TEXT", "last_network_name TEXT"]:
+            try: c.execute(f"ALTER TABLE devices ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
+
+        for col in ["network_name TEXT"]:
+            try: c.execute(f"ALTER TABLE device_scans ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
+
+        for col in ["is_deleted INTEGER DEFAULT 0"]:
+            try: c.execute(f"ALTER TABLE wifi_history ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
+
         conn.commit()
-        
+
 def check_clear_database():
     """Checks for a 'cleardatabase' file to completely wipe the database on startup."""
     clear_file = os.path.join(app.root_path, "cleardatabase")
@@ -1433,35 +1451,94 @@ def index():
 @app.route('/api/system/cleanup', methods=['POST'])
 def cleanup_database():
     """
-    Cleans up the database based on the selected interval.
-    'days' can be 7, 30, 365, or 'all'.
+    Cleans up the database based on the selected interval across ALL tables.
+    Respects the is_protected flag for every table.
     """
     days = request.json.get('days')
-    tables = ['history', 'dns_logs', 'ping_logs', 'wifi_history']
     
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             cursor = conn.cursor()
             
             if days == 'all':
-                for table in tables + ['networks', 'devices', 'global_device_names', 'adapter_settings']:
+                for table in ['history', 'dns_logs', 'ping_logs', 'wifi_history', 'networks', 'devices', 'device_scans', 'global_device_names', 'global_device_vendors']:
+                    # Note: We do NOT respect is_protected on a total factory wipe ("Clear Database Completely")
                     cursor.execute(f"DELETE FROM {table}")
                 message = "Database cleared completely."
             else:
                 if not str(days).isdigit():
                     return jsonify({"status": "error", "message": "Invalid time interval."}), 400
                 
-                for table in tables:
-                    # --- FIXED: Added 'AND is_protected = 0' to protect locked items ---
-                    cursor.execute(f"DELETE FROM {table} WHERE timestamp < datetime('now', '-{int(days)} days') AND is_protected = 0")
-                message = f"Data older than {days} days has been removed. (Protected items were kept)."
+                date_filter = f"datetime('now', '-{int(days)} days')"
+                
+                # Standard tables using 'timestamp'
+                for table in ['history', 'dns_logs', 'ping_logs', 'wifi_history', 'device_scans']:
+                    # device_scans doesn't have an is_protected column, it relies on the device itself
+                    if table == 'device_scans':
+                        cursor.execute(f"DELETE FROM {table} WHERE timestamp < {date_filter} AND mac_address NOT IN (SELECT mac_address FROM devices WHERE is_protected=1)")
+                    else:
+                        cursor.execute(f"DELETE FROM {table} WHERE timestamp < {date_filter} AND is_protected = 0")
+                
+                # Tables using 'last_seen' or 'last_scan'
+                cursor.execute(f"DELETE FROM devices WHERE last_seen < {date_filter} AND is_protected = 0")
+                cursor.execute(f"DELETE FROM networks WHERE last_scan < {date_filter} AND is_protected = 0")
+                
+                message = f"All data older than {days} days has been removed. (Protected items were kept)."
             
             conn.commit()
-            
-            # --- NEW: Reclaim physical disk space after deleting rows ---
             conn.execute("VACUUM")
             
             return jsonify({"status": "success", "message": message})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/system/db_info', methods=['GET'])
+def get_db_info():
+    """Returns the current size of the main SQLite database in MB."""
+    try:
+        size_mb = 0
+        if os.path.exists(DB_NAME):
+            size_mb = os.path.getsize(DB_NAME) / (1024 * 1024)
+        return jsonify({"size_mb": f"{size_mb:.2f}"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/system/cleanup_orphaned_devices', methods=['POST'])
+def cleanup_orphaned_devices():
+    """Removes devices that are ONLY associated with deleted networks."""
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            cursor = conn.cursor()
+            
+            # Smart isolation query: 
+            # Grab MACs that exist in deleted networks, EXCEPT any MACs that also exist in active networks
+            query = """
+                SELECT mac_address FROM devices WHERE network_id NOT IN (SELECT id FROM networks)
+                UNION
+                SELECT mac_address FROM device_scans WHERE network_id NOT IN (SELECT id FROM networks)
+                EXCEPT
+                SELECT mac_address FROM devices WHERE network_id IN (SELECT id FROM networks)
+                EXCEPT
+                SELECT mac_address FROM device_scans WHERE network_id IN (SELECT id FROM networks)
+            """
+            cursor.execute(query)
+            orphaned_macs = [row[0] for row in cursor.fetchall()]
+
+            if not orphaned_macs:
+                return jsonify({"status": "success", "message": "No old orphaned devices found."})
+
+            placeholders = ','.join(['?'] * len(orphaned_macs))
+            
+            # Completely purge the orphaned devices from all tables
+            cursor.execute(f"DELETE FROM devices WHERE mac_address IN ({placeholders})", orphaned_macs)
+            cursor.execute(f"DELETE FROM device_scans WHERE mac_address IN ({placeholders})", orphaned_macs)
+            cursor.execute(f"DELETE FROM global_device_names WHERE mac_address IN ({placeholders})", orphaned_macs)
+            cursor.execute(f"DELETE FROM global_device_vendors WHERE mac_address IN ({placeholders})", orphaned_macs)
+            
+            conn.commit()
+            conn.execute("VACUUM") # Reclaim disk space
+            
+            return jsonify({"status": "success", "message": f"Successfully removed {len(orphaned_macs)} old device(s)." })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1884,8 +1961,20 @@ def delete_network():
 def rename_network():
     d = request.json
     name = str(d.get('name', '')).strip()[:50] # Safely sliced
+    net_id = d.get('id')
+    
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        conn.execute("UPDATE networks SET name=? WHERE id=?", (name, d.get('id'))) # Use the variable!
+        conn.execute("UPDATE networks SET name=? WHERE id=?", (name, net_id))
+        
+        # Propagate the custom name to the history tables
+        try: 
+            conn.execute("UPDATE devices SET last_network_name=? WHERE network_id=?", (name, net_id))
+        except sqlite3.OperationalError: pass
+        
+        try: 
+            conn.execute("UPDATE device_scans SET network_name=? WHERE network_id=?", (name, net_id))
+        except sqlite3.OperationalError: pass
+        
         conn.commit()
     return jsonify({"status": "success"})
 
@@ -2067,6 +2156,8 @@ def scan_network():
     try:
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
+            
+            # VLAN Safe Check (MAC + IP)
             cursor.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
             row = cursor.fetchone()
             
@@ -2093,8 +2184,8 @@ def scan_network():
                     if glob: final_name = glob[0]
 
                 cursor.execute("""
-                    INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor)
-                    VALUES (?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?)
+                    INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, last_network_name)
+                    VALUES (?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?, ?)
                     ON CONFLICT(mac_address, network_id) DO UPDATE SET
                     hostname=excluded.hostname, 
                     custom_name=COALESCE(?, devices.custom_name),
@@ -2107,13 +2198,14 @@ def scan_network():
                     last_seen=excluded.last_seen,
                     services=excluded.services, 
                     is_online=1,
-                    vendor=excluded.vendor
-                """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], current_time, device["services"], device["vendor"], final_name))
+                    vendor=excluded.vendor,
+                    last_network_name=excluded.last_network_name
+                """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], current_time, device["services"], device["vendor"], final_network_name, final_name))
 
                 cursor.execute("""
-                    INSERT INTO device_scans (mac_address, network_id, ip_address, hostname, services, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (device["mac"], network_id, device["ip"], device["hostname"], device["services"], current_time))
+                    INSERT INTO device_scans (mac_address, network_id, ip_address, hostname, services, timestamp, network_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (device["mac"], network_id, device["ip"], device["hostname"], device["services"], current_time, final_network_name))
 
             conn.commit()
             return jsonify({"network_id": network_id, "network_name": final_network_name, "devices": scanned_results})
@@ -2236,6 +2328,8 @@ def scan_network_stream():
             # --- 4. DB NETWORK CREATION / LOOKUP ---
             with sqlite3.connect(DB_NAME, timeout=10) as conn:
                 c = conn.cursor()
+                
+                # VLAN Safe Check (MAC + IP)
                 c.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
                 row = c.fetchone()
                 if row:
@@ -2297,8 +2391,8 @@ def scan_network_stream():
                                 dev["discovery_status"] = "Seen Before" if row else "New Device"
 
                             c.execute("""
-                                INSERT INTO devices (mac_address, network_id, hostname, custom_name, custom_vendor, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor)
-                                VALUES (?, ?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?)
+                                INSERT INTO devices (mac_address, network_id, hostname, custom_name, custom_vendor, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, last_network_name)
+                                VALUES (?, ?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?, ?)
                                 ON CONFLICT(mac_address, network_id) DO UPDATE SET
                                     hostname=excluded.hostname,
                                     custom_name=COALESCE(?, devices.custom_name),
@@ -2309,13 +2403,14 @@ def scan_network_stream():
                                     last_seen=excluded.last_seen,
                                     services=excluded.services,
                                     is_online=1,
-                                    vendor=excluded.vendor
-                            """, (dev["mac"], network_id, dev["hostname"], existing_name, existing_custom_v, dev["ip"], current_time, dev["services"], existing_vendor, existing_name, existing_custom_v))
+                                    vendor=excluded.vendor,
+                                    last_network_name=excluded.last_network_name
+                            """, (dev["mac"], network_id, dev["hostname"], existing_name, existing_custom_v, dev["ip"], current_time, dev["services"], existing_vendor, final_network_name, existing_name, existing_custom_v))
                             
                             c.execute("""
-                                INSERT INTO device_scans (mac_address, network_id, ip_address, hostname, services, timestamp)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            """, (dev["mac"], network_id, dev["ip"], dev["hostname"], dev["services"], current_time))
+                                INSERT INTO device_scans (mac_address, network_id, ip_address, hostname, services, timestamp, network_name)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (dev["mac"], network_id, dev["ip"], dev["hostname"], dev["services"], current_time, final_network_name))
                             conn.commit()
 
                         print(f"[*] Active Device Found: {dev['mac']} ({dev['ip']}) - {dev['hostname']}")
@@ -3095,34 +3190,24 @@ def update_history():
 
 @app.route('/api/bulk_delete', methods=['POST'])
 def bulk_delete():
-    """Generic endpoint to bulk delete records across multiple tables."""
     d = request.json
-    table_map = {
-        'networks': 'networks',
-        'wifi': 'wifi_history',
-        'history': 'history',
-        'dns': 'dns_logs',
-        'ping': 'ping_logs',
-        'devices': 'devices'  # <-- NEW: Added devices to mapping
-    }
+    table_map = {'networks': 'networks', 'wifi': 'wifi_history', 'history': 'history', 'dns': 'dns_logs', 'ping': 'ping_logs', 'devices': 'devices'}
     table = table_map.get(d.get('type'))
     ids = d.get('ids', [])
     
-    if not table or not ids:
-        return jsonify({"error": "Invalid request parameters"}), 400
-        
+    if not table or not ids: return jsonify({"error": "Invalid parameters"}), 400
     placeholders = ','.join(['?'] * len(ids))
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        # --- NEW: Handle MAC address based deletion for devices ---
         if table == 'devices':
             conn.execute(f"DELETE FROM devices WHERE mac_address IN ({placeholders})", ids)
             conn.execute(f"DELETE FROM global_device_names WHERE mac_address IN ({placeholders})", ids)
             conn.execute(f"DELETE FROM global_device_vendors WHERE mac_address IN ({placeholders})", ids)
+            conn.execute(f"DELETE FROM device_scans WHERE mac_address IN ({placeholders})", ids)
+        elif table == 'wifi_history':
+            # Soft-delete for Wi-Fi scans
+            conn.execute(f"UPDATE wifi_history SET is_deleted=1 WHERE id IN ({placeholders})", ids)
         else:
             conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", ids)
-            # Cascade delete devices if we are deleting networks
-            if table == 'networks':
-                conn.execute(f"DELETE FROM devices WHERE network_id IN ({placeholders})", ids)
         conn.commit()
     return jsonify({"status": "success"})
 
@@ -3692,27 +3777,39 @@ def save_wifi_scan():
 
 @app.route('/api/wifi/history', methods=['GET'])
 def get_wifi_history():
-    conn = sqlite3.connect(DB_NAME, timeout=10.0)
-    c = conn.cursor()
-    # --- FIXED: Select the is_protected column ---
-    c.execute("SELECT id, timestamp, scan_name, comments, is_protected FROM wifi_history ORDER BY timestamp DESC")
-    rows = c.fetchall()
-    history = [{"id": r[0], "timestamp": r[1], "name": r[2], "comments": r[3], "is_protected": r[4] or 0} for r in rows]
-    conn.close()
-    return jsonify(history)
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+        c = conn.cursor()
+        # Only fetch scans that haven't been deleted
+        c.execute("SELECT id, timestamp, scan_name, comments, is_protected FROM wifi_history WHERE is_deleted=0 ORDER BY timestamp DESC")
+        rows = c.fetchall()
+        history = [{"id": r[0], "timestamp": r[1], "name": r[2], "comments": r[3], "is_protected": r[4] or 0} for r in rows]
+        return jsonify(history)
 
 # --- NEW: Endpoint to lock/unlock records ---
 @app.route('/api/system/toggle_protection', methods=['POST'])
 def toggle_protection():
     d = request.json
-    table_map = {'history': 'history', 'wifi': 'wifi_history'}
+    
+    # ADDED: 'dns' and 'ping' mapped to their respective tables
+    table_map = {
+        'history': 'history', 
+        'wifi': 'wifi_history', 
+        'devices': 'devices', 
+        'networks': 'networks',
+        'dns': 'dns_logs',
+        'ping': 'ping_logs'
+    }
+    
     table = table_map.get(d.get('type'))
     item_id = d.get('id')
     state = 1 if d.get('state') else 0
     
     if table and item_id:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-            conn.execute(f"UPDATE {table} SET is_protected = ? WHERE id = ?", (state, item_id))
+            if table == 'devices':
+                conn.execute("UPDATE devices SET is_protected = ? WHERE mac_address = ?", (state, item_id))
+            else:
+                conn.execute(f"UPDATE {table} SET is_protected = ? WHERE id = ?", (state, item_id))
             conn.commit()
         return jsonify({"status": "success"})
     return jsonify({"error": "Invalid request"}), 400
@@ -3731,11 +3828,9 @@ def load_wifi_scan(scan_id):
 @app.route('/api/wifi/delete', methods=['POST'])
 def delete_wifi_scan():
     scan_id = request.json.get('id')
-    conn = sqlite3.connect(DB_NAME, timeout=10.0)
-    c = conn.cursor()
-    c.execute("DELETE FROM wifi_history WHERE id = ?", (scan_id,))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+        conn.execute("UPDATE wifi_history SET is_deleted=1 WHERE id = ?", (scan_id,))
+        conn.commit()
     return jsonify({"status": "deleted"})
 
 @app.route('/api/wifi/export/<int:scan_id>')
@@ -3781,7 +3876,7 @@ def export_wifi_csv(scan_id):
 @app.route('/api/wifi/history/clear_all', methods=['POST'])
 def clear_all_wifi_history():
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        conn.execute("DELETE FROM wifi_history")
+        conn.execute("UPDATE wifi_history SET is_deleted=1")
         conn.commit()
     return jsonify({"status": "success"})
 
@@ -3883,9 +3978,9 @@ def api_device_history():
             # This turns an O(N^2) query (which freezes the app) into a lightning-fast O(N) query.
             query = """
                 SELECT d.mac_address, d.hostname, COALESCE(g.custom_name, d.custom_name) as custom_name,
-                       d.ip_address, MAX(d.last_seen) as last_seen, n.name as network_name, d.vendor
+                       d.ip_address, MAX(d.last_seen) as last_seen, COALESCE(n.name, d.last_network_name, 'Deleted Network') as network_name, d.vendor, d.is_protected
                 FROM devices d
-                JOIN networks n ON d.network_id = n.id
+                LEFT JOIN networks n ON d.network_id = n.id
                 LEFT JOIN global_device_names g ON d.mac_address = g.mac_address
                 GROUP BY d.mac_address
                 ORDER BY last_seen DESC
@@ -3924,6 +4019,34 @@ def api_device_history():
     except Exception as e:
         print(f"[!!!] CRITICAL ERROR in /api/device_history: {e}")
         return jsonify({"error": str(e)})
+    
+@app.route('/api/wifi_networks_history/delete_ssid', methods=['POST'])
+def delete_wifi_ssid():
+    """Removes a specific SSID from all historical JSON scans."""
+    ssid = request.json.get('ssid')
+    if not ssid: return jsonify({"error": "SSID required"}), 400
+    
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            
+            c.execute("SELECT id, results_json FROM wifi_history")
+            all_scans = c.fetchall()
+            
+            for row in all_scans:
+                try:
+                    nets = json.loads(row['results_json'])
+                    filtered_nets = [n for n in nets if n.get('ssid') != ssid]
+                    
+                    if len(filtered_nets) != len(nets):
+                        c.execute("UPDATE wifi_history SET results_json=? WHERE id=?", (json.dumps(filtered_nets), row['id']))
+                except: pass
+                
+            conn.commit()
+            return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/device_history/<mac>')
 def api_device_history_detail(mac):
@@ -3931,9 +4054,9 @@ def api_device_history_detail(mac):
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         query = """
-            SELECT ds.ip_address, ds.timestamp as last_seen, ds.services, n.name as network_name
+            SELECT ds.ip_address, ds.timestamp as last_seen, ds.services, COALESCE(n.name, ds.network_name, 'Deleted Network') as network_name
             FROM device_scans ds
-            JOIN networks n ON ds.network_id = n.id
+            LEFT JOIN networks n ON ds.network_id = n.id
             WHERE ds.mac_address = ?
             ORDER BY ds.timestamp DESC
         """
@@ -4013,50 +4136,77 @@ def api_wifi_networks_history():
 
 @app.route('/api/wifi_networks_history/details', methods=['POST'])
 def api_wifi_network_details():
-    """Returns all historical scan records for a specific SSID."""
     ssid = request.json.get('ssid')
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT id, timestamp, scan_name, results_json FROM wifi_history ORDER BY timestamp DESC").fetchall()
+            rows = conn.execute("SELECT id, timestamp, scan_name, results_json, is_deleted FROM wifi_history ORDER BY timestamp DESC").fetchall()
             
             details = []
             for r in rows:
                 scan_ts = r['timestamp']
                 scan_name = r['scan_name']
+                if r['is_deleted']:
+                    scan_name += " (Deleted Scan)"
+                    
                 try:
                     results = json.loads(r['results_json'])
                     for net in results:
                         if net.get('ssid') == ssid:
                             if "raw_bssids" in net and net["raw_bssids"]:
                                 for b in net["raw_bssids"]:
-                                    details.append({
-                                        "scan_name": scan_name,
-                                        "timestamp": scan_ts,
-                                        "mac": b.get("mac", "Unknown"),
-                                        "dbm": b.get("dbm", ""),
-                                        "percent": b.get("percent", ""),
-                                        "channel": b.get("channel", ""),
-                                        "band": b.get("band", ""),
-                                        "auth": net.get("auth", "")
-                                    })
+                                    details.append({"scan_name": scan_name, "timestamp": scan_ts, "mac": b.get("mac", "Unknown"), "dbm": b.get("dbm", ""), "percent": b.get("percent", ""), "channel": b.get("channel", ""), "band": b.get("band", ""), "auth": net.get("auth", "")})
                             else:
-                                # Legacy fallback for older scans
-                                details.append({
-                                    "scan_name": scan_name,
-                                    "timestamp": scan_ts,
-                                    "mac": net.get("mac", "Unknown"),
-                                    "dbm": "",
-                                    "percent": "",
-                                    "channel": net.get("channel", ""),
-                                    "band": net.get("band", ""),
-                                    "auth": net.get("auth", "")
-                                })
-                except:
-                    continue
+                                details.append({"scan_name": scan_name, "timestamp": scan_ts, "mac": net.get("mac", "Unknown"), "dbm": "", "percent": "", "channel": net.get("channel", ""), "band": net.get("band", ""), "auth": net.get("auth", "")})
+                except: continue
             return jsonify(details)
     except Exception as e:
         return jsonify({"error": str(e)})
+
+@app.route('/api/system/cleanup_orphaned_wifi', methods=['POST'])
+def cleanup_orphaned_wifi():
+    """Removes Wi-Fi networks that ONLY exist in deleted scans."""
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            
+            # Step 1: Get all SSIDs that exist in active (non-deleted) scans
+            c.execute("SELECT results_json FROM wifi_history WHERE is_deleted=0")
+            active_ssids = set()
+            for row in c.fetchall():
+                try:
+                    for net in json.loads(row['results_json']):
+                        if net.get('ssid'): active_ssids.add(net['ssid'])
+                except: pass
+            
+            # Step 2: Extract JSON from deleted scans and prune them
+            c.execute("SELECT id, results_json FROM wifi_history WHERE is_deleted=1")
+            deleted_scans = c.fetchall()
+            
+            removed_count = 0
+            for row in deleted_scans:
+                try:
+                    nets = json.loads(row['results_json'])
+                    # Filter out any network that isn't found in an active scan
+                    filtered_nets = [n for n in nets if n.get('ssid') in active_ssids]
+                    
+                    if len(filtered_nets) == 0:
+                        # No active networks left in this JSON blob; hard delete the row completely
+                        c.execute("DELETE FROM wifi_history WHERE id=?", (row['id'],))
+                        removed_count += 1
+                    elif len(filtered_nets) < len(nets):
+                        # Some orphaned networks were removed; update the JSON blob with the survivors
+                        c.execute("UPDATE wifi_history SET results_json=? WHERE id=?", (json.dumps(filtered_nets), row['id']))
+                        removed_count += 1
+                except:
+                    c.execute("DELETE FROM wifi_history WHERE id=?", (row['id'],))
+                    
+            conn.commit()
+            conn.execute("VACUUM")
+            return jsonify({"status": "success", "message": f"Cleaned up orphaned networks across {removed_count} deleted scan(s)."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 AUTOSTART_FILE = "autostart"
 

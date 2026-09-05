@@ -11,6 +11,8 @@
     let devHistItemsPerPage = 20;
     let selectedDevHistMacs = new Set();
     let currentModalDevData = [];
+    let liveBandwidthInterval = null;
+    let pauseTimeout = null; // NEW: Tracks the 1-hour countdown
 
     function escapeHTML(str) {
         if (str === null || str === undefined) return "";
@@ -63,6 +65,25 @@
             if(document.getElementById('header-isp')) 
                 document.getElementById('header-isp').innerText = d.isp;
         });
+        
+            // Automatically pause/resume based on tab visibility with a 1-hour delay
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+            // Start a 1-hour countdown (60 minutes * 60 seconds * 1000 milliseconds)
+            pauseTimeout = setTimeout(() => {
+                stopLivePolling();
+                console.log("Tab hidden for 1 hour: Live bandwidth polling paused to save resources.");
+            }, 60 * 60 * 1000); 
+        } else {
+            // The user came back! Cancel the shutdown timer if it hasn't finished yet
+            if (pauseTimeout) {
+                clearTimeout(pauseTimeout);
+                pauseTimeout = null;
+            }
+            // Ensure polling is running
+            startLivePolling();
+        }
+    });
 
 // Fetch Logging Setting
         fetch('/api/settings/logging')
@@ -89,6 +110,8 @@
         loadSystemAlerts();
         loadUpdateChannels();
         loadBackupInfo();
+        loadDatabaseInfo();
+        startLivePolling();
 
         const savedTouchMode = localStorage.getItem('touchMode') === 'true';
         if (savedTouchMode) document.body.classList.add('touch-mode');
@@ -167,6 +190,66 @@ async function runCleanup(interval) {
         if (result.status === "success") {
             alert(result.message);
             location.reload(); 
+        } else {
+            alert("Cleanup failed: " + result.message);
+        }
+    } catch (err) {
+        alert("Error: " + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
+// Removes devices whose associated networks have been completely deleted
+async function removeOldDevices() {
+    if (!confirm("Are you sure you want to completely remove old devices that are no longer associated with any active network scans?")) return;
+
+    const btn = event.currentTarget;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Cleaning...';
+
+    try {
+        const response = await fetch('/api/system/cleanup_orphaned_devices', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.status === "success") {
+            alert(result.message);
+            if (typeof loadDeviceHistory === "function" && !document.getElementById('device-history-page').classList.contains('hidden')) {
+                loadDeviceHistory();
+            }
+            loadDatabaseInfo(); // <-- Updates the DB size badge instantly
+        } else {
+            alert("Cleanup failed: " + result.message);
+        }
+    } catch (err) {
+        alert("Error: " + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
+}
+
+// Removes Wi-Fi networks whose associated scans have been completely deleted
+async function removeOldWifi() {
+    if (!confirm("Are you sure you want to completely remove old Wi-Fi networks that are no longer associated with any active scans?")) return;
+
+    const btn = event.currentTarget;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Cleaning...';
+
+    try {
+        const response = await fetch('/api/system/cleanup_orphaned_wifi', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.status === "success") {
+            alert(result.message);
+            if (typeof loadWifiNetworksHistory === "function" && !document.getElementById('wifi-networks-history').classList.contains('hidden')) {
+                loadWifiNetworksHistory();
+            }
+            loadDatabaseInfo(); // <-- Updates the DB size badge instantly
         } else {
             alert("Cleanup failed: " + result.message);
         }
@@ -696,6 +779,7 @@ let allNetworks = []; // Global array to hold the network data
         if (type === 'dns') {
             tbody.innerHTML = paginatedData.length ? paginatedData.map(x => {
                 const isChecked = tableState.dns.selected.has(String(x.id)) ? 'checked' : '';
+                const isProtected = x.is_protected ? 1 : 0; // Grab protection state
                 return `
                 <tr>
                     <td onclick="event.stopPropagation()"><input type="checkbox" class="dns-check" value="${x.id}" onchange="toggleSelection('dns', this)" ${isChecked}></td>
@@ -707,6 +791,9 @@ let allNetworks = []; // Global array to hold the network data
                     <td><small>${escapeHTML(x.network_name) || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
                     <td class="text-end text-nowrap">
+                        <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'} border-0" onclick="toggleProtection('dns', ${x.id}, ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                            <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-secondary border-0" onclick="editToolLogNetwork('dns', ${x.id}, '${escapeJS(x.network_name || '')}')" title="Edit Network Name"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('dns', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </td>
@@ -714,6 +801,7 @@ let allNetworks = []; // Global array to hold the network data
         } else {
             tbody.innerHTML = paginatedData.length ? paginatedData.map(x => {
                 const isChecked = tableState.ping.selected.has(String(x.id)) ? 'checked' : '';
+                const isProtected = x.is_protected ? 1 : 0; // Grab protection state
                 return `
                 <tr>
                     <td onclick="event.stopPropagation()"><input type="checkbox" class="ping-check" value="${x.id}" onchange="toggleSelection('ping', this)" ${isChecked}></td>
@@ -726,6 +814,9 @@ let allNetworks = []; // Global array to hold the network data
                     <td><small>${escapeHTML(x.network_name) || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
                     <td class="text-end text-nowrap">
+                        <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'} border-0" onclick="toggleProtection('ping', ${x.id}, ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                            <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-secondary border-0" onclick="editToolLogNetwork('ping', ${x.id}, '${escapeJS(x.network_name || '')}')" title="Edit Network Name"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('ping', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </td>
@@ -1003,7 +1094,7 @@ function renderDeviceHistory() {
         if (!tb) return;
 
         if (!Array.isArray(devHistFiltered)) {
-            tb.innerHTML = '<tr><td colspan="7" class="text-center p-4 text-danger">Invalid data received from server.</td></tr>';
+            tb.innerHTML = '<tr><td colspan="8" class="text-center p-4 text-danger">Invalid data received from server.</td></tr>';
             return;
         }
 
@@ -1026,10 +1117,13 @@ function renderDeviceHistory() {
 
         const missingVendors = [];
 
-tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
+        tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
             const displayName = d.custom_name || d.clean_hostname || "Unknown";
             const safeName = escapeJS(displayName);
             const safeVendor = escapeJS(d.vendor);
+            const escapedMac = escapeJS(d.mac_address);
+            const safeCustomN = escapeJS(d.custom_name);
+            const isProtected = d.is_protected ? 1 : 0;
             
             let vendorHtml = escapeHTML(d.vendor);
             if (!d.vendor || d.vendor === 'Unknown') {
@@ -1038,7 +1132,6 @@ tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
                 missingVendors.push(d.mac_address);
             }
             
-            // Check if this MAC is in our persistent memory bank
             const isChecked = selectedDevHistMacs.has(d.mac_address) ? 'checked' : '';
             
             return `
@@ -1052,10 +1145,15 @@ tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
                 <td><span class="badge bg-secondary">${d.network_name}</span></td>
                 <td>${d.ip_address}</td>
                 <td><small>${d.last_seen}</small></td>
+                <td class="text-end text-nowrap" onclick="event.stopPropagation()">
+                    <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('devices', '${escapedMac}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                        <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="updateDeviceName('${escapedMac}', '${safeCustomN}')" title="Edit Name"><i class="bi bi-pencil"></i></button>
+                </td>
             </tr>`;
-        }).join('') : '<tr><td colspan="7" class="text-center p-4">No device history found.</td></tr>';
+        }).join('') : '<tr><td colspan="8" class="text-center p-4">No device history found.</td></tr>';
 
-        // Auto-update the master checkbox for the newly rendered page
         const masterCheck = document.getElementById('dev-hist-master-check');
         if (masterCheck) {
             const pageMacs = paginatedData.map(d => d.mac_address);
@@ -1362,14 +1460,21 @@ function scanDevices() {
     b.disabled = true; 
     b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
     
-    // --- FIXED: Hide remove buttons during active scan ---
     const btnSel = document.getElementById('btn-remove-selected');
     const btnOff = document.getElementById('btn-remove-offline');
     if (btnSel) btnSel.classList.add('hidden');
     if (btnOff) btnOff.classList.add('hidden');
     
     const tb = document.getElementById('device-list');
-    if (tb) tb.innerHTML = '<tr><td colspan="9" class="text-center p-4 text-info"><div class="spinner-border spinner-border-sm me-2"></div>Discovering network devices...</td></tr>';    
+    // UNIFIED LOADING STATE: Matches device history & adapter loading layout
+    if (tb) tb.innerHTML = `
+        <tr>
+            <td colspan="10" class="text-center p-5">
+                <div class="spinner-border text-primary mb-3"></div>
+                <h5 class="text-muted">Scanning Network...</h5>
+                <p class="small text-secondary">Discovering active network devices and services.</p>
+            </td>
+        </tr>`;    
     
     allDevices = [];
     let isFirstDevice = true;
@@ -1474,7 +1579,6 @@ function renderDevices(d) {
         const services = String(x.services || "").toUpperCase();
         const hasWeb = services.includes("HTTP");
         
-        // --- UPDATED: Blank IP for Offline Devices ---
         let ipColumnHtml;
         if (!x.is_online) {
             ipColumnHtml = `<span class="text-muted">-</span>`;
@@ -1484,7 +1588,6 @@ function renderDevices(d) {
             ipColumnHtml = ip;
         }
 
-        // --- UPDATED: Hide Services for Offline Devices ---
         let serviceBadges = `<span class="badge bg-secondary opacity-50">None</span>`;
         if (x.is_online && services && services !== "NONE") {
             serviceBadges = services.split(',').map(s => {
@@ -1493,7 +1596,6 @@ function renderDevices(d) {
             }).join('');
         }
 
-        // --- UPDATED: History Badges with Date/Time for Offline Devices ---
         let historyHtml = `<span class="badge bg-secondary">Unknown</span>`;
         if (!x.is_online) {
             const lastTime = x.last_seen ? ` on ${x.last_seen}` : '';
@@ -1506,12 +1608,10 @@ function renderDevices(d) {
             historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
         }
 
-        // Vendor Display Hierarchy
-        const idMac = x.mac_address.replace(/[:-]/g, ''); // Strips colons for HTML ID
-        const escapedMac = escapeJS(x.mac_address);       // Escapes for JS click handlers
+        const idMac = x.mac_address.replace(/[:-]/g, '');
+        const escapedMac = escapeJS(x.mac_address);
         
         let vendorDisplay = `<span id="vend-${idMac}" class="text-muted small fst-italic">Pending...</span>`;
-
         if (x.custom_vendor) {
             vendorDisplay = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle">${escapeHTML(x.custom_vendor)}</span>`;
         } else if (x.vendor && x.vendor !== 'Unknown') {
@@ -1521,6 +1621,9 @@ function renderDevices(d) {
         const safeCustomV = escapeJS(x.custom_vendor);
         const safeLookupV = escapeJS(x.vendor); 
         const safeCustomN = escapeJS(x.custom_name);
+        
+        // Safety fallback: if we don't know the protection state yet, assume 0
+        const isProtected = x.is_protected ? 1 : 0;
 
         return `
             <tr class="${!x.is_online ? 'opacity-75' : ''}">
@@ -1539,8 +1642,13 @@ function renderDevices(d) {
                 <td class="${x.is_online ? 'text-success' : 'text-muted'}">${x.is_online ? 'Online' : 'Offline'}</td>
                 <td>${serviceBadges}</td>
                 <td>${historyHtml}</td>
+                <td class="text-end text-nowrap">
+                    <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('devices', '${escapedMac}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                        <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                    </button>
+                </td>
             </tr>`;
-    }).join('') : '<tr><td colspan="9" class="text-center p-4">No devices found.</td></tr>';
+    }).join('') : '<tr><td colspan="10" class="text-center p-4">No devices found.</td></tr>';
 }
 
 function updateDeviceVendor(mac, currentCustom, currentLookup) {
@@ -1602,16 +1710,25 @@ function resolveMissingVendors(devices) {
     });
 }
     
-    function updateDeviceName(mac, old) { 
-        const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
-        if(n !== null) {
-            fetch('/api/devices/update_name', {
-                method: 'POST', 
-                headers: {'Content-Type': 'application/json'}, 
-                body: JSON.stringify({mac: mac, network_id: currentNetworkId, name: n})
-            }).then(() => loadNetworkDevices(currentNetworkId, "")); 
-        }
+    f// Overrides the existing updateDeviceName so it refreshes BOTH tables if needed
+function updateDeviceName(mac, old) { 
+    const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
+    if(n !== null) {
+        fetch('/api/devices/update_name', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({mac: mac, network_id: currentNetworkId || null, name: n})
+        }).then(() => {
+            // Refresh whichever page we are currently looking at
+            if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
+                loadNetworkDevices(currentNetworkId, ""); 
+            }
+            if (!document.getElementById('device-history-page').classList.contains('hidden')) {
+                loadDeviceHistory();
+            }
+        }); 
     }
+}
 
     function filterDevices() { 
         const q = document.getElementById('device-filter').value.toLowerCase(); 
@@ -2247,14 +2364,14 @@ let currentModalWifiNetData = [];
         renderWifiNetworksHistory();
     }
 
-    function renderWifiNetworksHistory() {
+function renderWifiNetworksHistory() {
         const tb = document.getElementById('wifi-net-hist-table');
         if (!tb) return;
         const paginatedData = getPaginatedData('wifiNetHist');
 
         tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
             const isChecked = tableState.wifiNetHist.selected.has(n.ssid) ? 'checked' : '';
-            const safeSSID = n.ssid.replace(/'/g, "\\'");
+            const safeSSID = escapeJS(n.ssid);
             return `
             <tr style="cursor: pointer;" onclick="viewWifiNetworkDetails('${safeSSID}')">
                 <td onclick="event.stopPropagation()"><input type="checkbox" class="wifiNetHist-check" value="${n.ssid}" onchange="toggleSelection('wifiNetHist', this)" ${isChecked}></td>
@@ -2264,8 +2381,11 @@ let currentModalWifiNetData = [];
                 <td><span class="badge bg-secondary">${n.scan_count}</span></td>
                 <td><small class="text-muted">${n.first_seen}</small></td>
                 <td><small>${n.last_seen}</small></td>
+                <td class="text-end text-nowrap" onclick="event.stopPropagation()">
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteGlobalSSID('${safeSSID}')" title="Delete SSID"><i class="bi bi-trash"></i></button>
+                </td>
             </tr>`;
-        }).join('') : '<tr><td colspan="7" class="text-center p-4">No Wi-Fi history found.</td></tr>';
+        }).join('') : '<tr><td colspan="8" class="text-center p-4">No Wi-Fi history found.</td></tr>';
 
         updateMasterCheckbox('wifiNetHist', paginatedData.map(n => n.ssid));
     }
@@ -2784,18 +2904,6 @@ function deleteLocalBackups(mode) {
     });
 }
 
-function toggleProtection(type, id, currentState) {
-    const newState = currentState ? 0 : 1; // Flip the state
-    fetch('/api/system/toggle_protection', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({type: type, id: id, state: newState})
-    }).then(() => {
-        if(type === 'history') fetchHistory();
-        if(type === 'wifi') loadWifiHistory();
-    });
-}
-
 // Handle Logging toggle
     function toggleLogging() {
         const toggle = document.getElementById('logging-toggle');
@@ -2844,3 +2952,91 @@ function toggleProtection(type, id, currentState) {
                 btn.disabled = false;
             });
     }
+
+    // Overrides the existing updateDeviceName so it refreshes BOTH tables if needed
+function updateDeviceName(mac, old) { 
+    const n = prompt("Set Custom Name:", (old === 'null' || old === 'undefined') ? '' : old); 
+    if(n !== null) {
+        fetch('/api/devices/update_name', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({mac: mac, network_id: currentNetworkId || null, name: n})
+        }).then(() => {
+            // Refresh whichever page we are currently looking at
+            if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
+                loadNetworkDevices(currentNetworkId, ""); 
+            }
+            if (!document.getElementById('device-history-page').classList.contains('hidden')) {
+                loadDeviceHistory();
+            }
+        }); 
+    }
+}
+
+// Function to delete an individual SSID from the global history
+function deleteGlobalSSID(ssid) {
+    if (!confirm(`Are you sure you want to completely delete "${ssid}" from all past Wi-Fi scans?`)) return;
+
+    fetch('/api/wifi_networks_history/delete_ssid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ssid: ssid })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            loadWifiNetworksHistory(); // Refresh the list
+        } else {
+            alert("Error: " + d.error);
+        }
+    });
+}
+
+// Updated toggleProtection to refresh the correct table based on type
+function toggleProtection(type, id, currentState) {
+    const newState = currentState ? 0 : 1; 
+    fetch('/api/system/toggle_protection', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({type: type, id: id, state: newState})
+    }).then(() => {
+        if(type === 'history') fetchHistory();
+        if(type === 'wifi') loadWifiHistory();
+        if(type === 'dns') fetchToolLogs('dns');
+        if(type === 'ping') fetchToolLogs('ping');
+        if(type === 'devices') {
+            // Refresh the specific table we are looking at
+            if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
+                loadNetworkDevices(currentNetworkId, "");
+            }
+            if (!document.getElementById('device-history-page').classList.contains('hidden')) {
+                loadDeviceHistory();
+            }
+        }
+    });
+}
+
+function loadDatabaseInfo() {
+    fetch('/api/system/db_info')
+        .then(r => r.json())
+        .then(d => {
+            const badge = document.getElementById('db-size-badge');
+            if (badge && d.size_mb) badge.innerText = `${d.size_mb} MB`;
+        }).catch(e => console.error(e));
+}
+    // Start the loop and run it immediately
+    function startLivePolling() {
+        if (!liveBandwidthInterval) {
+            updateLiveRatesOnly(); // Run once instantly
+            liveBandwidthInterval = setInterval(updateLiveRatesOnly, 3000);
+        }
+    }
+
+    // Stop the loop to save resources
+    function stopLivePolling() {
+        if (liveBandwidthInterval) {
+            clearInterval(liveBandwidthInterval);
+            liveBandwidthInterval = null;
+        }
+    }
+

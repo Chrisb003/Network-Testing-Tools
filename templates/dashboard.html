@@ -1,4 +1,4 @@
-<!-- Version number 0.11.2 -->
+<!-- Version number 0.12.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -166,12 +166,12 @@
         <div class="card-body p-0">
             <table class="table table-striped mb-0 small align-middle">
                 <!-- NEW: Added Master Checkbox column -->
-                <thead><tr>
+               <thead><tr>
                     <th><input type="checkbox" id="device-master-check" onchange="toggleSelectAll(this, 'device-check'); updateDeviceMasterCheck()"></th>
-                    <th>Hostname</th><th>Name</th><th>Vendor</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th><th>History</th>
+                    <th>Hostname</th><th>Name</th><th>Vendor</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th><th>History</th><th class="text-end">Actions</th>
                 </tr></thead>
-                <!-- NEW: Updated colspan to 9 -->
-                <tbody id="device-list"><tr><td colspan="9" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
+                <!-- NEW: Updated colspan to 10 -->
+                <tbody id="device-list"><tr><td colspan="10" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
             </table>
         </div>
     </div>
@@ -295,11 +295,12 @@
                             <th>Last Network</th>
                             <th>Last IP</th>
                             <th>Last Seen</th>
+                            <th class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="dev-hist-table">
                         <tr>
-                            <td colspan="6" class="text-center p-5">
+                            <td colspan="8" class="text-center p-5">
                                 <div class="spinner-border text-primary mb-3"></div>
                                 <h5 class="text-muted">Loading History...</h5>
                                 <p class="small text-secondary">Gathering global device data.</p>
@@ -537,10 +538,11 @@
                         <th>Times Scanned</th>
                         <th>First Seen</th>
                         <th>Last Seen</th>
+                        <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody id="wifi-net-hist-table">
-                    <tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>
+                    <tr><td colspan="8" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>
                 </tbody>
             </table>
         </div>
@@ -612,18 +614,34 @@
         <!-- Card 2: Database Maintenance -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-warning">
-                <div class="card-header bg-warning-subtle text-warning-emphasis">
+                <div class="card-header bg-warning-subtle text-warning-emphasis d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-trash3-fill"></i> Database Maintenance</h5>
+                    <!-- MOVED: Database Size into Header -->
+                    <span id="db-size-badge" class="badge bg-secondary">0.00 MB</span>
                 </div>
                 <div class="card-body">
-                    <p class="small text-muted">Remove old logs to save space and improve performance.</p>
+                    <p class="small text-muted mb-2">Database tasks remove old data to save space and improve performance.</p>
+                    
                     <div class="d-grid gap-2">
+                        <p class="small text-muted mb-1 mt-2">Clear data older than a certain period of time.</p>
                         <div class="btn-group w-100">
                             <button class="btn btn-outline-secondary" onclick="runCleanup(7)">Old > 7 Days</button>
                             <button class="btn btn-outline-secondary" onclick="runCleanup(30)">Old > 30 Days</button>
                             <button class="btn btn-outline-secondary" onclick="runCleanup(365)">Old > 1 Year</button>
                         </div>
-                        <button class="btn btn-danger mt-2" onclick="runCleanup('all')">
+                        
+                        <p class="small text-muted mb-1 mt-2">Removes old network devices where the original scan was also deleted.</p>
+                        <button class="btn btn-outline-warning" onclick="removeOldDevices()">
+                            <i class="bi bi-eraser-fill"></i> Remove Old Network Devices
+                        </button>
+                        
+                        <p class="small text-muted mb-1 mt-2">Removes old wifi networks where the original scan was also deleted.</p>
+                        <button class="btn btn-outline-warning" onclick="removeOldWifi()">
+                            <i class="bi bi-eraser-fill"></i> Remove Old Wi-Fi Networks
+                        </button>
+                        
+                        <p class="small text-muted mb-1 mt-2">Completely clears the database of all data.</p>
+                        <button class="btn btn-danger" onclick="runCleanup('all')">
                             <i class="bi bi-exclamation-octagon"></i> Clear Database Completely
                         </button>
                     </div>

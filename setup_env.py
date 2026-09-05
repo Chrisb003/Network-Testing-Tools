@@ -19,7 +19,7 @@ import psutil
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "0.11.1"
+SETUP_VERSION = "0.12.0"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]

@@ -1,4 +1,6 @@
-0.11.1- - Testing release.
+0.12.0 - Changed wifi and network devices history so the wifi networks and device are kept even if the orignal scan was deleted. Fix loading animation when doing network scanning. Add mechanism for the page to sleep if not actave for more than 1 hour.
+
+0.11.1-2- - Testing release.
 
 0.11.0 - Fixed various bugs and added various fail safes should the app fail to start up correctly. Various UI fixes. You can now protect speed test, ping and dns lookup results from the database clear tool if removing data older than a certain amount of time. Stopped user being able to hide all adaptors, you need to have atleast one visable. Also stop it from being able to use a hidden adaptor for anything.
 
