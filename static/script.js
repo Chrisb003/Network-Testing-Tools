@@ -85,14 +85,16 @@
         }
     });
 
-// Fetch Logging Setting
+        // Fetch Logging Setting
         fetch('/api/settings/logging')
             .then(res => res.json())
             .then(data => {
-                const toggle = document.getElementById('logging-toggle');
-                if (toggle) toggle.checked = data.full_logging;
+                const toggleFull = document.getElementById('logging-toggle');
+                const toggleDisable = document.getElementById('disable-logging-toggle');
                 
-                // NEW: Populate the log size badge
+                if (toggleFull) toggleFull.checked = data.full_logging;
+                if (toggleDisable) toggleDisable.checked = data.disable_all_logs;
+                
                 const sizeBadge = document.getElementById('log-size-badge');
                 if (sizeBadge && data.size_mb) {
                     sizeBadge.innerText = data.size_mb + ' MB';
@@ -2907,28 +2909,57 @@ function deleteLocalBackups(mode) {
     });
 }
 
-// Handle Logging toggle
-    function toggleLogging() {
-        const toggle = document.getElementById('logging-toggle');
-        const isEnabled = toggle.checked;
+// Handle Logging toggles
+    function toggleLogging(triggeredBy) {
+        const toggleFull = document.getElementById('logging-toggle');
+        const toggleDisable = document.getElementById('disable-logging-toggle');
+        
+        let isFullEnabled = toggleFull.checked;
+        let isDisableEnabled = toggleDisable.checked;
+        
+        // Mutual Exclusivity Logic
+        if (triggeredBy === 'full' && isFullEnabled && isDisableEnabled) {
+            if (confirm("Enabling Full Diagnostic Logging will turn off 'Disable All Logs'. Do you want to continue?")) {
+                isDisableEnabled = false;
+                toggleDisable.checked = false;
+            } else {
+                toggleFull.checked = false; // Revert the switch
+                return;
+            }
+        } else if (triggeredBy === 'disable' && isDisableEnabled && isFullEnabled) {
+            if (confirm("Enabling 'Disable All Logs' will completely turn off Full Diagnostic Logging. Do you want to continue?")) {
+                isFullEnabled = false;
+                toggleFull.checked = false;
+            } else {
+                toggleDisable.checked = false; // Revert the switch
+                return;
+            }
+        }
         
         fetch('/api/settings/logging', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enable: isEnabled })
+            body: JSON.stringify({ 
+                full_logging: isFullEnabled, 
+                disable_all_logs: isDisableEnabled 
+            })
         })
         .then(res => res.json())
         .then(data => {
             if(data.status !== "success") {
-                alert("Failed to update logging setting.");
-                toggle.checked = !isEnabled;
+                alert("Failed to update logging settings: " + (data.message || "Unknown error"));
+                toggleFull.checked = !isFullEnabled;
+                toggleDisable.checked = !isDisableEnabled;
             }
         })
-        .catch(err => { toggle.checked = !isEnabled; });
+        .catch(err => { 
+            alert("Communication error saving log settings.");
+            toggleFull.checked = !isFullEnabled;
+            toggleDisable.checked = !isDisableEnabled;
+        });
     }
 
     // Handle clearing the system diagnostic logs
-// Handle clearing the system diagnostic logs
     function deleteSystemLogs() {
         if (!confirm("Are you sure you want to delete all system diagnostic logs?")) return;
         

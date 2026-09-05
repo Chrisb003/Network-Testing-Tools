@@ -56,17 +56,22 @@ def setup_file_logging():
                 os.remove(log_file)
         except: pass
 
-    # 2. Check Database for Full Logging preference
-    if "APP_FULL_LOGGING" not in os.environ:
+    # 2. Check Database for Logging preferences
+    if "APP_FULL_LOGGING" not in os.environ or "APP_DISABLE_ALL_LOGS" not in os.environ:
         full_log = False
+        disable_logs = False
         try:
             db_name_log = "network_data.db"
             if os.path.exists(db_name_log):
                 with sqlite3.connect(db_name_log, timeout=2.0) as conn:
-                    row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
-                    if row and row[0] == '1': full_log = True
+                    row_f = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
+                    if row_f and row_f[0] == '1': full_log = True
+                    
+                    row_d = conn.execute("SELECT value FROM system_settings WHERE key='disable_all_logs'").fetchone()
+                    if row_d and row_d[0] == '1': disable_logs = True
         except: pass
         os.environ["APP_FULL_LOGGING"] = "1" if full_log else "0"
+        os.environ["APP_DISABLE_ALL_LOGS"] = "1" if disable_logs else "0"
 
     # 3. Create a new log file for this session
     timestamp = os.environ.get("APP_LOG_TIME", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
@@ -91,6 +96,10 @@ def setup_file_logging():
             except: pass
             
             if self.file:
+                # NEW: Completely skip writing to the log file if disabled
+                if os.environ.get("APP_DISABLE_ALL_LOGS", "0") == "1":
+                    return
+
                 # Dynamically check if we should write this line to the log file
                 is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
                 is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning', 'audit'])
@@ -124,7 +133,7 @@ def setup_file_logging():
         format='[%(asctime)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-
+    
 setup_file_logging()
 
 # --- Configuration ---
@@ -4435,10 +4444,14 @@ def delete_network_devices():
 def get_logging_settings():
     """Fetches the current logging preference and calculates total log size."""
     full_log = False
+    disable_logs = False
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         try:
-            row = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
-            full_log = row[0] == '1' if row else False
+            row_f = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
+            full_log = row_f[0] == '1' if row_f else False
+            
+            row_d = conn.execute("SELECT value FROM system_settings WHERE key='disable_all_logs'").fetchone()
+            disable_logs = row_d[0] == '1' if row_d else False
         except sqlite3.OperationalError:
             pass
             
@@ -4452,16 +4465,31 @@ def get_logging_settings():
                 total_size += os.path.getsize(fp)
     size_mb = total_size / (1024 * 1024)
 
-    return jsonify({"full_logging": full_log, "size_mb": f"{size_mb:.2f}"})
+    return jsonify({
+        "full_logging": full_log, 
+        "disable_all_logs": disable_logs, 
+        "size_mb": f"{size_mb:.2f}"
+    })
 
 @app.route('/api/settings/logging', methods=['POST'])
 def set_logging_settings():
-    """Saves the logging preference and immediately updates the live environment variable."""
-    enable = '1' if request.json.get('enable') else '0'
-    os.environ["APP_FULL_LOGGING"] = enable
+    """Saves the logging preferences and immediately updates the live environment variables."""
+    d = request.json
+    enable_full = '1' if d.get('full_logging') else '0'
+    disable_all = '1' if d.get('disable_all_logs') else '0'
+    
+    # Enforce mutual exclusivity on the backend
+    if enable_full == '1' and disable_all == '1':
+        return jsonify({"status": "error", "message": "Cannot enable both 'Full Logging' and 'Disable All Logs' simultaneously."}), 400
+
+    os.environ["APP_FULL_LOGGING"] = enable_full
+    os.environ["APP_DISABLE_ALL_LOGS"] = disable_all
+    
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('full_logging', ?)", (enable,))
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('full_logging', ?)", (enable_full,))
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('disable_all_logs', ?)", (disable_all,))
         conn.commit()
+        
     return jsonify({"status": "success"})
 
 @app.route('/api/system/logs/download')
