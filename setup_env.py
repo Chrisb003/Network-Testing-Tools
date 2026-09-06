@@ -18,7 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "0.12.0"
+SETUP_VERSION = "0.12.5"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]

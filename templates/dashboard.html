@@ -1,4 +1,4 @@
-<!-- Version number 0.12.0 -->
+<!-- Version number 0.12.5 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -135,7 +135,10 @@
                     <!-- NEW: Bulk Unhide Button (Hidden by default) -->
                     <button id="btn-bulk-unhide" class="btn btn-outline-success btn-sm text-nowrap hidden" onclick="bulkUnhideAdapters()">Unhide Selected</button>
                     
-                    <div class="form-check form-switch pt-1"><input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="fetchAdapters()"><label class="form-check-label small">Hide No-MAC</label></div>
+                    <div class="form-check form-switch pt-1">
+                        <input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="renderAdaptersTable()">
+                        <label class="form-check-label small">Hide No-MAC</label>
+                    </div>
                     <!-- UPDATED: onchange now triggers toggleShowHidden() -->
                     <div class="form-check form-switch pt-1"><input class="form-check-input" type="checkbox" id="showHiddenCheck" onchange="toggleShowHidden()"><label class="form-check-label small">Show Hidden</label></div>
                 </div>

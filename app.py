@@ -25,7 +25,6 @@ import threading
 from flask import jsonify
 import logging
 import tempfile
-import re
 import base64
 import filecmp
 from flask import stream_with_context
@@ -137,7 +136,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.12.5"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -617,6 +616,13 @@ def get_worker_config():
         return defaults
 
 # --- System & Network Helpers ---
+# --- GLOBAL CACHE FOR HEAVY OS CALLS ---
+OS_CACHE = {
+    "ext_info": {"data": {}, "time": 0},
+    "wifi_rates": {"data": {}, "time": 0},
+    "wifi_ifaces": {"data": [], "time": 0}
+}
+CACHE_TTL = 8.0  # Seconds to hold hardware data in memory
 def get_isp_info():
     """Fetches Public WAN IP and ISP name."""
     try:
@@ -713,14 +719,17 @@ def restart_server():
 def get_extended_iface_info():
     """
     Fetches Gateway, DNS, and MAC information.
-    - Windows: Parses ipconfig (primary) -> PowerShell (fallback for missing DNS/GW).
-    - macOS: Parses networksetup/ipconfig (Fixes missing MACs & secondary Gateways).
+    - Windows: Parses ipconfig /all (Extremely fast, <0.1s).
+    - macOS: Parses networksetup/ipconfig.
     - Linux: Parses ip route/resolv.conf.
     """
+    global OS_CACHE
+    if time.time() - OS_CACHE["ext_info"]["time"] < CACHE_TTL:
+        return OS_CACHE["ext_info"]["data"]
+
     info = {}
     system = platform.system()
     
-    # Helper to clean and deduplicate gateway strings (e.g., "192.168.1.1, 192.168.1.1" -> "192.168.1.1")
     def _clean_gw(g_str):
         if not g_str or g_str == "-": 
             return "-"
@@ -733,22 +742,17 @@ def get_extended_iface_info():
 
     try:
         if system == "Windows":
-            # --- PRIMARY: ipconfig /all (Most stable for static info) ---
             try:
-                # Using latin-1 encoding to handle special characters in adapter names
-                raw_ip = subprocess.check_output("ipconfig /all", shell=True, text=True, encoding='latin-1')
+                raw_ip = subprocess.check_output("ipconfig /all", shell=True, text=True, encoding='latin-1', errors='ignore')
                 current_iface = None
-                
                 for line in raw_ip.split('\n'):
                     line = line.strip()
-                    # Identify the start of an adapter section
                     if "adapter" in line and ":" in line:
                         parts = line.split("adapter")
                         if len(parts) > 1:
                             current_iface = parts[-1].split(":")[0].strip()
                             if current_iface not in info:
                                 info[current_iface] = {"gateway": "-", "dns": "-"}
-                    
                     if current_iface:
                         if "Default Gateway" in line and ":" in line:
                             gw = line.split(":")[-1].strip()
@@ -758,44 +762,13 @@ def get_extended_iface_info():
                             dns = line.split(":")[-1].strip()
                             if dns and "." in dns and ":" not in dns:
                                 info[current_iface]["dns"] = dns
-            except Exception as e:
-                print(f"ipconfig failed: {e}")
-
-            # --- IMPROVED FALLBACK: Targeted PowerShell ---
-            # This fills in the gaps if ipconfig missed the DNS or Gateway
-            try:
-                ps_cmd = "Get-NetIPConfiguration | Select-Object InterfaceAlias, @{Name='G';Expression={$_.IPv4DefaultGateway.NextHop}}, @{Name='D';Expression={$_.DNSServer.ServerAddresses}} | ConvertTo-Json"
-                out = subprocess.check_output(["powershell", "-Command", ps_cmd], text=True, timeout=5)
-                data = json.loads(out)
-                adapters = [data] if isinstance(data, dict) else data
-                
-                for item in adapters:
-                    name = item.get('InterfaceAlias')
-                    if not name: continue
-                    
-                    # If ipconfig missed it entirely, or it's currently "-", use PowerShell's data
-                    if name not in info: info[name] = {"gateway": "-", "dns": "-"}
-                    
-                    # Resolve Gateway
-                    gw_raw = item.get('G')
-                    if gw_raw and info[name]["gateway"] == "-":
-                        info[name]["gateway"] = _clean_gw(str(gw_raw))
-                    
-                    # Resolve DNS
-                    dns_raw = item.get('D', [])
-                    if dns_raw and info[name]["dns"] == "-":
-                        dns_list = [str(d) for d in (dns_raw if isinstance(dns_raw, list) else [dns_raw]) if "." in str(d)]
-                        if dns_list:
-                            info[name]["dns"] = ", ".join(dns_list)
-            except: pass
+            except Exception as e: pass
 
         elif system == "Darwin": # macOS
             try:
-                # 1. Identify Global Default Gateway via netstat (as a fallback/confirmation)
                 gw_out = subprocess.check_output("netstat -rn -f inet | grep 'default'", shell=True, text=True, stderr=subprocess.DEVNULL)
                 default_gw = "-"
                 primary_iface = None
-                
                 for line in gw_out.split('\n'):
                     parts = line.split()
                     if "default" in parts[0] and len(parts) >= 4:
@@ -803,92 +776,60 @@ def get_extended_iface_info():
                         primary_iface = parts[-1]
                         break
                 
-                # 2. Map Hardware Ports, DNS, MACs, and Specific Gateways
                 port_out = subprocess.check_output(["networksetup", "-listallhardwareports"], text=True)
                 sections = port_out.split("Hardware Port: ")
-                
                 for section in sections:
                     if not section.strip(): continue 
-                    
                     lines = section.split('\n')
                     port_name = lines[0].strip() 
-                    
-                    dev_name = None
-                    mac_addr = "-"
+                    dev_name, mac_addr = None, "-"
                     
                     for line in lines:
-                        if "Device:" in line:
-                            dev_name = line.split(":")[1].strip()
-                        if "Ethernet Address:" in line:
-                            mac_addr = line.split(":")[1].strip()
+                        if "Device:" in line: dev_name = line.split(":")[1].strip()
+                        if "Ethernet Address:" in line: mac_addr = line.split(":")[1].strip()
                     
                     if dev_name:
-                        # Default to global gateway if this is the primary interface
                         gw_val = default_gw if dev_name == primary_iface else "-"
                         dns_val = "-"
-                        
-                        # Method 1: ipconfig (Get DHCP info including Router & DNS)
                         try:
-                            # Silence errors for inactive interfaces
-                            ipconfig = subprocess.check_output(
-                                ["ipconfig", "getpacket", dev_name], 
-                                text=True, 
-                                stderr=subprocess.DEVNULL 
-                            )
-                            
-                            # Extract DNS
+                            ipconfig = subprocess.check_output(["ipconfig", "getpacket", dev_name], text=True, stderr=subprocess.DEVNULL)
                             match_dns = re.search(r'domain_name_server\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
-                            if match_dns:
-                                raw_dns = match_dns.group(1).replace('\n', '').strip()
-                                dns_val = raw_dns.replace(',', ', ')
+                            if match_dns: dns_val = match_dns.group(1).replace('\n', '').strip().replace(',', ', ')
                             
-                            # Extract Router (Gateway) - FIX FOR SECONDARY INTERFACES & DUPLICATES
-                            # Looks for: router (ip_mult): {192.168.1.1}
                             match_gw = re.search(r'router\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
                             if match_gw:
                                 gw_found = match_gw.group(1).replace('\n', '').strip()
-                                if gw_found and gw_found != "0.0.0.0":
-                                    gw_val = _clean_gw(gw_found)
-
+                                if gw_found and gw_found != "0.0.0.0": gw_val = _clean_gw(gw_found)
                         except: pass
 
-                        # Method 2: networksetup fallback (Static DNS)
                         if dns_val == "-" or not dns_val:
                             try:
                                 ns_out = subprocess.check_output(["networksetup", "-getdnsservers", port_name], text=True)
                                 if "There aren't any" not in ns_out:
                                     dns_list = [d.strip() for d in ns_out.split('\n') if d.strip() and ":" not in d]
-                                    if dns_list:
-                                        dns_val = ", ".join(dns_list)
+                                    if dns_list: dns_val = ", ".join(dns_list)
                             except: pass
-                        
                         info[dev_name] = {"gateway": gw_val, "dns": dns_val, "mac": mac_addr}
-
-            except Exception as e:
-                print(f"macOS Iface Error: {e}")
+            except Exception as e: pass
 
         elif system == "Linux": # Linux
             try:
-                # Gateway via ip route
                 gw_out = subprocess.check_output("ip route show default | awk '/default/ {print $3}'", shell=True, text=True)
                 default_gw = _clean_gw(gw_out.strip()) if ":" not in gw_out else "-"
             except: default_gw = "-"
-
             try:
-                # DNS via resolv.conf
                 with open("/etc/resolv.conf", "r") as f:
                     dns_list = [l.split()[1] for l in f if l.startswith("nameserver") and ":" not in l]
                 dns_val = ", ".join(dns_list) if dns_list else "-"
             except: dns_val = "-"
-
-            # Map results to all active interfaces known to psutil
-            import psutil
             for iface in psutil.net_if_addrs().keys():
                 info[iface] = {"gateway": default_gw, "dns": dns_val}
 
     except Exception as e:
         print(f"Error in get_extended_iface_info: {e}")
         
+    OS_CACHE["ext_info"]["data"] = info
+    OS_CACHE["ext_info"]["time"] = time.time()
     return info
 
 # --- Bandwidth Tracking ---
@@ -1557,24 +1498,21 @@ def api_live_bandwidth():
 
 @app.route('/api/adapters')
 def get_adapters():
-    """
-    Fetches all network adapters with:
-    1. Stable IPv4 data from ipconfig.
-    2. Pinned Adapter logic (Header locks to user choice).
-    3. Hardware link speeds with a fallback to 'Not Available' if idle or invalid.
-    4. Real-time Wi-Fi rates only when active traffic exists.
-    5. OS-Specific DNS handling (Fixes Ubuntu 127.0.0.53 issue).
-    6. macOS MAC Address Fallback (Fixes missing adapters).
-    7. Real-time global bandwidth for dashboard metric cards.
-    """
+    """Fetches all network adapters utilizing ThreadPoolExecutor to run OS queries concurrently."""
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     
-    ext_info = get_extended_iface_info()
-    wifi_rates = get_wifi_rates()
+    # Execute OS calls concurrently (Cuts delay dramatically)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        f_ext = executor.submit(get_extended_iface_info)
+        f_wifi = executor.submit(get_wifi_rates)
+        f_active = executor.submit(get_active_interface_name)
+        
+        ext_info = f_ext.result()
+        wifi_rates = f_wifi.result()
+        active_iface_name = f_active.result()
     
-    active_iface_name = get_active_interface_name()
     primary_gw = "Unknown"
     primary_dns = "Unknown"
     pinned_mac = None
@@ -1637,6 +1575,11 @@ def get_adapters():
              if gw != "-": primary_gw = gw
              if dns != "-": primary_dns = dns
 
+        # --- NEW: Identify if it is Wi-Fi or Ethernet ---
+        is_wifi = False
+        if any(w in name.lower() for w in ["wi-fi", "wireless", "wlan", "802.11"]):
+            is_wifi = True
+
         raw_speed = st.speed if st else 0
         display_speed = "Not Available"
         
@@ -1649,8 +1592,8 @@ def get_adapters():
         for wifi_name, rate_str in wifi_rates.items():
             if wifi_name.lower() in name.lower() or name.lower() in wifi_name.lower():
                 display_speed = rate_str
+                is_wifi = True # Confirmed Wi-Fi via rates list
 
-        # FIX: Use exact matches so we don't accidentally wipe out valid Wi-Fi speeds
         if display_speed == "0 Mbps" or display_speed == "-1 Mbps" or display_speed == "-":
             display_speed = "Not Available"
 
@@ -1672,7 +1615,9 @@ def get_adapters():
             "dns": dns,
             "speed": display_speed, 
             "visible": is_vis,
-            "is_primary": is_pinned
+            "is_primary": is_pinned,
+            "is_active": is_active_default,
+            "type": "Wi-Fi" if is_wifi else "Ethernet"
         })
 
     if primary_gw == "Unknown" or ":" in primary_gw:
@@ -1787,45 +1732,39 @@ def update_adapter_settings():
         conn.commit()
         
     return jsonify({"status": "success"})
-    
+
 def get_wifi_rates():
     """
-    Safety-first Wi-Fi rate fetching. Handles Windows JSON/NoneType,
+    Safety-first Wi-Fi rate fetching. Handles Windows netsh,
     macOS ipconfig, and Linux nmcli/sysfs/iw/iwconfig speed attributes.
     """
+    global OS_CACHE
+    if time.time() - OS_CACHE["wifi_rates"]["time"] < CACHE_TTL:
+        return OS_CACHE["wifi_rates"]["data"]
+
     rates = {}
     system = platform.system()
     try:
         if system == "Windows":
-            cmd = "Get-NetAdapterStatistics | Select-Object Name, TransmitBitRate, ReceiveBitRate | ConvertTo-Json"
             try:
-                out = subprocess.check_output(["powershell", "-Command", cmd], text=True, timeout=5)
-            except: return rates
-
-            if not out.strip(): return rates
-            try:
-                data = json.loads(out)
-            except: return rates
-
-            adapter_stats = [data] if isinstance(data, dict) else data
-            if isinstance(adapter_stats, list):
-                for item in adapter_stats:
-                    if not isinstance(item, dict): continue
-                    name = item.get('Name')
-                    if not name: continue
-
-                    try:
-                        raw_tx = item.get('TransmitBitRate')
-                        raw_rx = item.get('ReceiveBitRate')
-                        
-                        tx_val = int(raw_tx) if raw_tx is not None else 0
-                        rx_val = int(raw_rx) if raw_rx is not None else 0
-                        
-                        if tx_val > 0 or rx_val > 0:
-                            tx_mbps = round(tx_val / 1_000_000, 1)
-                            rx_mbps = round(rx_val / 1_000_000, 1)
-                            rates[name] = f"Tx: {tx_mbps} / Rx: {rx_mbps} Mbps"
-                    except: continue
+                out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True, encoding='cp437', errors='ignore')
+                current_iface = None
+                rx_rate, tx_rate = 0, 0
+                for line in out.split('\n'):
+                    line = line.strip()
+                    if line.startswith("Name"):
+                        current_iface = line.split(":", 1)[1].strip()
+                        rx_rate, tx_rate = 0, 0
+                    elif current_iface:
+                        if line.startswith("Receive rate"):
+                            try: rx_rate = float(re.search(r'([0-9.]+)', line).group(1))
+                            except: pass
+                        elif line.startswith("Transmit rate"):
+                            try: tx_rate = float(re.search(r'([0-9.]+)', line).group(1))
+                            except: pass
+                            if rx_rate > 0 or tx_rate > 0:
+                                rates[current_iface] = f"Tx: {tx_rate} / Rx: {rx_rate} Mbps"
+            except: pass
                     
         elif system == "Darwin": # macOS
             try:
@@ -1833,41 +1772,29 @@ def get_wifi_rates():
                 if os.path.exists(airport_path):
                     out = subprocess.check_output([airport_path, "-I"], text=True)
                     rate_match = re.search(r'lastTxRate:\s+(\d+)', out)
-                    if rate_match:
-                        rates["en0"] = f"{rate_match.group(1)} Mbps"
-                
+                    if rate_match: rates["en0"] = f"{rate_match.group(1)} Mbps"
                 if "en0" not in rates:
                     out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
                     tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
-                    if tx_match: 
-                        rates["en0"] = f"{tx_match.group(1)} Mbps"
-            except Exception as e:
-                print(f"macOS Wi-Fi rate fetch failed: {e}")    
+                    if tx_match: rates["en0"] = f"{tx_match.group(1)} Mbps"
+            except: pass    
 
         elif system == "Linux": # Linux
-            # Method 1: NetworkManager CLI (Most reliable, no root required, ignores $PATH issues)
             try:
                 out = subprocess.check_output(["nmcli", "-t", "-f", "IN-USE,DEVICE,RATE", "dev", "wifi"], text=True, stderr=subprocess.DEVNULL)
                 for line in out.strip().split('\n'):
                     parts = line.split(':')
-                    # The active network is marked with a '*' in the IN-USE column
                     if len(parts) >= 3 and parts[0].replace('\\', '') == '*':
                         dev = parts[1]
                         rate_raw = parts[2]
-                        # Extract ONLY the digits to ensure a clean value
                         match = re.search(r'([0-9.]+)', rate_raw)
                         if dev and match and "unknown" not in rate_raw.lower():
                             rates[dev] = f"{match.group(1)} Mbps"
             except: pass
-
-            # Method 2-4: Fallbacks for systems without NetworkManager (e.g., Raspberry Pi OS)
             try:
                 for iface in os.listdir('/sys/class/net/'):
                     if iface.startswith(('wlan', 'wlp', 'wlo')):
-                        if iface in rates:
-                            continue # Skip if nmcli already got it
-                            
-                        # Method 2: Safely check sysfs speed file (ignoring negative error codes)
+                        if iface in rates: continue
                         try:
                             speed_path = f'/sys/class/net/{iface}/speed'
                             if os.path.exists(speed_path):
@@ -1877,32 +1804,26 @@ def get_wifi_rates():
                                         rates[iface] = f"{speed_val} Mbps"
                                         continue
                         except: pass
-
-                        # Method 3: 'iw' with explicit absolute paths mapped for background services
                         try:
                             cmd = f"/sbin/iw dev {iface} link 2>/dev/null || /usr/sbin/iw dev {iface} link 2>/dev/null || iw dev {iface} link 2>/dev/null"
                             out = subprocess.check_output(cmd, shell=True, text=True)
                             if "Not connected" not in out:
-                                # Extract ONLY the digits to ensure a clean value
                                 match = re.search(r'tx bitrate:\s+([0-9.]+)', out)
                                 if match:
                                     rates[iface] = f"{match.group(1)} Mbps"
                                     continue
                         except: pass
-                        
-                        # Method 4: Legacy 'iwconfig' with absolute paths
                         try:
                             cmd = f"/sbin/iwconfig {iface} 2>/dev/null || /usr/sbin/iwconfig {iface} 2>/dev/null || iwconfig {iface} 2>/dev/null"
                             out = subprocess.check_output(cmd, shell=True, text=True)
-                            # Extract ONLY the digits to ensure a clean value
                             match = re.search(r'Bit Rate[=:]\s*([0-9.]+)', out)
-                            if match:
-                                rates[iface] = f"{match.group(1)} Mbps"
+                            if match: rates[iface] = f"{match.group(1)} Mbps"
                         except: pass
             except: pass
-
-    except Exception as e:
-        print(f"Error in get_wifi_rates: {e}")
+    except Exception as e: pass
+    
+    OS_CACHE["wifi_rates"]["data"] = rates
+    OS_CACHE["wifi_rates"]["time"] = time.time()
     return rates
 
 # --- Audit Logging Middleware ---
@@ -2676,46 +2597,52 @@ def dismiss_system_alert():
     return jsonify({"status": "success"})
 
 # --- Misc (WiFi, Speedtest, History, Update) ---
-@app.route('/api/wifi/interfaces')
-def get_wifi_interfaces():
-    """Returns a dynamic list of available Wi-Fi interfaces based on the OS, respecting visibility and custom names."""
+def get_visible_wifi_interfaces():
+    """Helper function to fetch Wi-Fi interfaces while applying database visibility rules."""
+    global OS_CACHE
     raw_ifaces = []
     sys_plat = platform.system()
-    try:
-        if sys_plat == "Windows":
-            out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True)
-            for line in out.split('\n'):
-                if "Name" in line and ":" in line:
-                    raw_ifaces.append(line.split(":", 1)[1].strip())
-        elif sys_plat == "Linux":
-            out = subprocess.check_output(["nmcli", "-t", "-f", "DEVICE,TYPE", "dev"], text=True)
-            for line in out.strip().split('\n'):
-                parts = line.split(':')
-                if len(parts) >= 2 and parts[1] == "wifi":
-                    raw_ifaces.append(parts[0])
-        elif sys_plat == "Darwin":
-            import CoreWLAN
-            client = CoreWLAN.CWWiFiClient.sharedWiFiClient()
-            interfaces = client.interfaces()
-            if interfaces:
-                for i in interfaces:
-                    raw_ifaces.append(i.interfaceName())
-    except Exception as e:
-        print(f"[*] Error fetching Wi-Fi interfaces: {e}")
+    
+    if time.time() - OS_CACHE["wifi_ifaces"]["time"] < CACHE_TTL:
+        raw_ifaces = OS_CACHE["wifi_ifaces"]["data"]
+    else:
+        try:
+            if sys_plat == "Windows":
+                out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True, encoding='cp437', errors='ignore')
+                for line in out.split('\n'):
+                    if "Name" in line and ":" in line:
+                        raw_ifaces.append(line.split(":", 1)[1].strip())
+            elif sys_plat == "Linux":
+                out = subprocess.check_output(["nmcli", "-t", "-f", "DEVICE,TYPE", "dev"], text=True)
+                for line in out.strip().split('\n'):
+                    parts = line.split(':')
+                    if len(parts) >= 2 and parts[1] == "wifi":
+                        raw_ifaces.append(parts[0])
+            elif sys_plat == "Darwin":
+                import CoreWLAN
+                client = CoreWLAN.CWWiFiClient.sharedWiFiClient()
+                interfaces = client.interfaces()
+                if interfaces:
+                    for i in interfaces:
+                        raw_ifaces.append(i.interfaceName())
+        except Exception as e:
+            pass
+            
+        OS_CACHE["wifi_ifaces"]["data"] = raw_ifaces
+        OS_CACHE["wifi_ifaces"]["time"] = time.time()
         
-    # Cross-reference with the database for visibility and custom names
     final_ifaces = []
-    settings_dict = {}
+    settings_by_mac = {}
+    settings_by_name = {}
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             for row in conn.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings"):
-                settings_dict[row[0]] = {"name": row[1], "visible": row[2]}
+                settings_by_mac[row[0]] = {"name": row[1], "visible": row[2]}
+                settings_by_name[row[1]] = {"name": row[1], "visible": row[2]} 
     except: pass
 
-    try:
-        net_ifaces = psutil.net_if_addrs()
-    except:
-        net_ifaces = {}
+    try: net_ifaces = psutil.net_if_addrs()
+    except: net_ifaces = {}
 
     for iface in raw_ifaces:
         mac = "-"
@@ -2728,27 +2655,44 @@ def get_wifi_interfaces():
         custom_name = iface
         is_visible = 1
         
-        # Match the logic used by the main adapters list (MAC first, then fallback to original name)
-        key = mac if (mac and mac != "-") else iface
-        if key in settings_dict:
-            if settings_dict[key]["name"]: custom_name = settings_dict[key]["name"]
-            is_visible = settings_dict[key]["visible"]
+        if mac != "-" and mac in settings_by_mac:
+            if settings_by_mac[mac]["name"]: custom_name = settings_by_mac[mac]["name"]
+            is_visible = settings_by_mac[mac]["visible"]
+        elif iface in settings_by_name:
+            if settings_by_name[iface]["name"]: custom_name = settings_by_name[iface]["name"]
+            is_visible = settings_by_name[iface]["visible"]
             
+        # Only append it if it hasn't been hidden!
         if is_visible:
             final_ifaces.append({"id": iface, "name": custom_name})
             
-    return jsonify(final_ifaces)
+    return final_ifaces
+
+@app.route('/api/wifi/interfaces')
+def api_wifi_interfaces():
+    """Returns the visible interfaces to the dashboard dropdown."""
+    return jsonify(get_visible_wifi_interfaces())
 
 @app.route('/api/wifi')
 def get_wifi_networks():
     """
     Returns detailed Wi-Fi data grouped by SSID.
-    Allows targeting a specific Wi-Fi adapter to prevent dropping live connections.
+    Allows targeting a specific Wi-Fi adapter or intelligently scanning ALL visible adapters.
     """
-    global re
     networks_dict = {}
     sys_plat = platform.system()
-    iface = request.args.get('iface') # Extract the target interface from the URL
+    req_iface = request.args.get('iface') 
+    
+    # --- NEW: Build a list of targeted adapters ---
+    target_ifaces = []
+    if req_iface:
+        target_ifaces = [req_iface]
+    else:
+        # If "Auto", grab every Wi-Fi adapter that isn't hidden in the database
+        visible_ifaces = get_visible_wifi_interfaces()
+        if not visible_ifaces:
+            return jsonify({"error": "No Wi-Fi Adapters", "message": "Could not find any visible Wi-Fi adapters to scan with."})
+        target_ifaces = [i["id"] for i in visible_ifaces]
     
     try:
         # ==========================================
@@ -2757,70 +2701,63 @@ def get_wifi_networks():
         if sys_plat == "Darwin":
             try:
                 import CoreWLAN
-                import re
                 
-                # Target specific interface if provided
-                if iface:
-                    wifi_interface = CoreWLAN.CWInterface.interfaceWithName_(iface)
-                else:
-                    wifi_interface = CoreWLAN.CWInterface.interface()
+                for target_iface in target_ifaces:
+                    wifi_interface = CoreWLAN.CWInterface.interfaceWithName_(target_iface)
+                    if not wifi_interface: continue
                     
-                if not wifi_interface:
-                    return jsonify({"error": "Interface Error", "message": "Could not find the specified Wi-Fi interface."})
-                
-                active_networks, error = wifi_interface.scanForNetworksWithName_error_(None, None)
-                cached_networks = wifi_interface.cachedScanResults()
-                
-                all_networks = []
-                if active_networks:
-                    for n in active_networks: all_networks.append(n)
-                if cached_networks:
-                    for n in cached_networks: all_networks.append(n)
+                    active_networks, error = wifi_interface.scanForNetworksWithName_error_(None, None)
+                    cached_networks = wifi_interface.cachedScanResults()
                     
-                if all_networks:
-                    for i in all_networks:
-                        ssid = str(i.ssid()) if i.ssid() else "Hidden Network"
+                    all_networks = []
+                    if active_networks:
+                        for n in active_networks: all_networks.append(n)
+                    if cached_networks:
+                        for n in cached_networks: all_networks.append(n)
                         
-                        mac_val = i.bssid()
-                        mac = str(mac_val) if mac_val else f"Unknown_MAC_{id(i)}"
-                        
-                        # macOS returns dBm natively. Calculate percentage from dBm.
-                        dbm_val = int(i.rssiValue()) if i.rssiValue() else None
-                        pct_val = max(0, min(100, int((dbm_val + 100) * 2))) if dbm_val is not None else None
-                        
-                        ch_obj = i.wlanChannel()
-                        ch = str(ch_obj.channelNumber()) if ch_obj else "0"
-                        
-                        band_val = ch_obj.channelBand() if ch_obj else 0
-                        if band_val == 1: b = "2.4GHz"
-                        elif band_val == 2: b = "5GHz"
-                        elif band_val == 3: b = "6GHz"
-                        else:
-                            try:
-                                c = int(ch)
-                                if c <= 14: b = "2.4GHz"
-                                elif 36 <= c <= 177: b = "5GHz"
-                                elif c >= 190: b = "6GHz"
-                                else: b = "Unknown"
-                            except: b = "Unknown"
-                        
-                        sec_match = re.search(r'security=(.*?),', str(i))
-                        auth = sec_match.group(1) if sec_match else "Unknown"
-                        
-                        if ssid not in networks_dict:
-                            networks_dict[ssid] = {"ssid": ssid, "auth": auth, "bssids": {}}
-                        
-                        if auth != "Unknown" and networks_dict[ssid]["auth"] == "Unknown":
-                            networks_dict[ssid]["auth"] = auth
+                    if all_networks:
+                        for i in all_networks:
+                            ssid = str(i.ssid()) if i.ssid() else "Hidden Network"
                             
-                        if mac not in networks_dict[ssid]["bssids"]:
-                            networks_dict[ssid]["bssids"][mac] = {"dbm": dbm_val, "percent": pct_val, "channel": ch, "band": b}
-                        else:
-                            if dbm_val is not None:
-                                networks_dict[ssid]["bssids"][mac]["dbm"] = dbm_val
-                                networks_dict[ssid]["bssids"][mac]["percent"] = pct_val
-                            if ch != "0": networks_dict[ssid]["bssids"][mac]["channel"] = ch
-                            if b != "Unknown": networks_dict[ssid]["bssids"][mac]["band"] = b
+                            mac_val = i.bssid()
+                            mac = str(mac_val) if mac_val else f"Unknown_MAC_{id(i)}"
+                            
+                            dbm_val = int(i.rssiValue()) if i.rssiValue() else None
+                            pct_val = max(0, min(100, int((dbm_val + 100) * 2))) if dbm_val is not None else None
+                            
+                            ch_obj = i.wlanChannel()
+                            ch = str(ch_obj.channelNumber()) if ch_obj else "0"
+                            
+                            band_val = ch_obj.channelBand() if ch_obj else 0
+                            if band_val == 1: b = "2.4GHz"
+                            elif band_val == 2: b = "5GHz"
+                            elif band_val == 3: b = "6GHz"
+                            else:
+                                try:
+                                    c = int(ch)
+                                    if c <= 14: b = "2.4GHz"
+                                    elif 36 <= c <= 177: b = "5GHz"
+                                    elif c >= 190: b = "6GHz"
+                                    else: b = "Unknown"
+                                except: b = "Unknown"
+                            
+                            sec_match = re.search(r'security=(.*?),', str(i))
+                            auth = sec_match.group(1) if sec_match else "Unknown"
+                            
+                            if ssid not in networks_dict:
+                                networks_dict[ssid] = {"ssid": ssid, "auth": auth, "bssids": {}}
+                            
+                            if auth != "Unknown" and networks_dict[ssid]["auth"] == "Unknown":
+                                networks_dict[ssid]["auth"] = auth
+                                
+                            if mac not in networks_dict[ssid]["bssids"]:
+                                networks_dict[ssid]["bssids"][mac] = {"dbm": dbm_val, "percent": pct_val, "channel": ch, "band": b}
+                            else:
+                                if dbm_val is not None:
+                                    networks_dict[ssid]["bssids"][mac]["dbm"] = dbm_val
+                                    networks_dict[ssid]["bssids"][mac]["percent"] = pct_val
+                                if ch != "0": networks_dict[ssid]["bssids"][mac]["channel"] = ch
+                                if b != "Unknown": networks_dict[ssid]["bssids"][mac]["band"] = b
 
             except ImportError:
                 return jsonify({"error": "Missing Library", "message": "Run: pip install pyobjc-framework-CoreWLAN"})
@@ -2831,329 +2768,154 @@ def get_wifi_networks():
         # 2. Windows Implementation (netsh)
         # ==========================================
         elif sys_plat == "Windows":
-            if iface:
-                # Reset ONLY the selected adapter, keeping your primary internet connection alive
-                subprocess.run(["powershell", "-Command", f"Get-NetAdapter -Name '{iface}' | Restart-NetAdapter"], capture_output=True)
-                time.sleep(4) # Increased slightly to give 6GHz bands more time to surface
-                cmd = f'netsh wlan show networks interface="{iface}" mode=bssid'
-            else:
-                # Legacy fallback: reset all Wi-Fi adapters
-                subprocess.run(["powershell", "-Command", "Get-NetAdapter | Where-Object {$_.MediaType -eq 'Native 802.11'} | Restart-NetAdapter"], capture_output=True)
-                time.sleep(4) 
-                cmd = "netsh wlan show networks mode=bssid"
+            # Restart all targeted adapters simultaneously using a comma-separated PowerShell array
+            iface_list_str = ",".join([f"'{i}'" for i in target_ifaces])
+            subprocess.run(["powershell", "-Command", f"Get-NetAdapter -Name {iface_list_str} | Restart-NetAdapter"], capture_output=True)
+            time.sleep(4) 
+            
+            for target_iface in target_ifaces:
+                cmd = f'netsh wlan show networks interface="{target_iface}" mode=bssid'
 
-            # NEW: Loop twice to give the Windows cache a chance to populate missing signals
-            for attempt in range(2):
-                process = subprocess.Popen(
-                    cmd, 
-                    shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                )
-                out_bytes, _ = process.communicate(timeout=15)
+                for attempt in range(2):
+                    process = subprocess.Popen(
+                        cmd, 
+                        shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    out_bytes, _ = process.communicate(timeout=15)
 
-                # Smart decoding: Try UTF-8 first for special characters, fallback to cp437
-                try:
-                    stdout = out_bytes.decode('utf-8')
-                except UnicodeDecodeError:
-                    stdout = out_bytes.decode('cp437', errors='ignore')
+                    try:
+                        stdout = out_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        stdout = out_bytes.decode('cp437', errors='ignore')
 
-                current_ssid = None
-                current_mac = None
-                
-                for line in stdout.split('\n'):
-                    line = line.strip()
-                    if not line: continue
-
-                    if line.lower().startswith("ssid"):
-                        parts = line.split(":", 1)
-                        current_ssid = parts[1].strip() if len(parts) > 1 else "Hidden Network"
-                        current_mac = None 
-                        if current_ssid not in networks_dict:
-                            networks_dict[current_ssid] = {"ssid": current_ssid, "auth": "Unknown", "bssids": {}}
-
-                    elif current_ssid:
-                        if "authentication" in line.lower():
-                            networks_dict[current_ssid]["auth"] = line.split(":", 1)[1].strip()
-                        
-                        elif line.lower().startswith("bssid"):
-                            raw_mac_line = line.split(":", 1)[1].strip()
-                            current_mac = raw_mac_line.split(",")[0].strip() if raw_mac_line else f"Unknown_MAC_{time.time()}"
-                            
-                            if current_mac not in networks_dict[current_ssid]["bssids"]:
-                                networks_dict[current_ssid]["bssids"][current_mac] = {"dbm": None, "percent": None, "channel": "0", "band": "Unknown"}
-                                
-                            if "," in raw_mac_line:
-                                for part in raw_mac_line.split(",")[1:]:
-                                    part = part.strip().lower()
-                                    if part.startswith("band"):
-                                        raw_band = part.split(":", 1)[-1].strip().replace(" ", "")
-                                        if "2.4" in raw_band: b = "2.4GHz"
-                                        elif "5" in raw_band: b = "5GHz"
-                                        elif "6" in raw_band: b = "6GHz"
-                                        else: b = raw_band
-                                        networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
-                                    elif part.startswith("channel"):
-                                        ch = part.split(":", 1)[-1].strip()
-                                        if re.match(r"^\d{1,3}$", ch):
-                                            networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
-                                    elif part.startswith("signal"):
-                                        raw_sig = part.split(":", 1)[-1].strip()
-                                        try:
-                                            pct_val = int(''.join(filter(str.isdigit, raw_sig)))
-                                            networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
-                                            networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
-                                        except ValueError: pass
-                        
-                        elif current_mac and "signal" in line.lower():
-                            raw_sig = line.split(":", 1)[1].strip()
-                            try:
-                                pct_val = int(''.join(filter(str.isdigit, raw_sig)))
-                                networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
-                                networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
-                            except ValueError: pass
-                        
-                        elif current_mac and "channel" in line.lower():
-                            ch = line.split(":", 1)[1].strip()
-                            if re.match(r"^\d{1,3}$", ch):
-                                networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
-                                
-                        elif current_mac and "band" in line.lower():
-                            raw_band = line.split(":", 1)[1].strip().replace(" ", "")
-                            if "2.4" in raw_band: b = "2.4GHz"
-                            elif "5" in raw_band: b = "5GHz"
-                            elif "6" in raw_band: b = "6GHz"
-                            else: b = raw_band
-                            networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
-
-                # End of parse loop. Check if any signals are missing.
-                missing_signals = any(
-                    b_data["percent"] is None 
-                    for net in networks_dict.values() 
-                    for b_data in net["bssids"].values()
-                )
-                
-                # If everything has a signal, or we're on the last attempt, break out early
-                if not missing_signals or attempt == 1:
-                    break
+                    current_ssid = None
+                    current_mac = None
                     
-                # Otherwise, wait 2 seconds for Windows to finish populating the cache, then loop again
-                time.sleep(2)
+                    for line in stdout.split('\n'):
+                        line = line.strip()
+                        if not line: continue
+
+                        if line.lower().startswith("ssid"):
+                            parts = line.split(":", 1)
+                            current_ssid = parts[1].strip() if len(parts) > 1 else "Hidden Network"
+                            current_mac = None 
+                            if current_ssid not in networks_dict:
+                                networks_dict[current_ssid] = {"ssid": current_ssid, "auth": "Unknown", "bssids": {}}
+
+                        elif current_ssid:
+                            if "authentication" in line.lower():
+                                networks_dict[current_ssid]["auth"] = line.split(":", 1)[1].strip()
+                            
+                            elif line.lower().startswith("bssid"):
+                                raw_mac_line = line.split(":", 1)[1].strip()
+                                current_mac = raw_mac_line.split(",")[0].strip() if raw_mac_line else f"Unknown_MAC_{time.time()}"
+                                
+                                if current_mac not in networks_dict[current_ssid]["bssids"]:
+                                    networks_dict[current_ssid]["bssids"][current_mac] = {"dbm": None, "percent": None, "channel": "0", "band": "Unknown"}
+                                    
+                                if "," in raw_mac_line:
+                                    for part in raw_mac_line.split(",")[1:]:
+                                        part = part.strip().lower()
+                                        if part.startswith("band"):
+                                            raw_band = part.split(":", 1)[-1].strip().replace(" ", "")
+                                            if "2.4" in raw_band: b = "2.4GHz"
+                                            elif "5" in raw_band: b = "5GHz"
+                                            elif "6" in raw_band: b = "6GHz"
+                                            else: b = raw_band
+                                            networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
+                                        elif part.startswith("channel"):
+                                            ch = part.split(":", 1)[-1].strip()
+                                            if re.match(r"^\d{1,3}$", ch):
+                                                networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
+                                        elif part.startswith("signal"):
+                                            raw_sig = part.split(":", 1)[-1].strip()
+                                            try:
+                                                pct_val = int(''.join(filter(str.isdigit, raw_sig)))
+                                                networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
+                                                networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
+                                            except ValueError: pass
+                            
+                            elif current_mac and "signal" in line.lower():
+                                raw_sig = line.split(":", 1)[1].strip()
+                                try:
+                                    pct_val = int(''.join(filter(str.isdigit, raw_sig)))
+                                    networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
+                                    networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
+                                except ValueError: pass
+                            
+                            elif current_mac and "channel" in line.lower():
+                                ch = line.split(":", 1)[1].strip()
+                                if re.match(r"^\d{1,3}$", ch):
+                                    networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
+                                    
+                            elif current_mac and "band" in line.lower():
+                                raw_band = line.split(":", 1)[1].strip().replace(" ", "")
+                                if "2.4" in raw_band: b = "2.4GHz"
+                                elif "5" in raw_band: b = "5GHz"
+                                elif "6" in raw_band: b = "6GHz"
+                                else: b = raw_band
+                                networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
+
+                    missing_signals = any(
+                        b_data["percent"] is None 
+                        for net in networks_dict.values() 
+                        for b_data in net["bssids"].values()
+                    )
+                    
+                    if not missing_signals or attempt == 1:
+                        break
+                        
+                    time.sleep(2)
 
         # ==========================================
         # 3. Linux Implementation (nmcli)
         # ==========================================
         elif sys_plat == "Linux":
-            if iface:
-                # Force a fresh scan on the specific interface
-                subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", iface], capture_output=True)
-                time.sleep(2) # Give it time to populate
-                cmd = ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi", "list", "ifname", iface]
-            else:
-                # Global scan fallback
-                subprocess.run(["nmcli", "dev", "wifi", "rescan"], capture_output=True)
-                time.sleep(2)
-                cmd = ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi"]
-                
-            output = subprocess.check_output(cmd, text=True)
-            for line in output.strip().split('\n'):
-                parts = re.split(r'(?<!\\):', line)
-                parts = [p.replace('\\:', ':') for p in parts]
-                
-                if len(parts) >= 6:
-                    ssid = parts[0] or "Hidden Network"
-                    mac = parts[1].strip() if parts[1] else f"Unknown_MAC_{time.time()}"
-                    
-                    # Linux returns percentage natively. Calculate dBm from percentage.
-                    sig_raw = parts[2]
-                    if sig_raw and sig_raw.isdigit():
-                        pct_val = int(sig_raw)
-                        dbm_val = int((pct_val / 2) - 100)
-                    else:
-                        pct_val = None
-                        dbm_val = None
+            for target_iface in target_ifaces:
+                subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", target_iface], capture_output=True)
+            time.sleep(2) # Give it time to populate
+            
+            for target_iface in target_ifaces:
+                cmd = ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi", "list", "ifname", target_iface]
+                try:
+                    output = subprocess.check_output(cmd, text=True)
+                    for line in output.strip().split('\n'):
+                        parts = re.split(r'(?<!\\):', line)
+                        parts = [p.replace('\\:', ':') for p in parts]
                         
-                    ch = parts[3] if parts[3].isdigit() else "0"
-                    
-                    freq_digits = ''.join(filter(str.isdigit, parts[4]))
-                    freq = int(freq_digits) if freq_digits else 0
-                    
-                    if 2400 <= freq <= 2500: b = "2.4GHz"
-                    elif 5150 <= freq <= 5895: b = "5GHz"
-                    elif freq >= 5925: b = "6GHz"
-                    else: b = "Unknown"
+                        if len(parts) >= 6:
+                            ssid = parts[0] or "Hidden Network"
+                            mac = parts[1].strip() if parts[1] else f"Unknown_MAC_{time.time()}"
+                            
+                            sig_raw = parts[2]
+                            if sig_raw and sig_raw.isdigit():
+                                pct_val = int(sig_raw)
+                                dbm_val = int((pct_val / 2) - 100)
+                            else:
+                                pct_val = None
+                                dbm_val = None
+                                
+                            ch = parts[3] if parts[3].isdigit() else "0"
+                            
+                            freq_digits = ''.join(filter(str.isdigit, parts[4]))
+                            freq = int(freq_digits) if freq_digits else 0
+                            
+                            if 2400 <= freq <= 2500: b = "2.4GHz"
+                            elif 5150 <= freq <= 5895: b = "5GHz"
+                            elif freq >= 5925: b = "6GHz"
+                            else: b = "Unknown"
 
-                    if ssid not in networks_dict:
-                        networks_dict[ssid] = {"ssid": ssid, "auth": parts[5], "bssids": {}}
-                    
-                    if parts[5] != "Unknown" and networks_dict[ssid]["auth"] == "Unknown":
-                        networks_dict[ssid]["auth"] = parts[5]
-                        
-                    networks_dict[ssid]["bssids"][mac] = {"dbm": dbm_val, "percent": pct_val, "channel": ch, "band": b}
+                            if ssid not in networks_dict:
+                                networks_dict[ssid] = {"ssid": ssid, "auth": parts[5], "bssids": {}}
+                            
+                            if parts[5] != "Unknown" and networks_dict[ssid]["auth"] == "Unknown":
+                                networks_dict[ssid]["auth"] = parts[5]
+                                
+                            networks_dict[ssid]["bssids"][mac] = {"dbm": dbm_val, "percent": pct_val, "channel": ch, "band": b}
+                except: pass
 
     except Exception as e: 
         return jsonify({"error": "Critical Error", "message": str(e)})
-
-    # ==========================================
-    # 4. Flattening, Clustering Unknowns, & Formatting
-    # ==========================================
-    final_networks = []
-    
-    def get_band_weight(band_str):
-        if "2.4" in band_str: return 1
-        if "5" in band_str: return 2
-        if "6" in band_str: return 3
-        return 4
-
-    for net in networks_dict.values():
-        bands_dict = {}
-        raw_bssids = [] # Hidden list for CSV exporter
-        auth_val = net.get("auth", "Unknown")
-        
-        # 1. Bucket all MACs and signals by Band
-        for mac, data in net["bssids"].items():
-            b = data.get("band", "Unknown")
-            dbm_val = data.get("dbm")
-            pct_val = data.get("percent")
-            ch = data.get("channel", "0")
-            
-            raw_bssids.append({
-                "mac": "Unknown" if mac.startswith("Unknown_MAC_") else mac,
-                "dbm": dbm_val if dbm_val is not None else "",
-                "percent": pct_val if pct_val is not None else "",
-                "channel": ch,
-                "band": b
-            })
-            
-            if b not in bands_dict:
-                bands_dict[b] = {"known_macs": [], "unknown_signals": [], "channels": set()}
-            
-            if ch and ch != "0":
-                bands_dict[b]["channels"].add(ch)
-            
-            if mac.startswith("Unknown_MAC_"):
-                if dbm_val is not None:
-                    bands_dict[b]["unknown_signals"].append(dbm_val)
-            else:
-                bands_dict[b]["known_macs"].append({
-                    "mac": mac, 
-                    "percent": pct_val,
-                    "dbm": dbm_val if dbm_val is not None else -100,
-                    "channel": ch
-                })
-        
-        display_details = []
-        ui_sort_dbm = -100 # Track highest dbm in this SSID for sorting the UI cards
-        sorted_bands = sorted(bands_dict.keys(), key=get_band_weight)
-        
-        # 2. Build the combined access point lines with colored percentages
-        for idx, b in enumerate(sorted_bands):
-            data = bands_dict[b]
-            
-            # --- Band Header (e.g., "2.4Ghz" in blue) ---
-            b_clean = b.replace("GHz", "Ghz")
-            mt_class = "" if idx == 0 else "mt-2 "
-            display_details.append(f'<span class="{mt_class}fw-bold text-info d-block mb-1" style="font-size:0.85rem;">{b_clean}</span>')
-            
-            # --- Unknown MACs (fallback clustering) ---
-            if data["unknown_signals"]:
-                clusters = []
-                for val in data["unknown_signals"]:
-                    placed = False
-                    for cluster in clusters:
-                        avg_sig = sum(cluster) / len(cluster)
-                        if abs(val - avg_sig) <= 5:
-                            cluster.append(val)
-                            placed = True
-                            break
-                    if not placed:
-                        clusters.append([val])
-                
-                for c in clusters:
-                    avg_dbm = int(round(sum(c) / len(c)))
-                    avg_pct = max(0, min(100, int((avg_dbm + 100) * 2)))
-                    if avg_dbm > ui_sort_dbm: ui_sort_dbm = avg_dbm
-                    
-                    if avg_pct >= 75: color = "text-success"
-                    elif avg_pct >= 40: color = "text-warning"
-                    else: color = "text-danger"
-                    
-                    display_details.append(f'Unknown MAC - CH- - {auth_val} - <span class="fw-bold {color}">{avg_pct}%</span>')
-                    
-            # --- Known MACs: Sorted strongest to weakest within the band ---
-            sorted_macs = sorted(data["known_macs"], key=lambda x: x["dbm"], reverse=True)
-            for kmac in sorted_macs:
-                if kmac["dbm"] > ui_sort_dbm: ui_sort_dbm = kmac["dbm"]
-                
-                # Assign dynamic colors based on signal strength
-                if kmac.get("percent") is not None:
-                    pct = kmac['percent']
-                    pct_str = f"{pct}%"
-                    if pct >= 75: color = "text-success"
-                    elif pct >= 40: color = "text-warning"
-                    else: color = "text-danger"
-                    colored_pct = f'<span class="fw-bold {color}">{pct_str}</span>'
-                else:
-                    colored_pct = '<span class="fw-bold text-muted">-%</span>'
-                
-                ch_val = kmac.get("channel", "0")
-                ch_str = f"CH{ch_val}" if ch_val and ch_val != "0" else "CH-"
-                mac_str = kmac["mac"]
-                
-                # Format: "0e:21:37:a5:94:5f - CH1 - WPA3-Personal - <span class='text-success'>84%</span>"
-                display_details.append(f"{mac_str} - {ch_str} - {auth_val} - {colored_pct}")
-        
-        # 3. Format Channels by Band Header: "2.4Ghz - 1, 5Ghz - 50, 6Ghz - 1"
-        band_ch_parts = []
-        for b in sorted_bands:
-            chs = sorted(list(bands_dict[b]["channels"]), key=lambda x: int(x) if str(x).isdigit() else 0)
-            if chs:
-                b_clean = b.replace("GHz", "Ghz")
-                band_ch_parts.append(f"{b_clean} - {', '.join(chs)}")
-        channel_str = ", ".join(band_ch_parts) if band_ch_parts else "-"
-        
-        final_networks.append({
-            "ssid": net["ssid"],
-            "channel": channel_str,
-            "auth": auth_val,
-            "details": "<br>".join(display_details),
-            "raw_bssids": raw_bssids,
-            "_sort_dbm": ui_sort_dbm
-        })
-
-    # Sort the final UI cards by the strongest signal overall
-    final_networks.sort(key=lambda x: x['_sort_dbm'], reverse=True)
-    for n in final_networks:
-        n.pop('_sort_dbm', None)
-
-    scan_id = None
-    auto_name = ""
-
-    # Auto-log scan to database
-    if final_networks:
-        try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            auto_name = f"Auto-Scan {timestamp}"
-            
-            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                conn.execute("PRAGMA busy_timeout = 3000")
-                c = conn.cursor()
-                c.execute(
-                    "INSERT INTO wifi_history (timestamp, scan_name, comments, results_json) VALUES (?, ?, ?, ?)",
-                    (timestamp, auto_name, "Automatically logged", json.dumps(final_networks))
-                )
-                scan_id = c.lastrowid
-                conn.commit()
-            print(f"[✓] Wi-Fi scan auto-logged: {auto_name}")
-        except Exception as db_err:
-            print(f"[!] Database Auto-log Error: {db_err}")
-
-    print(f"[*] Wi-Fi Scan Complete. Full Results:\n{json.dumps(final_networks, indent=2)}")
-    
-    # Return the networks along with the new database ID and Name so the UI can edit it
-    return jsonify({
-        "networks": final_networks,
-        "scan_id": scan_id,
-        "scan_name": auto_name
-    })
 
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
@@ -3907,30 +3669,6 @@ def fix_permissions(path):
             os.chmod(path, 0o777)
     except Exception as e:
         print(f"[!] Permission fix failed for {path}: {e}")
-
-@app.route('/api/wifi/save', methods=['POST'])
-def save_wifi_scan():
-    data = request.json
-    try:
-        conn = sqlite3.connect(DB_NAME, timeout=10.0)
-        c = conn.cursor()
-        
-        raw_name = str(data.get('name', '')).strip()[:50]
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        scan_name = raw_name if raw_name else f"Scan {timestamp}"
-        comments = str(data.get('comments', '')).strip()[:200]
-
-        # ADDED 'timestamp' column and value here:
-        c.execute(
-            "INSERT INTO wifi_history (timestamp, scan_name, comments, results_json) VALUES (?, ?, ?, ?)",
-            (timestamp, scan_name, comments, json.dumps(data.get('results', [])))
-        )
-        conn.commit()
-        conn.close()
-        return jsonify({"status": "success", "saved_as": scan_name})
-    except Exception as e:
-        print(f"[X] Database Error: {e}")
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/wifi/history', methods=['GET'])
 def get_wifi_history():

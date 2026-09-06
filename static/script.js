@@ -2,7 +2,6 @@
     let updateModal, adapterModal, editSpeedTestModal, allDevices = [], allHistory = [], currentNetworkId = null;
     let currentScanResults = [];
     let allWifiHistory = [];
-    let activeScanComment = "";
     let pendingRemoteVersion = null;
     let allDeviceHistory = [];
     let devHistModal;
@@ -125,47 +124,6 @@
             channelSelect.value = window.APP_CONFIG.updateChannel;
         }
     });
-
-    async function unpinAdapter() {
-    /**
-     * Locates the currently pinned adapter and removes its primary status.
-     * Triggers a UI refresh upon success.
-     */
-    const mac = document.getElementById('modal-mac').value; // Temporary grab or fetch from data
-    
-    // First, we need to find which adapter is currently pinned in the local data
-    const response = await fetch('/api/adapters');
-    const data = await response.json();
-    const pinned = data.adapters.find(a => a.is_primary === true);
-
-    if (!pinned) return;
-
-    if (!confirm(`Are you sure you want to unpin "${pinned.name}"? The dashboard will return to global monitoring.`)) {
-        return;
-    }
-
-    try {
-        const updateResponse = await fetch('/api/adapter_settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                mac: pinned.mac,
-                name: pinned.name,
-                visible: pinned.visible ? 1 : 0,
-                is_primary: 0 // Remove the pin
-            })
-        });
-
-        if (updateResponse.ok) {
-            // Refresh the full UI to update the header and live rates
-            refreshNetworkInfo();
-        } else {
-            alert("Failed to unpin adapter.");
-        }
-    } catch (err) {
-        alert("Error: " + err.message);
-    }
-}
 
     // Function to handle database cleanup with confirmation prompts
 async function runCleanup(interval) {
@@ -451,26 +409,44 @@ async function refreshNetworkInfo() {
         btn.className = theme === 'dark' ? 'btn btn-outline-light' : 'btn btn-outline-dark';
     }
 
-    // --- Adapters Logic ---
-    // --- Consolidated Adapter Logic ---
+// --- Adapters Logic ---
+    let lastAdaptersData = null; // Store data locally to make UI toggles instant
 
-async function fetchAdapters() {
-    /**
-     * Performs a full data fetch to update:
-     * 1. The Global Header (WAN, Router IP, DNS).
-     * 2. The Pinned Adapter Alert message.
-     * 3. The Adapter Table (IPs, Status, MACs).
-     * 4. Handles "Pinned" status for the primary interface.
-     * Includes safety fallbacks for offline/NoneType scenarios.
-     */
-    const noMac = document.getElementById('hideNoMacCheck').checked;
-    const showHidden = document.getElementById('showHiddenCheck').checked;
+    async function fetchAdapters() {
+        /**
+         * Performs a full OS data fetch. Now ONLY runs on page load 
+         * or when explicitly clicking the "Refresh" button.
+         */
+        const tbody = document.getElementById('adapter-table');
+        if (tbody) tbody.style.opacity = '0.5';
 
-    try {
-        const response = await fetch('/api/adapters');
-        const data = await response.json();
+        try {
+            const response = await fetch('/api/adapters');
+            const data = await response.json();
+            
+            if (!data || !data.adapters) return;
+            
+            lastAdaptersData = data; // Cache the data locally
+            renderAdaptersTable();   // Pass off to the instant renderer
+            
+        } catch (err) {
+            console.warn("Failed to fetch adapter data: System might be offline.", err);
+            const routerEl = document.getElementById('header-router-ip');
+            if (routerEl) routerEl.innerText = "Disconnected";
+            if (tbody) tbody.style.opacity = '1';
+        }
+    }
+
+    function renderAdaptersTable() {
+        /**
+         * Instantly generates the HTML table using the locally cached data.
+         * Runs in 0 milliseconds when toggling UI filters.
+         */
+        if (!lastAdaptersData || !lastAdaptersData.adapters) return;
         
-        if (!data || !data.adapters) return;
+        const data = lastAdaptersData;
+        const noMac = document.getElementById('hideNoMacCheck').checked;
+        const showHidden = document.getElementById('showHiddenCheck').checked;
 
         // 1. Update Global Header Stats
         const routerEl = document.getElementById('header-router-ip');
@@ -480,24 +456,38 @@ async function fetchAdapters() {
 
         if (routerEl) routerEl.innerText = data.primary_router && data.primary_router !== "-" ? data.primary_router : "Disconnected";
         if (dnsEl) dnsEl.innerText = data.primary_dns && data.primary_dns !== "-" ? data.primary_dns : "N/A";
-        
         if (data.global_speed) { 
             if (downEl) downEl.innerText = data.global_speed.download; 
             if (upEl) upEl.innerText = data.global_speed.upload; 
         }
 
-        // --- 2. PINNED ADAPTER ALERT LOGIC ---
+        // 2. PINNED ADAPTER ALERT LOGIC
         const alertEl = document.getElementById('pinned-adapter-alert');
         const alertNameEl = document.getElementById('pinned-adapter-name');
         
-        // Find if any adapter in the response is marked as primary
         const pinned = data.adapters.find(a => a.is_primary === true);
+        const active = data.adapters.find(a => a.is_active === true);
         
         if (pinned && alertEl && alertNameEl) {
             alertEl.classList.remove('hidden');
-            alertNameEl.innerText = pinned.name; // Display custom name
+            alertNameEl.innerText = pinned.name;
         } else if (alertEl) {
             alertEl.classList.add('hidden');
+        }
+
+        // --- NEW: Auto-Select Speed Test Connection Type ---
+        const targetAdapter = pinned || active;
+        if (targetAdapter && targetAdapter.mac !== window.lastTargetAdapterMac) {
+            window.lastTargetAdapterMac = targetAdapter.mac;
+            const typeSelect = document.getElementById('st-conn-type');
+            if (typeSelect) {
+                // Slight timeout to ensure the DB connection types loaded on initial page boot
+                setTimeout(() => {
+                    if (Array.from(typeSelect.options).some(opt => opt.value === targetAdapter.type)) {
+                        typeSelect.value = targetAdapter.type;
+                    }
+                }, 100); 
+            }
         }
 
         const tbody = document.getElementById('adapter-table'); 
@@ -507,30 +497,25 @@ async function fetchAdapters() {
         tbody.innerHTML = data.adapters.map(a => {
             // Filter Logic based on UI toggles
             if (noMac && (!a.mac || a.mac === '-')) return '';
-            if (!a.visible && !showHidden) return '';
+            
+            // Backend visible property is numeric or bool
+            const isVisible = !!a.visible; 
+            if (!isVisible && !showHidden) return '';
 
-            // Sanitize strings for the onclick event
             const safeName = escapeJS(a.name);
             const safeId = escapeJS(a.id);
             const originalMac = a.mac || '-';
-            
-            // Format MAC for display (colons instead of dashes)
             const displayMac = originalMac.replace(/-/g, ':');
-            
-            const isVisible = !!a.visible;
             const isPrimary = !!a.is_primary;
             
-            // Check if the item was previously selected
             const isChecked = tableState.adapters.selected.has(originalMac) ? 'checked' : '';
-            // Disable the checkbox entirely if it's a virtual adapter with no MAC
             const checkboxDisabled = originalMac === '-' ? 'disabled' : '';
 
             return `
-                <tr data-id="${a.id}" class="${!a.visible ? 'opacity-50' : ''}">
+                <tr data-id="${a.id}" class="${!isVisible ? 'opacity-50' : ''}">
                     <td onclick="event.stopPropagation()">
                         <input type="checkbox" class="adapters-check" value="${originalMac}" onchange="toggleSelection('adapters', this)" ${isChecked} ${checkboxDisabled}>
                     </td>
-                    <!-- FIXED: Added pencil icon and clickable edit event natively to the column -->
                     <td onclick="openAdapterConfig('${originalMac}', '${safeId}', '${safeName}', ${isVisible}, ${isPrimary})" style="cursor: pointer;" title="Edit Adapter">
                         <strong>${escapeHTML(a.name)}</strong> <i class="bi bi-pencil small text-muted ms-1"></i>
                         ${isPrimary ? '<span class="badge bg-primary ms-1" style="font-size: 0.6rem;">PINNED</span>' : ''}
@@ -552,90 +537,200 @@ async function fetchAdapters() {
                 </tr>`;
         }).join('');
         
-        updateMasterCheckbox('adapters'); // Refresh master checkbox UI
-
-    } catch (err) {
-        // Fallback for if the API fails entirely due to disconnection
-        console.warn("Failed to fetch adapter data: System might be offline.", err);
-        const routerEl = document.getElementById('header-router-ip');
-        if (routerEl) routerEl.innerText = "Disconnected";
+        updateMasterCheckbox('adapters'); 
+        
+        // Remove the grey-out effect immediately after rendering
+        tbody.style.opacity = '1';
     }
-}
 
-function openAdapterConfig(mac, id, name, vis, primary) {
-    document.getElementById('modal-mac').value = mac; 
-    document.getElementById('modal-sys-id').value = id;
-    document.getElementById('modal-custom-name').value = name; 
-    document.getElementById('modal-visible').checked = vis;
-    document.getElementById('modal-pin-primary').checked = primary; 
-    
-    // Determine if this adapter is a Wi-Fi adapter using the global list
-    const wifiContainer = document.getElementById('modal-wifi-scanner-container');
-    const isWifi = globalWifiAdapters.some(a => a.id === id);
-    
-    if (isWifi) {
-        wifiContainer.classList.remove('hidden');
-        document.getElementById('modal-wifi-scanner').checked = (localStorage.getItem('preferredWifiAdapter') === id);
-    } else {
-        wifiContainer.classList.add('hidden');
+    async function unpinAdapter() {
+        if (!lastAdaptersData) return;
+        const pinned = lastAdaptersData.adapters.find(a => a.is_primary === true);
+        if (!pinned) return;
+
+        if (!confirm(`Are you sure you want to unpin "${pinned.name}"? The dashboard will return to global monitoring.`)) return;
+
+        try {
+            const updateResponse = await fetch('/api/adapter_settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    mac: pinned.mac, name: pinned.name,
+                    visible: pinned.visible ? 1 : 0, is_primary: 0 
+                })
+            });
+
+            if (updateResponse.ok) {
+                pinned.is_primary = false; // Optimistic update
+                renderAdaptersTable();     // Instant UI refresh
+            } else {
+                alert("Failed to unpin adapter.");
+            }
+        } catch (err) { alert("Error: " + err.message); }
     }
-    
-    adapterModal.show();
-}
 
-async function saveAdapterSettings() {
-    const mac = document.getElementById('modal-mac').value;
-    const id = document.getElementById('modal-sys-id').value;
-    const name = document.getElementById('modal-custom-name').value;
-    const visible = document.getElementById('modal-visible').checked ? 1 : 0;
-    const primary = document.getElementById('modal-pin-primary').checked ? 1 : 0;
-
-    if (primary === 1 && visible === 0) {
-        alert("You cannot hide a pinned adapter. Please unpin it first or make it visible.");
-        return; 
-    }
-    
-    // Handle Wi-Fi Scanner Lock seamlessly via localStorage if the option was visible
-    const wifiContainer = document.getElementById('modal-wifi-scanner-container');
-    if (!wifiContainer.classList.contains('hidden')) {
-        const isScanner = document.getElementById('modal-wifi-scanner').checked;
-        if (isScanner) {
-            localStorage.setItem('preferredWifiAdapter', id);
-        } else if (localStorage.getItem('preferredWifiAdapter') === id) {
-            localStorage.removeItem('preferredWifiAdapter');
+    function openAdapterConfig(mac, id, name, vis, primary) {
+        document.getElementById('modal-mac').value = mac; 
+        document.getElementById('modal-sys-id').value = id;
+        document.getElementById('modal-custom-name').value = name; 
+        document.getElementById('modal-visible').checked = vis;
+        document.getElementById('modal-pin-primary').checked = primary; 
+        
+        const wifiContainer = document.getElementById('modal-wifi-scanner-container');
+        const isWifi = globalWifiAdapters.some(a => a.id === id);
+        
+        if (isWifi) {
+            wifiContainer.classList.remove('hidden');
+            document.getElementById('modal-wifi-scanner').checked = (localStorage.getItem('preferredWifiAdapter') === id);
+        } else {
+            wifiContainer.classList.add('hidden');
         }
         
-        // Push the update visually to the dropdown and the banner
-        const select = document.getElementById('wifi-adapter-select');
-        if (select) select.value = localStorage.getItem('preferredWifiAdapter') || "";
-        if (typeof updateWifiScannerAlert === "function") updateWifiScannerAlert();
+        adapterModal.show();
     }
 
-    const response = await fetch('/api/adapter_settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            mac: mac,
-            id: id,
-            name: name,
-            visible: visible,
-            is_primary: primary
+    async function saveAdapterSettings() {
+        const mac = document.getElementById('modal-mac').value;
+        const id = document.getElementById('modal-sys-id').value;
+        const name = document.getElementById('modal-custom-name').value;
+        const visible = document.getElementById('modal-visible').checked ? 1 : 0;
+        const primary = document.getElementById('modal-pin-primary').checked ? 1 : 0;
+
+        if (primary === 1 && visible === 0) {
+            alert("You cannot hide a pinned adapter. Please unpin it first or make it visible.");
+            return; 
+        }
+        
+        const wifiContainer = document.getElementById('modal-wifi-scanner-container');
+        if (!wifiContainer.classList.contains('hidden')) {
+            const isScanner = document.getElementById('modal-wifi-scanner').checked;
+            if (isScanner) {
+                localStorage.setItem('preferredWifiAdapter', id);
+            } else if (localStorage.getItem('preferredWifiAdapter') === id) {
+                localStorage.removeItem('preferredWifiAdapter');
+            }
+            
+            const select = document.getElementById('wifi-adapter-select');
+            if (select) select.value = localStorage.getItem('preferredWifiAdapter') || "";
+            if (typeof updateWifiScannerAlert === "function") updateWifiScannerAlert();
+        }
+
+        const response = await fetch('/api/adapter_settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mac: mac, id: id, name: name,
+                visible: visible, is_primary: primary
+            })
+        });
+
+        if (response.ok) {
+            adapterModal.hide();
+            loadWifiAdapters();
+            
+            // Optimistic UI update! 
+            if (lastAdaptersData && lastAdaptersData.adapters) {
+                if (primary === 1) lastAdaptersData.adapters.forEach(a => a.is_primary = false);
+                
+                const target = lastAdaptersData.adapters.find(a => a.mac === mac || (a.mac === '-' && a.id === id));
+                if (target) {
+                    target.name = name; target.visible = visible; target.is_primary = (primary === 1);
+                }
+            }
+            renderAdaptersTable(); // Instant UI refresh
+        } else {
+            const err = await response.json();
+            alert("Failed to save: " + (err.message || "Unknown error"));
+        }
+    }
+
+    function toggleShowHidden() {
+        const isChecked = document.getElementById('showHiddenCheck').checked;
+        const unhideBtn = document.getElementById('btn-bulk-unhide');
+        
+        if (unhideBtn) {
+            if (isChecked) unhideBtn.classList.remove('hidden');
+            else unhideBtn.classList.add('hidden');
+        }
+        
+        renderAdaptersTable(); // Instant UI update! No backend delay!
+    }
+
+    function bulkHideAdapters() {
+        const selectedMacs = Array.from(tableState.adapters.selected);
+        if (!selectedMacs.length) return alert("Please select at least one adapter to hide.");
+        if (!confirm(`Are you sure you want to hide ${selectedMacs.length} selected adapter(s)?`)) return;
+
+        const btn = event.currentTarget;
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Hiding...';
+        btn.disabled = true;
+
+        fetch('/api/adapters/bulk_hide', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ macs: selectedMacs })
         })
-    });
-
-    if (response.ok) {
-        adapterModal.hide();
-        // Reload wifi adapters in case the custom name or visibility was altered
-        loadWifiAdapters();
-        refreshNetworkInfo(); 
-    } else {
-        const err = await response.json();
-        alert("Failed to save: " + (err.message || "Unknown error"));
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === 'success') {
+                // Optimistic UI update
+                if (lastAdaptersData && lastAdaptersData.adapters) {
+                    lastAdaptersData.adapters.forEach(a => {
+                        if (selectedMacs.includes(a.mac)) a.visible = 0;
+                    });
+                }
+                tableState.adapters.selected.clear();
+                renderAdaptersTable(); // Instant table update
+                loadWifiAdapters();    // <--- FIX: Instantly sync Wi-Fi dropdown
+            } else {
+                alert("Validation Failed: " + d.message);
+            }
+        })
+        .catch(err => alert("Failed to connect: " + err.message))
+        .finally(() => {
+            btn.innerHTML = origHtml;
+            btn.disabled = false;
+        });
     }
-}
 
-    // --- Saved Networks & Device Logic ---
-let allNetworks = []; // Global array to hold the network data
+    function bulkUnhideAdapters() {
+        const selectedMacs = Array.from(tableState.adapters.selected);
+        if (!selectedMacs.length) return alert("Please select at least one adapter to unhide.");
+        if (!confirm(`Are you sure you want to unhide ${selectedMacs.length} selected adapter(s)?`)) return;
+
+        const btn = event.currentTarget;
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Unhiding...';
+        btn.disabled = true;
+
+        fetch('/api/adapters/bulk_unhide', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ macs: selectedMacs })
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === 'success') {
+                // Optimistic UI update
+                if (lastAdaptersData && lastAdaptersData.adapters) {
+                    lastAdaptersData.adapters.forEach(a => {
+                        if (selectedMacs.includes(a.mac)) a.visible = 1;
+                    });
+                }
+                tableState.adapters.selected.clear();
+                renderAdaptersTable(); // Instant table update
+                loadWifiAdapters();    // <--- FIX: Instantly sync Wi-Fi dropdown
+            } else {
+                alert("Error: " + d.message);
+            }
+        })
+        .catch(err => alert("Failed to connect: " + err.message))
+        .finally(() => {
+            btn.innerHTML = origHtml;
+            btn.disabled = false;
+        });
+    }
 
 // --- 1. NETWORKS ---
     function loadNetworks() {
@@ -2324,39 +2419,6 @@ function exportWifiCSV(id) {
     window.location.href = `/api/wifi/export/${id}`;
 }
 
-async function promptSaveWifi() {
-    // 1. Ask for Name - If they click 'Cancel', n will be null.
-    let n = prompt("Enter a name for this scan (Leave blank for Date/Time):");
-    if (n === null) return; // User clicked Cancel, abort saving.
-
-    // 2. Ask for Comments - Users can hit OK without typing.
-    let c = prompt("Add comments (Optional):", "");
-    if (c === null) c = ""; // Treat Cancel on comments as empty string.
-
-    try {
-        const response = await fetch('/api/wifi/save', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ 
-                name: n, 
-                comments: c, 
-                results: currentScanResults 
-            })
-        });
-        
-        const result = await response.json();
-        if (result.status === "success") {
-            alert(`Scan saved successfully as: ${result.saved_as}`);
-            // If the user is on the history page, refresh the list
-            if (!document.getElementById('wifi-history').classList.contains('hidden')) {
-                loadWifiHistory();
-            }
-        }
-    } catch (err) {
-        alert("Failed to save scan: " + err.message);
-    }
-}
-
 
 function viewPastWifi(id) {
     fetch(`/api/wifi/history/${id}`).then(r => r.json()).then(d => {
@@ -2391,17 +2453,6 @@ function clearAllWifiHistory() {
     if(confirm("Are you sure you want to permanently delete ALL Wi-Fi scan history?")) {
         fetch('/api/wifi/history/clear_all', { method: 'POST' })
             .then(() => loadWifiHistory());
-    }
-}
-
-function addCommentToActiveScan() {
-    const comment = prompt("Add a comment to this current scan:", activeScanComment);
-    if (comment !== null) {
-        activeScanComment = comment;
-        document.getElementById('active-scan-meta').innerText = comment ? `Comment: ${comment}` : "";
-        
-        // Optional: You can update the backend log entry if you want to 
-        // associate this comment with the last auto-logged scan.
     }
 }
 
@@ -2795,86 +2846,6 @@ function resetWorkerSettings() {
     document.getElementById('workers-scan').value = hardwareWorkerDefaults.scan_workers;
     document.getElementById('workers-ping').value = hardwareWorkerDefaults.ping_workers;
     saveWorkerSettings();
-}
-
-function bulkHideAdapters() {
-    const selectedMacs = Array.from(tableState.adapters.selected);
-    
-    if (!selectedMacs.length) return alert("Please select at least one adapter to hide.");
-    if (!confirm(`Are you sure you want to hide ${selectedMacs.length} selected adapter(s)?`)) return;
-
-    const btn = event.currentTarget;
-    const origHtml = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Hiding...';
-    btn.disabled = true;
-
-    fetch('/api/adapters/bulk_hide', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ macs: selectedMacs })
-    })
-    .then(r => r.json())
-    .then(d => {
-        if (d.status === 'success') {
-            tableState.adapters.selected.clear();
-            refreshNetworkInfo(); // Force UI refresh
-        } else {
-            alert("Validation Failed: " + d.message);
-        }
-    })
-    .catch(err => alert("Failed to connect: " + err.message))
-    .finally(() => {
-        btn.innerHTML = origHtml;
-        btn.disabled = false;
-    });
-}
-
-// Controls the visibility of the Unhide button
-function toggleShowHidden() {
-    const isChecked = document.getElementById('showHiddenCheck').checked;
-    const unhideBtn = document.getElementById('btn-bulk-unhide');
-    
-    if (unhideBtn) {
-        if (isChecked) {
-            unhideBtn.classList.remove('hidden');
-        } else {
-            unhideBtn.classList.add('hidden');
-        }
-    }
-    fetchAdapters(); // Proceed with normal table reload
-}
-
-// Submits the unhide request to the backend
-function bulkUnhideAdapters() {
-    const selectedMacs = Array.from(tableState.adapters.selected);
-    
-    if (!selectedMacs.length) return alert("Please select at least one adapter to unhide.");
-    if (!confirm(`Are you sure you want to unhide ${selectedMacs.length} selected adapter(s)?`)) return;
-
-    const btn = event.currentTarget;
-    const origHtml = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Unhiding...';
-    btn.disabled = true;
-
-    fetch('/api/adapters/bulk_unhide', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ macs: selectedMacs })
-    })
-    .then(r => r.json())
-    .then(d => {
-        if (d.status === 'success') {
-            tableState.adapters.selected.clear();
-            refreshNetworkInfo(); // Force UI refresh
-        } else {
-            alert("Error: " + d.message);
-        }
-    })
-    .catch(err => alert("Failed to connect: " + err.message))
-    .finally(() => {
-        btn.innerHTML = origHtml;
-        btn.disabled = false;
-    });
 }
 
 function deleteSelectedDeviceHistory() {
