@@ -530,8 +530,9 @@ async function fetchAdapters() {
                     <td onclick="event.stopPropagation()">
                         <input type="checkbox" class="adapters-check" value="${originalMac}" onchange="toggleSelection('adapters', this)" ${isChecked} ${checkboxDisabled}>
                     </td>
-                    <td>
-                        <strong>${escapeHTML(a.name)}</strong> 
+                    <!-- FIXED: Added pencil icon and clickable edit event natively to the column -->
+                    <td onclick="openAdapterConfig('${originalMac}', '${safeId}', '${safeName}', ${isVisible}, ${isPrimary})" style="cursor: pointer;" title="Edit Adapter">
+                        <strong>${escapeHTML(a.name)}</strong> <i class="bi bi-pencil small text-muted ms-1"></i>
                         ${isPrimary ? '<span class="badge bg-primary ms-1" style="font-size: 0.6rem;">PINNED</span>' : ''}
                     </td>
                     <td class="text-muted small">${escapeHTML(a.id)}</td>
@@ -566,7 +567,19 @@ function openAdapterConfig(mac, id, name, vis, primary) {
     document.getElementById('modal-sys-id').value = id;
     document.getElementById('modal-custom-name').value = name; 
     document.getElementById('modal-visible').checked = vis;
-    document.getElementById('modal-pin-primary').checked = primary; // Set pinning state
+    document.getElementById('modal-pin-primary').checked = primary; 
+    
+    // Determine if this adapter is a Wi-Fi adapter using the global list
+    const wifiContainer = document.getElementById('modal-wifi-scanner-container');
+    const isWifi = globalWifiAdapters.some(a => a.id === id);
+    
+    if (isWifi) {
+        wifiContainer.classList.remove('hidden');
+        document.getElementById('modal-wifi-scanner').checked = (localStorage.getItem('preferredWifiAdapter') === id);
+    } else {
+        wifiContainer.classList.add('hidden');
+    }
+    
     adapterModal.show();
 }
 
@@ -577,13 +590,27 @@ async function saveAdapterSettings() {
     const visible = document.getElementById('modal-visible').checked ? 1 : 0;
     const primary = document.getElementById('modal-pin-primary').checked ? 1 : 0;
 
-    // --- NEW: Validation to prevent hiding a pinned adapter ---
     if (primary === 1 && visible === 0) {
         alert("You cannot hide a pinned adapter. Please unpin it first or make it visible.");
-        return; // Stop the save process
+        return; 
+    }
+    
+    // Handle Wi-Fi Scanner Lock seamlessly via localStorage if the option was visible
+    const wifiContainer = document.getElementById('modal-wifi-scanner-container');
+    if (!wifiContainer.classList.contains('hidden')) {
+        const isScanner = document.getElementById('modal-wifi-scanner').checked;
+        if (isScanner) {
+            localStorage.setItem('preferredWifiAdapter', id);
+        } else if (localStorage.getItem('preferredWifiAdapter') === id) {
+            localStorage.removeItem('preferredWifiAdapter');
+        }
+        
+        // Push the update visually to the dropdown and the banner
+        const select = document.getElementById('wifi-adapter-select');
+        if (select) select.value = localStorage.getItem('preferredWifiAdapter') || "";
+        if (typeof updateWifiScannerAlert === "function") updateWifiScannerAlert();
     }
 
-    // Use /api/adapter_settings to match your app.py route exactly
     const response = await fetch('/api/adapter_settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -598,7 +625,8 @@ async function saveAdapterSettings() {
 
     if (response.ok) {
         adapterModal.hide();
-        // Trigger a full refresh so the Header (WAN/Router) updates if pinned
+        // Reload wifi adapters in case the custom name or visibility was altered
+        loadWifiAdapters();
         refreshNetworkInfo(); 
     } else {
         const err = await response.json();
@@ -1871,6 +1899,12 @@ function scanWifi() {
     if(exportBtn) exportBtn.disabled = true;
     if(commentBtn) commentBtn.disabled = true;
     
+    // Hide edit pencil and reset title
+    const titleEl = document.getElementById('wifi-tab-title');
+    const editIcon = document.getElementById('btn-edit-active-wifi');
+    if (titleEl) titleEl.innerText = "Scan Wi-Fi";
+    if (editIcon) editIcon.classList.add('hidden');
+    
     activeScanComment = "";
     const metaDiv = document.getElementById('active-scan-meta');
     if(metaDiv) metaDiv.innerText = "";
@@ -1900,16 +1934,26 @@ function scanWifi() {
                 return;
             }
 
-            if (!data || data.length === 0) {
+            // Extract the network array and metadata from the new backend response
+            const nets = data.networks || data;
+
+            if (!nets || nets.length === 0) {
                 container.innerHTML = '<div class="col-12 text-center p-5 text-muted">No networks detected in range.</div>';
                 return;
             }
 
             if(exportBtn) exportBtn.disabled = false;
             if(commentBtn) commentBtn.disabled = false;
+            
+            // --- NEW: Apply the Scan Name and Reveal Edit Button ---
+            if (data.scan_id) window.currentWifiScanId = data.scan_id;
+            if (titleEl && data.scan_name) {
+                titleEl.innerText = data.scan_name;
+                if (editIcon) editIcon.classList.remove('hidden');
+            }
 
             // 3. Hand the data off to our newly unified rendering function!
-            renderWifiResults(data, false);
+            renderWifiResults(nets, false);
         })
         .catch(err => {
             console.error("Scan Failed:", err);
@@ -1930,7 +1974,7 @@ function scanWifi() {
                 btn.innerHTML = '<i class="bi bi-search"></i> Scan Wi-Fi';
             }
         });
-    }
+}
 
     function runSpeedTest() { 
         const btn = document.getElementById('btn-speedtest');
@@ -2317,8 +2361,18 @@ async function promptSaveWifi() {
 function viewPastWifi(id) {
     fetch(`/api/wifi/history/${id}`).then(r => r.json()).then(d => {
         showPage('wifi', document.querySelector('[onclick*="showPage(\'wifi\'"]'));
+        
+        // Store ID globally and reveal the edit tools
+        window.currentWifiScanId = id;
+        const titleEl = document.getElementById('wifi-tab-title');
+        const editIcon = document.getElementById('btn-edit-active-wifi');
+        
+        if (titleEl) {
+            titleEl.innerText = d.name;
+            if (editIcon) editIcon.classList.remove('hidden');
+        }
+        
         renderWifiResults(d.results, true);
-        document.querySelector('#wifi h5').innerText = `Viewing: ${d.name}`;
     });
 }
 
@@ -3167,21 +3221,72 @@ function updateDeviceName(mac, old) {
     }
 }
 
+let globalWifiAdapters = []; // Tracks which interfaces are actually Wi-Fi
+
 function loadWifiAdapters() {
     fetch('/api/wifi/interfaces')
         .then(r => r.json())
         .then(data => {
+            globalWifiAdapters = data; // Store full objects for modal verification
             const select = document.getElementById('wifi-adapter-select');
             if (!select) return;
             
             // Retain the Auto option
             let html = '<option value="">Auto (All Adapters)</option>';
             data.forEach(iface => {
-                html += `<option value="${escapeHTML(iface)}">${escapeHTML(iface)}</option>`;
+                // Uses iface.id for backend commands, but iface.name for the UI display
+                html += `<option value="${escapeHTML(iface.id)}">${escapeHTML(iface.name)}</option>`;
             });
             select.innerHTML = html;
+
+            // Retrieve previously saved selection
+            const preferred = localStorage.getItem('preferredWifiAdapter');
+            if (preferred && data.some(opt => opt.id === preferred)) {
+                // If it exists in the current valid dropdown list, select it
+                select.value = preferred;
+            } else if (preferred) {
+                // If the adapter is unplugged or hidden, fallback to auto and clear memory
+                select.value = "";
+                localStorage.removeItem('preferredWifiAdapter');
+            }
+
+            // Bind an event to save changes automatically and update the banner
+            select.onchange = function() {
+                if (this.value) {
+                    localStorage.setItem('preferredWifiAdapter', this.value);
+                } else {
+                    localStorage.removeItem('preferredWifiAdapter');
+                }
+                updateWifiScannerAlert();
+            };
+            
+            // Set initial banner state
+            updateWifiScannerAlert();
         })
         .catch(err => console.error("Error loading Wi-Fi adapters:", err));
+}
+
+function updateWifiScannerAlert() {
+    const preferred = localStorage.getItem('preferredWifiAdapter');
+    const alertEl = document.getElementById('wifi-scanner-alert');
+    const nameEl = document.getElementById('wifi-scanner-name');
+    
+    if (preferred && globalWifiAdapters) {
+        const adapter = globalWifiAdapters.find(a => a.id === preferred);
+        if (adapter) {
+            alertEl.classList.remove('hidden');
+            nameEl.innerText = adapter.name;
+            return;
+        }
+    }
+    alertEl.classList.add('hidden');
+}
+
+function resetWifiScanner() {
+    localStorage.removeItem('preferredWifiAdapter');
+    const select = document.getElementById('wifi-adapter-select');
+    if (select) select.value = "";
+    updateWifiScannerAlert();
 }
 
 function renameActiveNetwork() {
@@ -3205,6 +3310,32 @@ function renameActiveNetwork() {
                 if (locationInput) locationInput.value = newName;
             } else {
                 alert("Failed to rename network.");
+            }
+        }); 
+    }
+}
+
+function renameActiveWifiScan() {
+    if (!window.currentWifiScanId) return;
+    
+    const titleEl = document.getElementById('wifi-tab-title');
+    const oldName = titleEl.innerText;
+    
+    const newName = prompt("Rename Wi-Fi Scan:", oldName); 
+    if (newName && newName !== oldName) {
+        fetch('/api/wifi/history/update', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({
+                id: window.currentWifiScanId, 
+                name: newName, 
+                comment: "" // Keeps the existing logic happy
+            })
+        }).then(r => r.json()).then(res => {
+            if (res.status === 'success') {
+                titleEl.innerText = newName;
+            } else {
+                alert("Failed to rename Wi-Fi scan.");
             }
         }); 
     }

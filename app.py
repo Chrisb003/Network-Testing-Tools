@@ -2676,35 +2676,68 @@ def dismiss_system_alert():
     return jsonify({"status": "success"})
 
 # --- Misc (WiFi, Speedtest, History, Update) ---
-
 @app.route('/api/wifi/interfaces')
 def get_wifi_interfaces():
-    """Returns a dynamic list of available Wi-Fi interfaces based on the OS."""
-    ifaces = []
+    """Returns a dynamic list of available Wi-Fi interfaces based on the OS, respecting visibility and custom names."""
+    raw_ifaces = []
     sys_plat = platform.system()
     try:
         if sys_plat == "Windows":
             out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True)
             for line in out.split('\n'):
                 if "Name" in line and ":" in line:
-                    ifaces.append(line.split(":", 1)[1].strip())
+                    raw_ifaces.append(line.split(":", 1)[1].strip())
         elif sys_plat == "Linux":
             out = subprocess.check_output(["nmcli", "-t", "-f", "DEVICE,TYPE", "dev"], text=True)
             for line in out.strip().split('\n'):
                 parts = line.split(':')
                 if len(parts) >= 2 and parts[1] == "wifi":
-                    ifaces.append(parts[0])
+                    raw_ifaces.append(parts[0])
         elif sys_plat == "Darwin":
             import CoreWLAN
             client = CoreWLAN.CWWiFiClient.sharedWiFiClient()
             interfaces = client.interfaces()
             if interfaces:
                 for i in interfaces:
-                    ifaces.append(i.interfaceName())
+                    raw_ifaces.append(i.interfaceName())
     except Exception as e:
         print(f"[*] Error fetching Wi-Fi interfaces: {e}")
         
-    return jsonify(ifaces)
+    # Cross-reference with the database for visibility and custom names
+    final_ifaces = []
+    settings_dict = {}
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            for row in conn.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings"):
+                settings_dict[row[0]] = {"name": row[1], "visible": row[2]}
+    except: pass
+
+    try:
+        net_ifaces = psutil.net_if_addrs()
+    except:
+        net_ifaces = {}
+
+    for iface in raw_ifaces:
+        mac = "-"
+        if iface in net_ifaces:
+            for a in net_ifaces[iface]:
+                if a.family == psutil.AF_LINK:
+                    mac = a.address
+                    break
+                    
+        custom_name = iface
+        is_visible = 1
+        
+        # Match the logic used by the main adapters list (MAC first, then fallback to original name)
+        key = mac if (mac and mac != "-") else iface
+        if key in settings_dict:
+            if settings_dict[key]["name"]: custom_name = settings_dict[key]["name"]
+            is_visible = settings_dict[key]["visible"]
+            
+        if is_visible:
+            final_ifaces.append({"id": iface, "name": custom_name})
+            
+    return jsonify(final_ifaces)
 
 @app.route('/api/wifi')
 def get_wifi_networks():
@@ -2794,7 +2827,7 @@ def get_wifi_networks():
             except Exception as e:
                 return jsonify({"error": "macOS Scan Failed", "message": str(e)})
 
-# ==========================================
+        # ==========================================
         # 2. Windows Implementation (netsh)
         # ==========================================
         elif sys_plat == "Windows":
@@ -3091,6 +3124,9 @@ def get_wifi_networks():
     for n in final_networks:
         n.pop('_sort_dbm', None)
 
+    scan_id = None
+    auto_name = ""
+
     # Auto-log scan to database
     if final_networks:
         try:
@@ -3104,13 +3140,20 @@ def get_wifi_networks():
                     "INSERT INTO wifi_history (timestamp, scan_name, comments, results_json) VALUES (?, ?, ?, ?)",
                     (timestamp, auto_name, "Automatically logged", json.dumps(final_networks))
                 )
+                scan_id = c.lastrowid
                 conn.commit()
             print(f"[✓] Wi-Fi scan auto-logged: {auto_name}")
         except Exception as db_err:
             print(f"[!] Database Auto-log Error: {db_err}")
 
     print(f"[*] Wi-Fi Scan Complete. Full Results:\n{json.dumps(final_networks, indent=2)}")
-    return jsonify(final_networks)
+    
+    # Return the networks along with the new database ID and Name so the UI can edit it
+    return jsonify({
+        "networks": final_networks,
+        "scan_id": scan_id,
+        "scan_name": auto_name
+    })
 
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
