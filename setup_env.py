@@ -15,7 +15,6 @@ import time
 import webbrowser
 from pathlib import Path
 import sqlite3
-import psutil
 from datetime import datetime, timedelta
 
 # --- Configuration ---
@@ -471,8 +470,6 @@ def install_npcap_windows():
 
 def run_application(base_dir, venv_python):
     """Launches the main app, force-stops any hung instances, and auto-restarts on crash."""
-    import psutil
-
     app_path = base_dir / APP_FILENAME
     print("\n" + "="*60)
     print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
@@ -491,14 +488,21 @@ def run_application(base_dir, venv_python):
         while True:
             current_port = get_configured_port(base_dir)
             
-            # --- FORCE STOP / CLEANUP: Kill any stale process blocking the port ---
+            # --- FORCE STOP / CLEANUP: Kill any stale process blocking the port natively ---
             try:
-                for conn in psutil.net_connections(kind='inet'):
-                    if conn.laddr.port == current_port and conn.status == 'LISTEN':
-                        print(f"[*] Force-stopping stale process on port {current_port} (PID: {conn.pid})...")
-                        proc = psutil.Process(conn.pid)
-                        proc.terminate()
-                        proc.wait(timeout=3)
+                if platform.system() == "Windows":
+                    out = subprocess.check_output(f"netstat -ano | findstr :{current_port}", shell=True, text=True)
+                    for line in out.strip().split('\n'):
+                        if "LISTENING" in line and f":{current_port}" in line.split()[1]:
+                            pid = line.strip().split()[-1]
+                            print(f"[*] Force-stopping stale process on port {current_port} (PID: {pid})...")
+                            subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    out = subprocess.check_output(f"lsof -t -i:{current_port}", shell=True, text=True)
+                    for pid in out.strip().split('\n'):
+                        if pid:
+                            print(f"[*] Force-stopping stale process on port {current_port} (PID: {pid})...")
+                            subprocess.run(f"kill -9 {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 pass
 
