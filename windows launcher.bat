@@ -23,22 +23,22 @@ echo ========================================================
 :CHECK_PYTHON
 python --version >nul 2>&1
 IF %ERRORLEVEL% EQU 0 (
-    echo [✓] Python is detected. [cite: 2]
+    echo [✓] Python is detected.
     GOTO :CHECK_INTERNET
 )
 
 echo.
-echo [!] Python was not found on this system. [cite: 3]
+echo [!] Python was not found on this system.
 echo [*] Opening Microsoft Store to Python 3.12 Page...
-start ms-windows-store://pdp/?ProductId=9NCVDN91XZQP [cite: 4]
+start ms-windows-store://pdp/?ProductId=9NCVDN91XZQP
 
 echo ========================================================
 echo   PLEASE INSTALL PYTHON FROM THE WINDOWS STORE WINDOW
 echo ========================================================
 echo   1. Click "Get" or "Install" in the Microsoft Store.
-echo   2. Wait for the download and installation to finish. [cite: 5]
-echo   3. Once finished, press any key in this window to continue. [cite: 6]
-echo ======================================================== [cite: 7]
+echo   2. Wait for the download and installation to finish.
+echo   3. Once finished, press any key in this window to continue.
+echo ========================================================
 pause
 
 goto :CHECK_PYTHON
@@ -65,7 +65,7 @@ if %errorLevel% neq 0 (
 :PRE_SETUP_TASKS
 echo.
 echo [✓] Internet detected. Installing system certificates...
-:: This fixes common SSL errors in corporate environments [cite: 8]
+:: This fixes common SSL errors in corporate environments
 pip install pip-system-certs
 
 :: ---------------------------------------------------------
@@ -73,7 +73,7 @@ pip install pip-system-certs
 :: ---------------------------------------------------------
 :RUN_SETUP
 echo.
-echo [*] Launching Setup Script... [cite: 9]
+echo [*] Launching Setup Script...
 python setup_env.py
 
 :: ---------------------------------------------------------

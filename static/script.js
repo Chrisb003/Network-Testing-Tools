@@ -2163,39 +2163,115 @@ function openUpdateModal() {
         }
     }
 
-function renderWifiResults(data, isHistory = false) {
+    function renderWifiResults(data, isHistory = false) {
     const container = document.getElementById('wifi-list');
     currentScanResults = data;
     
     let html = '';
 
-    html += data.map(n => `
-        <div class="col-md-4 mb-3">
+    html += data.map(n => {
+        let detailsHtml = '';
+        
+        // Use raw_bssids to dynamically build our tables
+        if (n.raw_bssids && n.raw_bssids.length > 0) {
+            const bands = {};
+            n.raw_bssids.forEach(b => {
+                const band = b.band || 'Unknown';
+                if (!bands[band]) bands[band] = [];
+                bands[band].push(b);
+            });
+
+            // Sort bands (2.4, 5, 6)
+            const sortedBands = Object.keys(bands).sort((a, b) => {
+                const wA = a.includes('2.4') ? 1 : a.includes('5') ? 2 : a.includes('6') ? 3 : 4;
+                const wB = b.includes('2.4') ? 1 : b.includes('5') ? 2 : b.includes('6') ? 3 : 4;
+                return wA - wB;
+            });
+
+            sortedBands.forEach((band, idx) => {
+                const bandClean = escapeHTML(band.replace('GHz', 'Ghz'));
+                const mtClass = idx === 0 ? '' : 'mt-4 ';
+                
+                // Frequency Header (Significantly larger)
+                detailsHtml += `<div class="${mtClass}fw-bold text-info mb-1" style="font-size: 1.15rem;">${bandClean}</div>`;
+                
+                // Table Header Row for the data
+                detailsHtml += `
+                <div class="table-responsive overflow-hidden">
+                    <table class="table table-sm table-borderless align-middle w-100 mb-1" style="table-layout: fixed; font-size: 0.95rem;">
+                        <thead>
+                            <tr class="text-muted border-bottom border-secondary-subtle" style="font-size: 0.8rem;">
+                                <th class="p-1 px-0" style="width: 38%;">BSSID (MAC)</th>
+                                <th class="p-1 text-center" style="width: 15%;">Channel</th>
+                                <th class="p-1 text-center text-truncate" style="width: 25%;">Security</th>
+                                <th class="p-1 text-end px-0" style="width: 22%;">Signal Strength</th>
+                            </tr>
+                        </thead>
+                        <tbody class="font-monospace">
+                `;
+
+                // Sort MACs by percentage descending
+                bands[band].sort((a, b) => {
+                    const valA = (a.percent !== '' && a.percent !== null) ? a.percent : -100;
+                    const valB = (b.percent !== '' && b.percent !== null) ? b.percent : -100;
+                    return valB - valA;
+                });
+
+                bands[band].forEach(b => {
+                    const mac = b.mac || 'Unknown';
+                    const ch = (b.channel && b.channel !== '0') ? b.channel : '-';
+                    const auth = n.auth || 'Unknown';
+                    
+                    // Format percentage colors natively in the column
+                    let pctHtml = '<span class="fw-bold text-muted">-%</span>';
+                    if (b.percent !== '' && b.percent !== null) {
+                        let color = 'text-danger';
+                        if (b.percent >= 75) color = 'text-success';
+                        else if (b.percent >= 40) color = 'text-warning';
+                        pctHtml = `<span class="fw-bold ${color}">${escapeHTML(String(b.percent))}%</span>`;
+                    }
+
+                    // Data Row
+                    detailsHtml += `
+                        <tr>
+                            <td class="p-1 px-0">${escapeHTML(mac)}</td>
+                            <td class="p-1 text-center">${escapeHTML(ch)}</td>
+                            <td class="p-1 text-center text-truncate" title="${escapeHTML(auth)}">${escapeHTML(auth)}</td>
+                            <td class="p-1 text-end px-0">${pctHtml}</td>
+                        </tr>
+                    `;
+                });
+                
+                detailsHtml += `</tbody></table></div>`;
+            });
+        } else if (n.details) {
+            // Safe fallback if raw_bssids is missing
+            detailsHtml = n.details;
+        } else {
+            // Extreme fallback for super old scans
+            detailsHtml = `<span class="text-muted">${escapeHTML(n.band || '')}</span>`;
+        }
+
+        const chDisplay = n.channel ? (n.channel.startsWith('Ch:') ? n.channel : 'Ch: ' + n.channel) : 'Ch: -';
+
+        return `
+        <div class="col-lg-6 mb-3"> <!-- Widened to col-lg-6 so the larger table text fits comfortably -->
             <div class="card shadow-sm h-100 border-0 bg-body-tertiary">
                 <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <strong class="text-truncate" title="${escapeHTML(n.ssid)}" style="max-width: 60%;">${escapeHTML(n.ssid)}</strong>
-                        <span class="badge bg-primary">Ch: ${n.channel}</span>
+                    <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
+                        <!-- Made the network SSID name larger -->
+                        <strong class="text-truncate fs-5" title="${escapeHTML(n.ssid)}" style="max-width: 55%;">${escapeHTML(n.ssid)}</strong>
+                        <span class="badge bg-primary text-nowrap text-truncate text-end" title="${escapeHTML(chDisplay)}" style="max-width: 45%; font-size: 0.85rem;">${escapeHTML(chDisplay)}</span>
                     </div>
                     
-                    <div class="row g-0 mt-3 border-top pt-2">
-                        <div class="col-12 mb-2">
-                            <small class="text-muted d-block">Detected Bands & MACs</small>
-                            <span class="fw-bold text-info me-2">${n.band}</span>
-                            <span class="font-monospace small text-muted" style="font-size: 0.7rem;">${n.mac || ''}</span>
-                        </div>
-                        <div class="col-6 mb-2">
-                            <small class="text-muted d-block">Signal Strength(s)</small>
-                            <span class="small">${n.signal}</span>
-                        </div>
-                        <div class="col-6 mb-2 text-end">
-                            <small class="text-muted d-block">Security</small>
-                            <span class="small">${n.auth}</span>
-                        </div>
+                    <div class="border-top pt-2 mt-2 w-100">
+                        ${detailsHtml}
                     </div>
                 </div>
             </div>
-        </div>`).join('');
+        </div>`;
+    }).join('');
+    
     container.innerHTML = html;
 }
 

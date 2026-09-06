@@ -1,3 +1,5 @@
+0.12.3 - Fix wifi scan bug windows, that may not identify networks correctly.
+
 0.12.2 - Added edit button to network name on network scan page. Fixed issue with wifi names.
 
 0.12.1 - UI tweaks and allows you to choose wifi adapter used for scan.

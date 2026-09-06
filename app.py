@@ -2794,83 +2794,116 @@ def get_wifi_networks():
             except Exception as e:
                 return jsonify({"error": "macOS Scan Failed", "message": str(e)})
 
-        # ==========================================
+# ==========================================
         # 2. Windows Implementation (netsh)
         # ==========================================
         elif sys_plat == "Windows":
             if iface:
                 # Reset ONLY the selected adapter, keeping your primary internet connection alive
                 subprocess.run(["powershell", "-Command", f"Get-NetAdapter -Name '{iface}' | Restart-NetAdapter"], capture_output=True)
-                time.sleep(3) 
+                time.sleep(4) # Increased slightly to give 6GHz bands more time to surface
                 cmd = f'netsh wlan show networks interface="{iface}" mode=bssid'
             else:
                 # Legacy fallback: reset all Wi-Fi adapters
                 subprocess.run(["powershell", "-Command", "Get-NetAdapter | Where-Object {$_.MediaType -eq 'Native 802.11'} | Restart-NetAdapter"], capture_output=True)
-                time.sleep(3) 
+                time.sleep(4) 
                 cmd = "netsh wlan show networks mode=bssid"
 
-            # Remove text=True so we can capture the raw bytes first
-            process = subprocess.Popen(
-                cmd, 
-                shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            out_bytes, _ = process.communicate(timeout=15)
+            # NEW: Loop twice to give the Windows cache a chance to populate missing signals
+            for attempt in range(2):
+                process = subprocess.Popen(
+                    cmd, 
+                    shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                out_bytes, _ = process.communicate(timeout=15)
 
-            # Smart decoding: Try UTF-8 first for special characters, fallback to cp437
-            try:
-                stdout = out_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                stdout = out_bytes.decode('cp437', errors='ignore')
+                # Smart decoding: Try UTF-8 first for special characters, fallback to cp437
+                try:
+                    stdout = out_bytes.decode('utf-8')
+                except UnicodeDecodeError:
+                    stdout = out_bytes.decode('cp437', errors='ignore')
 
-            current_ssid = None
-            current_mac = None
-            
-            for line in stdout.split('\n'):
-                line = line.strip()
-                if not line: continue
+                current_ssid = None
+                current_mac = None
+                
+                for line in stdout.split('\n'):
+                    line = line.strip()
+                    if not line: continue
 
-                if line.lower().startswith("ssid"):
-                    parts = line.split(":", 1)
-                    current_ssid = parts[1].strip() if len(parts) > 1 else "Hidden Network"
-                    current_mac = None 
-                    if current_ssid not in networks_dict:
-                        networks_dict[current_ssid] = {"ssid": current_ssid, "auth": "Unknown", "bssids": {}}
+                    if line.lower().startswith("ssid"):
+                        parts = line.split(":", 1)
+                        current_ssid = parts[1].strip() if len(parts) > 1 else "Hidden Network"
+                        current_mac = None 
+                        if current_ssid not in networks_dict:
+                            networks_dict[current_ssid] = {"ssid": current_ssid, "auth": "Unknown", "bssids": {}}
 
-                elif current_ssid:
-                    if "authentication" in line.lower():
-                        networks_dict[current_ssid]["auth"] = line.split(":", 1)[1].strip()
+                    elif current_ssid:
+                        if "authentication" in line.lower():
+                            networks_dict[current_ssid]["auth"] = line.split(":", 1)[1].strip()
+                        
+                        elif line.lower().startswith("bssid"):
+                            raw_mac_line = line.split(":", 1)[1].strip()
+                            current_mac = raw_mac_line.split(",")[0].strip() if raw_mac_line else f"Unknown_MAC_{time.time()}"
+                            
+                            if current_mac not in networks_dict[current_ssid]["bssids"]:
+                                networks_dict[current_ssid]["bssids"][current_mac] = {"dbm": None, "percent": None, "channel": "0", "band": "Unknown"}
+                                
+                            if "," in raw_mac_line:
+                                for part in raw_mac_line.split(",")[1:]:
+                                    part = part.strip().lower()
+                                    if part.startswith("band"):
+                                        raw_band = part.split(":", 1)[-1].strip().replace(" ", "")
+                                        if "2.4" in raw_band: b = "2.4GHz"
+                                        elif "5" in raw_band: b = "5GHz"
+                                        elif "6" in raw_band: b = "6GHz"
+                                        else: b = raw_band
+                                        networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
+                                    elif part.startswith("channel"):
+                                        ch = part.split(":", 1)[-1].strip()
+                                        if re.match(r"^\d{1,3}$", ch):
+                                            networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
+                                    elif part.startswith("signal"):
+                                        raw_sig = part.split(":", 1)[-1].strip()
+                                        try:
+                                            pct_val = int(''.join(filter(str.isdigit, raw_sig)))
+                                            networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
+                                            networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
+                                        except ValueError: pass
+                        
+                        elif current_mac and "signal" in line.lower():
+                            raw_sig = line.split(":", 1)[1].strip()
+                            try:
+                                pct_val = int(''.join(filter(str.isdigit, raw_sig)))
+                                networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
+                                networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
+                            except ValueError: pass
+                        
+                        elif current_mac and "channel" in line.lower():
+                            ch = line.split(":", 1)[1].strip()
+                            if re.match(r"^\d{1,3}$", ch):
+                                networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
+                                
+                        elif current_mac and "band" in line.lower():
+                            raw_band = line.split(":", 1)[1].strip().replace(" ", "")
+                            if "2.4" in raw_band: b = "2.4GHz"
+                            elif "5" in raw_band: b = "5GHz"
+                            elif "6" in raw_band: b = "6GHz"
+                            else: b = raw_band
+                            networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
+
+                # End of parse loop. Check if any signals are missing.
+                missing_signals = any(
+                    b_data["percent"] is None 
+                    for net in networks_dict.values() 
+                    for b_data in net["bssids"].values()
+                )
+                
+                # If everything has a signal, or we're on the last attempt, break out early
+                if not missing_signals or attempt == 1:
+                    break
                     
-                    elif line.lower().startswith("bssid"):
-                        raw_mac = line.split(":", 1)[1].strip()
-                        current_mac = raw_mac if raw_mac else f"Unknown_MAC_{time.time()}"
-                        if current_mac not in networks_dict[current_ssid]["bssids"]:
-                            networks_dict[current_ssid]["bssids"][current_mac] = {"dbm": None, "percent": None, "channel": "0", "band": "Unknown"}
-                            
-                    elif current_mac and "signal" in line.lower():
-                        raw_sig = line.split(":", 1)[1].strip()
-                        try:
-                            # Windows returns percentage natively. Calculate dBm from percentage.
-                            pct_val = int(''.join(filter(str.isdigit, raw_sig)))
-                            dbm_val = int((pct_val / 2) - 100)
-                        except ValueError:
-                            pct_val = None
-                            dbm_val = None
-                            
-                        networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
-                        networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = dbm_val
-                    
-                    elif current_mac and "channel" in line.lower():
-                        ch = line.split(":", 1)[1].strip()
-                        if re.match(r"^\d{1,3}$", ch):
-                            networks_dict[current_ssid]["bssids"][current_mac]["channel"] = ch
-                            
-                    elif current_mac and "band" in line.lower():
-                        raw_band = line.split(":", 1)[1].strip().replace(" ", "")
-                        if "2.4" in raw_band: b = "2.4GHz"
-                        elif "5" in raw_band: b = "5GHz"
-                        elif "6" in raw_band: b = "6GHz"
-                        else: b = raw_band
-                        networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
+                # Otherwise, wait 2 seconds for Windows to finish populating the cache, then loop again
+                time.sleep(2)
 
         # ==========================================
         # 3. Linux Implementation (nmcli)
@@ -2939,7 +2972,8 @@ def get_wifi_networks():
 
     for net in networks_dict.values():
         bands_dict = {}
-        raw_bssids = [] # Hidden list for the CSV exporter
+        raw_bssids = [] # Hidden list for CSV exporter
+        auth_val = net.get("auth", "Unknown")
         
         # 1. Bucket all MACs and signals by Band
         for mac, data in net["bssids"].items():
@@ -2948,7 +2982,6 @@ def get_wifi_networks():
             pct_val = data.get("percent")
             ch = data.get("channel", "0")
             
-            # Build the raw list for the CSV export containing separated fields
             raw_bssids.append({
                 "mac": "Unknown" if mac.startswith("Unknown_MAC_") else mac,
                 "dbm": dbm_val if dbm_val is not None else "",
@@ -2956,16 +2989,6 @@ def get_wifi_networks():
                 "channel": ch,
                 "band": b
             })
-            
-            # Format string for UI display
-            if dbm_val is not None and pct_val is not None:
-                sig_display = f"{dbm_val} dBm ({pct_val}%)"
-            elif dbm_val is not None:
-                sig_display = f"{dbm_val} dBm"
-            elif pct_val is not None:
-                sig_display = f"{pct_val}%"
-            else:
-                sig_display = ""
             
             if b not in bands_dict:
                 bands_dict[b] = {"known_macs": [], "unknown_signals": [], "channels": set()}
@@ -2977,23 +3000,28 @@ def get_wifi_networks():
                 if dbm_val is not None:
                     bands_dict[b]["unknown_signals"].append(dbm_val)
             else:
-                bands_dict[b]["known_macs"].append({"mac": mac, "signal": sig_display, "dbm": dbm_val if dbm_val is not None else -100})
+                bands_dict[b]["known_macs"].append({
+                    "mac": mac, 
+                    "percent": pct_val,
+                    "dbm": dbm_val if dbm_val is not None else -100,
+                    "channel": ch
+                })
         
-        display_bands = []
-        display_signals = []
-        display_channels = set()
+        display_details = []
         ui_sort_dbm = -100 # Track highest dbm in this SSID for sorting the UI cards
-        
         sorted_bands = sorted(bands_dict.keys(), key=get_band_weight)
         
-        # 2. Build the output formatting
-        for b in sorted_bands:
+        # 2. Build the combined access point lines with colored percentages
+        for idx, b in enumerate(sorted_bands):
             data = bands_dict[b]
             
-            # --- Unknown MACs: Apply 5dBm Clustering using raw dBm values ---
+            # --- Band Header (e.g., "2.4Ghz" in blue) ---
+            b_clean = b.replace("GHz", "Ghz")
+            mt_class = "" if idx == 0 else "mt-2 "
+            display_details.append(f'<span class="{mt_class}fw-bold text-info d-block mb-1" style="font-size:0.85rem;">{b_clean}</span>')
+            
+            # --- Unknown MACs (fallback clustering) ---
             if data["unknown_signals"]:
-                display_bands.append(f"{b} (Unknown MAC)")
-                
                 clusters = []
                 for val in data["unknown_signals"]:
                     placed = False
@@ -3006,44 +3034,60 @@ def get_wifi_networks():
                     if not placed:
                         clusters.append([val])
                 
-                # Format averaged signals
-                averaged_sigs = []
                 for c in clusters:
                     avg_dbm = int(round(sum(c) / len(c)))
                     avg_pct = max(0, min(100, int((avg_dbm + 100) * 2)))
-                    averaged_sigs.append({"dbm": avg_dbm, "pct": avg_pct})
                     if avg_dbm > ui_sort_dbm: ui_sort_dbm = avg_dbm
-                
-                # Sort from strongest to weakest
-                sorted_sigs = sorted(averaged_sigs, key=lambda x: x["dbm"], reverse=True)
-                for sig in sorted_sigs:
-                    display_signals.append(f"{sig['dbm']} dBm ({sig['pct']}%) ({b})" if b != "Unknown" else f"{sig['dbm']} dBm ({sig['pct']}%)")
                     
-            # --- Known MACs: Kept individual ---
-            for kmac in data["known_macs"]:
-                display_bands.append(f"{b} ({kmac['mac']})")
-                if kmac["signal"]:
-                    display_signals.append(f"{kmac['signal']} ({b})" if b != "Unknown" else kmac["signal"])
+                    if avg_pct >= 75: color = "text-success"
+                    elif avg_pct >= 40: color = "text-warning"
+                    else: color = "text-danger"
+                    
+                    display_details.append(f'Unknown MAC - CH- - {auth_val} - <span class="fw-bold {color}">{avg_pct}%</span>')
+                    
+            # --- Known MACs: Sorted strongest to weakest within the band ---
+            sorted_macs = sorted(data["known_macs"], key=lambda x: x["dbm"], reverse=True)
+            for kmac in sorted_macs:
                 if kmac["dbm"] > ui_sort_dbm: ui_sort_dbm = kmac["dbm"]
-                    
-            display_channels.update(data["channels"])
-            
-        sorted_channels = sorted(list(display_channels), key=lambda x: int(x) if str(x).isdigit() else 0)
+                
+                # Assign dynamic colors based on signal strength
+                if kmac.get("percent") is not None:
+                    pct = kmac['percent']
+                    pct_str = f"{pct}%"
+                    if pct >= 75: color = "text-success"
+                    elif pct >= 40: color = "text-warning"
+                    else: color = "text-danger"
+                    colored_pct = f'<span class="fw-bold {color}">{pct_str}</span>'
+                else:
+                    colored_pct = '<span class="fw-bold text-muted">-%</span>'
+                
+                ch_val = kmac.get("channel", "0")
+                ch_str = f"CH{ch_val}" if ch_val and ch_val != "0" else "CH-"
+                mac_str = kmac["mac"]
+                
+                # Format: "0e:21:37:a5:94:5f - CH1 - WPA3-Personal - <span class='text-success'>84%</span>"
+                display_details.append(f"{mac_str} - {ch_str} - {auth_val} - {colored_pct}")
+        
+        # 3. Format Channels by Band Header: "2.4Ghz - 1, 5Ghz - 50, 6Ghz - 1"
+        band_ch_parts = []
+        for b in sorted_bands:
+            chs = sorted(list(bands_dict[b]["channels"]), key=lambda x: int(x) if str(x).isdigit() else 0)
+            if chs:
+                b_clean = b.replace("GHz", "Ghz")
+                band_ch_parts.append(f"{b_clean} - {', '.join(chs)}")
+        channel_str = ", ".join(band_ch_parts) if band_ch_parts else "-"
         
         final_networks.append({
             "ssid": net["ssid"],
-            "mac": "", # UI layout spacer
-            "signal": "<br>".join(display_signals),
-            "channel": ", ".join(sorted_channels),
-            "auth": net["auth"],
-            "band": "<br>".join(display_bands),
+            "channel": channel_str,
+            "auth": auth_val,
+            "details": "<br>".join(display_details),
             "raw_bssids": raw_bssids,
-            "_sort_dbm": ui_sort_dbm # Temporary key for sorting the UI cards
+            "_sort_dbm": ui_sort_dbm
         })
 
-    # Sort the final UI cards by the absolute strongest signal overall
+    # Sort the final UI cards by the strongest signal overall
     final_networks.sort(key=lambda x: x['_sort_dbm'], reverse=True)
-    # Clean up the temporary sort key before saving to DB
     for n in final_networks:
         n.pop('_sort_dbm', None)
 
