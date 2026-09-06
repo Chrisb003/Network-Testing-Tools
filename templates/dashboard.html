@@ -165,7 +165,10 @@
 <div id="devices" class="page-section hidden">
     <div class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-            <h5 class="mb-0 text-nowrap me-3" id="device-tab-title">Network Scan</h5>
+            <h5 class="mb-0 text-nowrap me-3 d-flex align-items-center">
+    <span id="device-tab-title">Network Scan</span>
+    <i class="bi bi-pencil ms-2 small text-muted hidden" id="btn-edit-active-network" style="cursor: pointer; font-size: 0.9rem;" onclick="renameActiveNetwork()" title="Rename Network"></i>
+        </h5>
             <div class="d-flex gap-2 align-items-center">
                 <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
                 

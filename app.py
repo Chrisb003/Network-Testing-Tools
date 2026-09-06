@@ -2809,12 +2809,18 @@ def get_wifi_networks():
                 time.sleep(3) 
                 cmd = "netsh wlan show networks mode=bssid"
 
+            # Remove text=True so we can capture the raw bytes first
             process = subprocess.Popen(
                 cmd, 
-                shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
-                text=True, encoding='cp437', errors='ignore'
+                shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
-            stdout, _ = process.communicate(timeout=15)
+            out_bytes, _ = process.communicate(timeout=15)
+
+            # Smart decoding: Try UTF-8 first for special characters, fallback to cp437
+            try:
+                stdout = out_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                stdout = out_bytes.decode('cp437', errors='ignore')
 
             current_ssid = None
             current_mac = None

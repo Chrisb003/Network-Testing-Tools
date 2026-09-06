@@ -1454,6 +1454,10 @@ function loadNetworkDevices(id, name) {
         // Auto-Populate Speed Test Location
         const locationInput = document.getElementById('st-network-name');
         if(locationInput) locationInput.value = name;
+        
+        // NEW: Reveal the edit pencil
+        const editIcon = document.getElementById('btn-edit-active-network');
+        if (editIcon) editIcon.classList.remove('hidden');
     }
     
     // Hide the buttons initially while fetching
@@ -1484,6 +1488,8 @@ function scanDevices() {
     const btnOff = document.getElementById('btn-remove-offline');
     if (btnSel) btnSel.classList.add('hidden');
     if (btnOff) btnOff.classList.add('hidden');
+    const editIcon = document.getElementById('btn-edit-active-network');
+    if (editIcon) editIcon.classList.add('hidden');
     
     const tb = document.getElementById('device-list');
     // UNIFIED LOADING STATE: Matches device history & adapter loading layout
@@ -1538,9 +1544,10 @@ function scanDevices() {
             b.disabled = false;
             b.innerHTML = '<i class="bi bi-search"></i> Scan';
             
-            // --- FIXED: Reveal BOTH buttons because a live scan completed ---
+            // --- FIXED: Reveal ALL buttons because a live scan completed ---
             if (btnSel) btnSel.classList.remove('hidden');
             if (btnOff) btnOff.classList.remove('hidden');
+            if (editIcon) editIcon.classList.remove('hidden'); // NEW
             
             // Add offline devices to the list
             if (data.offline_devices && data.offline_devices.length > 0) {
@@ -3099,4 +3106,30 @@ function loadWifiAdapters() {
             select.innerHTML = html;
         })
         .catch(err => console.error("Error loading Wi-Fi adapters:", err));
+}
+
+function renameActiveNetwork() {
+    if (!currentNetworkId) return;
+    
+    // Extract the raw network name from the header text (removing "Devices in: ")
+    const titleText = document.getElementById('device-tab-title').innerText;
+    const oldName = titleText.replace('Devices in: ', '');
+    
+    const newName = prompt("Rename Network:", oldName); 
+    if (newName && newName !== oldName) {
+        fetch('/api/networks/rename', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify({id: currentNetworkId, name: newName})
+        }).then(r => r.json()).then(res => {
+            if (res.status === 'success') {
+                // Instantly update the UI without reloading
+                document.getElementById('device-tab-title').innerText = `Devices in: ${newName}`;
+                const locationInput = document.getElementById('st-network-name');
+                if (locationInput) locationInput.value = newName;
+            } else {
+                alert("Failed to rename network.");
+            }
+        }); 
+    }
 }
