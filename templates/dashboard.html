@@ -1,4 +1,4 @@
-<!-- Version number 0.12.5 -->
+<!-- Version number 0.13.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -20,16 +20,16 @@
          <div><img src="{{ url_for('static', filename='Logo.png') }}" alt="logo" style="width:50px;height:50px;"></div>
         <h1 class="mb-0">Network Diagnostics Dashboard</h1>
             <div class="d-flex align-items-center">
-         <button id="refresh-btn" class="btn btn-sm btn-outline-info me-3" onclick="refreshNetworkInfo()">
+         <button id="refresh-btn" class="btn btn-sm btn-outline-info me-3" onclick="refreshNetworkInfo()" title="Force an immediate refresh of hardware interfaces and active IP data">
         <i class="bi bi-arrow-clockwise"></i> Refresh Network Info
     </button>
-        <div id="status-dot" class="badge bg-success">Live</div>
+        <div id="status-dot" class="badge bg-success" title="The dashboard is actively connected to the local server">Live</div>
         <div style="padding-right: 20px;"></div>
     <div class="btn-group">
-        <button class="btn btn-outline-secondary" onclick="toggleTouchMode()" id="touch-toggle" title="Toggle Touch View">
+        <button class="btn btn-outline-secondary" onclick="toggleTouchMode()" id="touch-toggle" title="Toggle Touch Mode (Enlarges buttons and rows for tablets)">
             <i class="bi bi-hand-index-thumb"></i>
         </button>
-        <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="theme-toggle" title="Switch Theme">
+        <button class="btn btn-outline-secondary" onclick="toggleTheme()" id="theme-toggle" title="Switch between Light and Dark themes">
             <i class="bi bi-sun-fill"></i>
         </button>
     </div>
@@ -39,31 +39,31 @@
     <div class="d-flex align-items-center">
         <i class="bi bi-pin-angle-fill me-2"></i>
         <span>Monitoring Pinned Adapter: <strong id="pinned-adapter-name">-</strong></span>
-        <button class="btn btn-sm btn-outline-primary ms-auto" onclick="unpinAdapter()">
+        <button class="btn btn-sm btn-outline-primary ms-auto" onclick="unpinAdapter()" title="Unpin this adapter and return to global network monitoring">
             <i class="bi bi-x-circle me-1"></i> Unpin
         </button>
     </div>
 </div>
     <div class="row mb-2 text-center">
-        <div class="col-md-4"><div class="alert alert-info shadow-sm py-2 small">LAN: <strong>{{ local_ip }}</strong></div></div>
-        <div class="col-md-4"><div class="alert alert-primary shadow-sm py-2 small">WAN: <strong id="header-wan-ip">{{ wan_ip }}</strong></div></div>
-        <div class="col-md-4"><div class="alert alert-warning shadow-sm py-2 small">ISP: <strong id="header-isp">{{ isp_name }}</strong></div></div>
+        <div class="col-md-4"><div class="alert alert-info shadow-sm py-2 small" title="Your internal Local Area Network IP address">LAN: <strong>{{ local_ip }}</strong></div></div>
+        <div class="col-md-4"><div class="alert alert-primary shadow-sm py-2 small" title="Your external Public IP address facing the internet">WAN: <strong id="header-wan-ip">{{ wan_ip }}</strong></div></div>
+        <div class="col-md-4"><div class="alert alert-warning shadow-sm py-2 small" title="Your Internet Service Provider">ISP: <strong id="header-isp">{{ isp_name }}</strong></div></div>
     </div>
     <div class="row mb-4 text-center">
-        <div class="col-md-6"><div class="alert alert-secondary shadow-sm py-2 small">Router IP (Gateway): <strong id="header-router-ip">{{ router_ip }}</strong></div></div>
-        <div class="col-md-6"><div class="alert alert-secondary shadow-sm py-2 small">DNS Servers: <strong id="header-dns">{{ dns_servers }}</strong></div></div>
+        <div class="col-md-6"><div class="alert alert-secondary shadow-sm py-2 small" title="The local IP address of your primary router">Router IP (Gateway): <strong id="header-router-ip">{{ router_ip }}</strong></div></div>
+        <div class="col-md-6"><div class="alert alert-secondary shadow-sm py-2 small" title="The servers actively handling your domain name resolutions">DNS Servers: <strong id="header-dns">{{ dns_servers }}</strong></div></div>
     </div>
     
 <div class="row mb-4">
     <div class="col-md-3">
-        <div class="metric-card shadow-sm h-100 d-flex flex-column justify-content-center">
+        <div class="metric-card shadow-sm h-100 d-flex flex-column justify-content-center" title="Live inbound traffic speed across your primary network">
             <small class="text-muted d-block">Download</small>
             <h3 id="live-down" class="text-primary mb-0">0.00 MB/s</h3>
         </div>
     </div>
     
     <div class="col-md-3">
-        <div class="metric-card shadow-sm h-100 d-flex flex-column justify-content-center">
+        <div class="metric-card shadow-sm h-100 d-flex flex-column justify-content-center" title="Live outbound traffic speed across your primary network">
             <small class="text-muted d-block">Upload</small>
             <h3 id="live-up" class="text-success mb-0">0.00 MB/s</h3>
         </div>
@@ -73,16 +73,16 @@
         <div class="metric-card shadow-sm text-start h-100 d-flex flex-column justify-content-center" style="padding: 12px 20px;">
             <div class="row g-2 align-items-center">
                 <div class="col-6">
-                <input type="text" id="st-network-name" class="form-control form-control-sm" placeholder="Location Name" maxlength="50" onkeydown="if(event.key === 'Enter') runSpeedTest()">
+                <input type="text" id="st-network-name" class="form-control form-control-sm" placeholder="Location Name" maxlength="50" onkeydown="if(event.key === 'Enter') runSpeedTest()" title="A custom label to identify where this speed test was performed">
                 </div>
                 <div class="col-3">
-                    <select id="st-conn-type" class="form-select form-select-sm">
+                    <select id="st-conn-type" class="form-select form-select-sm" title="The type of physical connection being used for this test">
                         <option value="Ethernet">Ethernet</option>
                         <option value="Wi-Fi">Wi-Fi</option>
                     </select>
                 </div>
                 <div class="col-3">
-                    <button class="btn btn-primary btn-sm w-100" id="btn-speedtest" onclick="runSpeedTest()">Speed Test</button>
+                    <button class="btn btn-primary btn-sm w-100" id="btn-speedtest" onclick="runSpeedTest()" title="Run an internet bandwidth test using Ookla Speedtest servers">Speed Test</button>
                 </div>
             </div>
             <div id="speedtest-result" class="mt-2 small fw-bold text-center text-muted">Ready</div>
@@ -124,6 +124,8 @@
 
         <li class="nav-item"><a class="nav-link" onclick="showPage('history', this)">Speed Test History</a></li>
         <li class="nav-item"><a class="nav-link" onclick="showPage('system', this)">Settings</a></li>
+        <!-- NEW: Help Link -->
+        <li class="nav-item"><a class="nav-link" onclick="showPage('help', this)">Help</a></li>
     </ul>
 
     <div id="adapters" class="page-section">
@@ -131,16 +133,16 @@
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Network Adapters</h5>
                     <div class="d-flex gap-3 align-items-center">
-                    <button class="btn btn-outline-warning btn-sm text-nowrap" onclick="bulkHideAdapters()">Hide Selected</button>
+                    <button class="btn btn-outline-warning btn-sm text-nowrap" onclick="bulkHideAdapters()" title="Hide selected adapters from the main view">Hide Selected</button>
                     <!-- NEW: Bulk Unhide Button (Hidden by default) -->
-                    <button id="btn-bulk-unhide" class="btn btn-outline-success btn-sm text-nowrap hidden" onclick="bulkUnhideAdapters()">Unhide Selected</button>
+                    <button id="btn-bulk-unhide" class="btn btn-outline-success btn-sm text-nowrap hidden" onclick="bulkUnhideAdapters()" title="Restore visibility to selected hidden adapters">Unhide Selected</button>
                     
                     <div class="form-check form-switch pt-1">
-                        <input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="renderAdaptersTable()">
+                        <input class="form-check-input" type="checkbox" id="hideNoMacCheck" checked onchange="renderAdaptersTable()" title="Hide virtual/software adapters that lack a physical MAC address">
                         <label class="form-check-label small">Hide No-MAC</label>
                     </div>
                     <!-- UPDATED: onchange now triggers toggleShowHidden() -->
-                    <div class="form-check form-switch pt-1"><input class="form-check-input" type="checkbox" id="showHiddenCheck" onchange="toggleShowHidden()"><label class="form-check-label small">Show Hidden</label></div>
+                    <div class="form-check form-switch pt-1"><input class="form-check-input" type="checkbox" id="showHiddenCheck" onchange="toggleShowHidden()" title="Reveal adapters that have been manually hidden"><label class="form-check-label small">Show Hidden</label></div>
                 </div>
             </div>
             <div class="card-body p-0">
@@ -170,23 +172,37 @@
         <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
             <h5 class="mb-0 text-nowrap me-3 d-flex align-items-center">
     <span id="device-tab-title">Network Scan</span>
-    <i class="bi bi-pencil ms-2 small text-muted hidden" id="btn-edit-active-network" style="cursor: pointer; font-size: 0.9rem;" onclick="renameActiveNetwork()" title="Rename Network"></i>
+    <i class="bi bi-pencil ms-2 small text-muted hidden" id="btn-edit-active-network" style="cursor: pointer; font-size: 0.9rem;" onclick="renameActiveNetwork()" title="Rename this Network"></i>
         </h5>
             <div class="d-flex gap-2 align-items-center">
-                <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()">
+                <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()" title="Filter the device list by IP, Name, or MAC address">
                 
-            <!-- UPDATED: Buttons hidden by default -->
-                <button id="btn-remove-selected" class="btn btn-outline-danger btn-sm text-nowrap hidden" onclick="deleteSelectedNetworkDevices()">
+                <button id="btn-remove-selected" class="btn btn-outline-danger btn-sm text-nowrap hidden" onclick="deleteSelectedNetworkDevices()" title="Permanently delete the selected devices from this network's database record">
                     <i class="bi bi-trash"></i> Remove Selected
                 </button>
-                <button id="btn-remove-offline" class="btn btn-outline-warning btn-sm text-nowrap hidden" onclick="deleteOfflineNetworkDevices()">
+                <button id="btn-remove-offline" class="btn btn-outline-warning btn-sm text-nowrap hidden" onclick="deleteOfflineNetworkDevices()" title="Automatically remove all offline devices from this network's list">
                     <i class="bi bi-eraser"></i> Remove Offline
                 </button>
                 
-                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevicesCSV()">
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevicesCSV()" title="Download the visible network devices as a CSV spreadsheet">
                     <i class="bi bi-download"></i> Export CSV
                 </button>
-                <button class="btn btn-success btn-sm text-nowrap" id="btn-scan-devices" onclick="scanDevices()">
+                
+                <!-- NEW: Split & Isolation Buttons -->
+                <button class="btn btn-outline-info btn-sm text-nowrap hidden" id="btn-split-scan" onclick="scanDevices('split')" title="Run a scan but save the results as a brand new independent network profile">
+                    <i class="bi bi-diagram-2"></i> Split Scan
+                </button>
+                <button class="btn btn-outline-secondary btn-sm text-nowrap" id="btn-isolation-scan" onclick="scanDevices('isolation')" title="Run a scan without merging or matching the results to any past network data">
+                    <i class="bi bi-shield-lock"></i> Isolated Scan
+                </button>
+
+                <!-- Continue Scan Button (Hidden by default) -->
+                <button class="btn btn-info btn-sm text-white text-nowrap hidden" id="btn-continue-scan" onclick="scanDevices('continue')" title="Resume scanning the current network, bypassing deep port-checks on offline devices to save time">
+                    <i class="bi bi-play-fill"></i> Continue Scan
+                </button>
+                
+                <!-- Main Scan Button -->
+                <button class="btn btn-success btn-sm text-nowrap" id="btn-scan-devices" onclick="scanDevices('new')" title="Perform a deep ARP/Ping scan of the active network to find connected devices">
                     <i class="bi bi-search"></i> Scan
                 </button>
             </div>
@@ -210,9 +226,11 @@
             <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
                 <h5 class="mb-0 text-nowrap me-3">Network Scan History</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <input type="text" id="networks-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterNetworks()">
-                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('networks')">Delete Selected</button>
-                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('networks')">Export (ZIP)</button>
+                    <input type="text" id="networks-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterNetworks()" title="Filter historical network records">
+                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('networks')" title="Permanently delete the selected networks">Delete</button>
+                    <!-- NEW: Merge Button -->
+                    <button class="btn btn-outline-warning btn-sm text-nowrap" onclick="openMergeModal()" title="Merge multiple old networks into a single combined profile">Merge</button>
+                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('networks')" title="Download the selected networks and their devices as a ZIP file containing CSVs">Export (ZIP)</button>
                 </div>
             </div>
             <div class="card-body p-0">
@@ -253,8 +271,8 @@
         <div class="card shadow-sm mb-3">
             <div class="card-body">
                 <div class="input-group">
-                    <input type="text" id="dns-input" class="form-control" placeholder="Enter domain (e.g. google.com)" maxlength="255" onkeydown="if(event.key === 'Enter') runDNS()">
-                    <button class="btn btn-primary" id="btn-dns" onclick="runDNS()">Lookup</button>
+                    <input type="text" id="dns-input" class="form-control" placeholder="Enter domain (e.g. google.com)" maxlength="255" onkeydown="if(event.key === 'Enter') runDNS()" title="Domain to lookup">
+                    <button class="btn btn-primary" id="btn-dns" onclick="runDNS()" title="Resolve the IP address of the specified domain">Lookup</button>
                 </div>
             </div>
         </div>
@@ -262,10 +280,10 @@
             <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
                 <h5 class="mb-0 text-nowrap me-3">DNS History</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <input type="text" id="dns-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterToolLogs('dns')">
-                    <button class="btn btn-outline-secondary btn-sm text-nowrap" onclick="exportToolLogs('dns')">Export CSV</button>
-                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('dns')">Delete Selected</button>
-                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="clearToolLogs('dns')">Clear All</button>
+                    <input type="text" id="dns-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterToolLogs('dns')" title="Filter DNS logs">
+                    <button class="btn btn-outline-secondary btn-sm text-nowrap" onclick="exportToolLogs('dns')" title="Download visible logs as CSV">Export CSV</button>
+                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('dns')" title="Delete selected logs">Delete Selected</button>
+                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="clearToolLogs('dns')" title="Permanently delete all DNS history">Clear All</button>
                 </div>
             </div>
             <div class="card-body p-0 log-container">
@@ -302,12 +320,11 @@
             <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
                 <h5 class="mb-0 text-nowrap me-3">Global Device History</h5>
                 <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
-                    <input type="text" id="dev-hist-filter" class="form-control form-control-sm w-50" placeholder="Filter MAC or Name..." onkeyup="filterDevHist()">
-                    <!-- NEW: Delete Button -->
-                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="deleteSelectedDeviceHistory()">
+                    <input type="text" id="dev-hist-filter" class="form-control form-control-sm w-50" placeholder="Filter MAC or Name..." onkeyup="filterDevHist()" title="Search the global list of all devices ever seen">
+                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="deleteSelectedDeviceHistory()" title="Permanently remove selected devices from all databases">
                         <i class="bi bi-trash"></i> Delete
                     </button>
-                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevHistCSV()">
+                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportDevHistCSV()" title="Download the global device directory as CSV">
                         <i class="bi bi-download"></i> Export
                     </button>
                 </div>
@@ -367,8 +384,8 @@
         <div class="card shadow-sm mb-3">
             <div class="card-body">
                 <div class="input-group">
-                    <input type="text" id="ping-input" class="form-control" placeholder="Enter IP or Domain (e.g. 8.8.8.8)" maxlength="255" onkeydown="if(event.key === 'Enter') runPing()">
-                    <button class="btn btn-primary" id="btn-ping" onclick="runPing()">Ping</button>
+                    <input type="text" id="ping-input" class="form-control" placeholder="Enter IP or Domain (e.g. 8.8.8.8)" maxlength="255" onkeydown="if(event.key === 'Enter') runPing()" title="Target to ping">
+                    <button class="btn btn-primary" id="btn-ping" onclick="runPing()" title="Send 4 ICMP Ping packets to the target">Ping</button>
                 </div>
                 <div id="ping-status" class="mt-2 small text-muted"></div>
             </div>
@@ -377,10 +394,10 @@
             <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
                 <h5 class="mb-0 text-nowrap me-3">Ping History</h5>
                 <div class="d-flex gap-2 align-items-center">
-                    <input type="text" id="ping-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterToolLogs('ping')">
-                    <button class="btn btn-outline-secondary btn-sm text-nowrap" onclick="exportToolLogs('ping')">Export CSV</button>
-                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('ping')">Delete Selected</button>
-                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="clearToolLogs('ping')">Clear All</button>
+                    <input type="text" id="ping-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterToolLogs('ping')" title="Filter ping logs">
+                    <button class="btn btn-outline-secondary btn-sm text-nowrap" onclick="exportToolLogs('ping')" title="Download visible ping logs as CSV">Export CSV</button>
+                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('ping')" title="Delete selected logs">Delete Selected</button>
+                    <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="clearToolLogs('ping')" title="Permanently clear all ping history">Clear All</button>
                 </div>
             </div>
             <div class="card-body p-0 log-container">
@@ -418,7 +435,7 @@
             <div class="d-flex align-items-center">
                 <i class="bi bi-radar me-2"></i>
                 <span>Wi-Fi Scanner locked to: <strong id="wifi-scanner-name">-</strong></span>
-                <button class="btn btn-sm btn-outline-info ms-auto" onclick="resetWifiScanner()">
+                <button class="btn btn-sm btn-outline-info ms-auto" onclick="resetWifiScanner()" title="Release the lock and automatically select the best Wi-Fi interface">
                     <i class="bi bi-x-circle me-1"></i> Auto
                 </button>
             </div>
@@ -432,17 +449,17 @@
                 </h5>
                 <div class="d-flex gap-2 align-items-center">
                     <!-- Wi-Fi Adapter Dropdown -->
-                    <select id="wifi-adapter-select" class="form-select form-select-sm w-auto">
+                    <select id="wifi-adapter-select" class="form-select form-select-sm w-auto" title="Select which Wi-Fi adapter to scan with">
                         <option value="">Auto (All Adapters)</option>
                     </select>
                     
                     <!-- Export Button -->
-                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportActiveWifiCSV()" id="btn-wifi-export" disabled>
+                    <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportActiveWifiCSV()" id="btn-wifi-export" disabled title="Download the current scan results as CSV">
                         <i class="bi bi-download"></i> Export CSV
                     </button>
 
                     <!-- Scan Button -->
-                    <button class="btn btn-info btn-sm text-white text-nowrap" id="wifi-scan-btn" onclick="scanWifi()">
+                    <button class="btn btn-info btn-sm text-white text-nowrap" id="wifi-scan-btn" onclick="scanWifi()" title="Perform a hardware-level scan of the surrounding Wi-Fi airspace">
                         <i class="bi bi-search"></i> Scan Wi-Fi
                     </button>
                 </div>
@@ -450,7 +467,6 @@
             <div class="card-body p-3">
                 <div id="active-scan-meta" class="mb-3 small text-info fw-bold"></div>
                 <div class="row" id="wifi-list">
-                    <!-- NEW: Placeholder text matching the Network Scan page -->
                     <div class="col-12 text-center p-4 text-muted">Click Scan to begin.</div>
                 </div>
             </div>
@@ -462,10 +478,10 @@
            <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
                 <h5 class="mb-0 text-nowrap me-3">Speed Test History</h5>
                <div class="d-flex gap-2 align-items-center">
-                <input type="text" id="history-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterHistory()">
-                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportHistoryCSV()">Export</button>
-                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('history')">Delete Selected</button>
-                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="clearHistory()">Clear All</button>
+                <input type="text" id="history-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterHistory()" title="Filter past speed test results">
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportHistoryCSV()" title="Download visible history as CSV">Export</button>
+                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('history')" title="Delete selected history records">Delete Selected</button>
+                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="clearHistory()" title="Permanently delete all speed test history">Clear All</button>
             </div>
             </div>
             <div class="card-body p-0">
@@ -497,56 +513,14 @@
         </div>
     </div>
 
-<div class="modal fade" id="adapterModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Adapter Settings</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <input type="hidden" id="modal-mac">
-                <input type="hidden" id="modal-sys-id">
-                <div class="mb-3">
-                    <label class="form-label small fw-bold">Custom Display Name</label>
-                    <input type="text" id="modal-custom-name" class="form-control" maxlength="50" placeholder="e.g. Office Ethernet">
-                </div>
-                <div class="form-check form-switch mb-3">
-                    <input class="form-check-input" type="checkbox" id="modal-visible">
-                    <label class="form-check-label">Visible in Dashboard</label>
-                </div>
-                <div class="form-check mt-3 pt-3 border-top">
-                    <input class="form-check-input" type="checkbox" id="modal-pin-primary">
-                    <label class="form-check-label fw-bold" for="modal-pin-primary">
-                        Pin as Primary Adapter
-                    </label>
-                    <small class="text-muted d-block">The main dashboard header will always use this adapter's IP/Gateway/DNS info.</small>
-                </div>
-                
-                <!-- NEW: Set as Wi-Fi Scanner (Dynamically Hidden for non-WiFi adapters) -->
-                <div class="form-check mt-3 pt-3 border-top hidden" id="modal-wifi-scanner-container">
-                    <input class="form-check-input" type="checkbox" id="modal-wifi-scanner">
-                    <label class="form-check-label fw-bold text-info" for="modal-wifi-scanner">
-                        Lock Wi-Fi Scanner to this Adapter
-                    </label>
-                    <small class="text-muted d-block">Wi-Fi scans will exclusively use this adapter.</small>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-primary w-100" onclick="saveAdapterSettings()">Save Changes</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <div id="wifi-history" class="page-section hidden">
     <div class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
             <h5 class="mb-0 text-nowrap me-3">Past Wi-Fi Scans</h5>
             <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
-                <input type="text" id="wifi-filter" class="form-control form-control-sm w-50" placeholder="Filter..." onkeyup="filterWifiHistory()">
-                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('wifi')">Delete Selected</button>
-                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('wifi')">Export (ZIP)</button>
+                <input type="text" id="wifi-filter" class="form-control form-control-sm w-50" placeholder="Filter..." onkeyup="filterWifiHistory()" title="Filter the local scan logs">
+                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('wifi')" title="Permanently delete the selected scan histories">Delete Selected</button>
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('wifi')" title="Download the selected Wi-Fi scans as a ZIP file">Export (ZIP)</button>
             </div>
         </div>
         <div class="card-body p-0">
@@ -583,8 +557,95 @@
         <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
             <h5 class="mb-0 text-nowrap me-3">Global Wi-Fi History</h5>
             <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
-                <input type="text" id="wifiNetHist-filter" class="form-control form-control-sm w-50" placeholder="Filter SSID..." onkeyup="filterWifiNetHist()">
-                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportWifiNetHistCSV()">
+                <input type="text" id="wifiNetHist-filter" class="form-control form-control-sm w-50" placeholder="Filter SSID..." onkeyup="filterWifiNetHist()" title="Search the global list of all Wi-Fi networks ever seen">
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportWifiNetHistCSV()" title="Download the global Wi-Fi directory as a CSV spreadsheet">
+                    <i class="bi bi-download"></i> Export
+                </button>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0 small align-middle">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" id="wifiNetHist-master-check" onchange="toggleAll('wifiNetHist', this)"></th>
+                        <th>SSID</th>
+                        <th>Authentication</th>
+                        <th>Unique MACs</th>
+                        <th>Times Scanned</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="wifi-net-hist-table">
+                    <tr><td colspan="8" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="card-footer d-flex justify-content-between align-items-center bg-body-tertiary">
+            <div class="d-flex align-items-center gap-2">
+                <span class="small text-muted text-nowrap">Rows per page:</span>
+                <select id="wifiNetHist-per-page" class="form-select form-select-sm w-auto" onchange="changePerPage('wifiNetHist')">
+                    <option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="all">ALL</option>
+                </select>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                <span id="wifiNetHist-page-info" class="small text-muted text-nowrap">Page 1 of 1</span>
+                <div class="btn-group">
+                    <button id="btn-wifiNetHist-prev" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifiNetHist', -1)" disabled><i class="bi bi-chevron-left"></i></button>
+                    <button id="btn-wifiNetHist-next" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifiNetHist', 1)" disabled><i class="bi bi-chevron-right"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="wifi-history" class="page-section hidden">
+    <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
+            <h5 class="mb-0 text-nowrap me-3">Past Wi-Fi Scans</h5>
+            <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
+                <input type="text" id="wifi-filter" class="form-control form-control-sm w-50" placeholder="Filter..." onkeyup="filterWifiHistory()" title="Filter the local scan logs">
+                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('wifi')" title="Permanently delete the selected scan histories">Delete Selected</button>
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('wifi')" title="Download the selected Wi-Fi scans as a ZIP file">Export (ZIP)</button>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0 small align-middle">
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" id="wifi-master-check" onchange="toggleAll('wifi', this)"></th>
+                            <th>Date/Time</th><th>Scan Name</th><th>Comments</th><th class="text-end">Actions</th>
+                        </tr>
+                    </thead>
+                <tbody id="wifi-history-table"></tbody>
+            </table>
+        </div>
+        <div class="card-footer d-flex justify-content-between align-items-center bg-body-tertiary">
+            <div class="d-flex align-items-center gap-2">
+                <span class="small text-muted text-nowrap">Rows per page:</span>
+                <select id="wifi-per-page" class="form-select form-select-sm w-auto" onchange="changePerPage('wifi')">
+                    <option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="all">ALL</option>
+                </select>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                <span id="wifi-page-info" class="small text-muted text-nowrap">Page 1 of 1</span>
+                <div class="btn-group">
+                    <button id="btn-wifi-prev" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifi', -1)" disabled><i class="bi bi-chevron-left"></i></button>
+                    <button id="btn-wifi-next" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifi', 1)" disabled><i class="bi bi-chevron-right"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="wifi-networks-history" class="page-section hidden">
+    <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
+            <h5 class="mb-0 text-nowrap me-3">Global Wi-Fi History</h5>
+            <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
+                <input type="text" id="wifiNetHist-filter" class="form-control form-control-sm w-50" placeholder="Filter SSID..." onkeyup="filterWifiNetHist()" title="Search the global list of all Wi-Fi networks ever seen">
+                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportWifiNetHistCSV()" title="Download the global Wi-Fi directory as a CSV spreadsheet">
                     <i class="bi bi-download"></i> Export
                 </button>
             </div>
@@ -643,14 +704,14 @@
                     </div>
                     
                     <div class="d-grid gap-2 mb-3">
-                        <button class="btn btn-sm btn-outline-success" onclick="createLocalBackup()">
+                        <button class="btn btn-sm btn-outline-success" onclick="createLocalBackup()" title="Immediately create a safe snapshot of the current database">
                             <i class="bi bi-save"></i> Create Local Backup Now
                         </button>
                         <div class="btn-group w-100">
-                            <button class="btn btn-sm btn-outline-danger" onclick="deleteLocalBackups('keep_latest')">
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteLocalBackups('keep_latest')" title="Delete all stored backups except the most recent successful one">
                                 Keep Latest Only
                             </button>
-                            <button class="btn btn-sm btn-outline-danger" onclick="deleteLocalBackups('all')">
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteLocalBackups('all')" title="Permanently delete all stored backups to save disk space">
                                 Delete All Backups
                             </button>
                         </div>
@@ -661,11 +722,11 @@
                     <!-- External Export/Import Section -->
                     <p class="small text-muted mb-2">Export or Merge External Database Files</p>
                     <div class="d-grid gap-2">
-                        <button class="btn btn-sm btn-outline-primary" onclick="location.href='/api/system/export_db'">
+                        <button class="btn btn-sm btn-outline-primary" onclick="location.href='/api/system/export_db'" title="Download a copy of the entire SQLite database file to your computer">
                             <i class="bi bi-cloud-download"></i> Export Database (.db)
                         </button>
                         <input type="file" id="db-import-input" class="hidden" accept=".db" onchange="handleImport(this)">
-                        <button class="btn btn-sm btn-outline-warning" onclick="document.getElementById('db-import-input').click()">
+                        <button class="btn btn-sm btn-outline-warning" onclick="document.getElementById('db-import-input').click()" title="Upload and merge an existing database file into the current one">
                             <i class="bi bi-cloud-upload"></i> Import/Merge Database
                         </button>
                     </div>
@@ -678,7 +739,6 @@
             <div class="card shadow-sm h-100 border-warning">
                 <div class="card-header bg-warning-subtle text-warning-emphasis d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-trash3-fill"></i> Database Maintenance</h5>
-                    <!-- MOVED: Database Size into Header -->
                     <span id="db-size-badge" class="badge bg-secondary">0.00 MB</span>
                 </div>
                 <div class="card-body">
@@ -687,30 +747,30 @@
                     <div class="d-grid gap-2">
                         <p class="small text-muted mb-1 mt-2">Clear data older than a certain period of time.</p>
                         <div class="btn-group w-100">
-                            <button class="btn btn-outline-secondary" onclick="runCleanup(7)">Old > 7 Days</button>
-                            <button class="btn btn-outline-secondary" onclick="runCleanup(30)">Old > 30 Days</button>
-                            <button class="btn btn-outline-secondary" onclick="runCleanup(365)">Old > 1 Year</button>
+                            <button class="btn btn-outline-secondary" onclick="runCleanup(7)" title="Delete any logs or unprotected scans older than 7 days">Old > 7 Days</button>
+                            <button class="btn btn-outline-secondary" onclick="runCleanup(30)" title="Delete any logs or unprotected scans older than 30 days">Old > 30 Days</button>
+                            <button class="btn btn-outline-secondary" onclick="runCleanup(365)" title="Delete any logs or unprotected scans older than 1 year">Old > 1 Year</button>
                         </div>
                         
                         <p class="small text-muted mb-1 mt-2">Removes old network devices where the original scan was also deleted.</p>
-                        <button class="btn btn-outline-warning" onclick="removeOldDevices()">
+                        <button class="btn btn-outline-warning" onclick="removeOldDevices()" title="Clean up 'ghost' devices from deleted networks">
                             <i class="bi bi-eraser-fill"></i> Remove Old Network Devices
                         </button>
                         
                         <p class="small text-muted mb-1 mt-2">Removes old wifi networks where the original scan was also deleted.</p>
-                        <button class="btn btn-outline-warning" onclick="removeOldWifi()">
+                        <button class="btn btn-outline-warning" onclick="removeOldWifi()" title="Clean up 'ghost' Wi-Fi networks from deleted scans">
                             <i class="bi bi-eraser-fill"></i> Remove Old Wi-Fi Networks
                         </button>
                         
                         <p class="small text-muted mb-1 mt-2">Completely clears the database of all data.</p>
-                        <button class="btn btn-danger" onclick="runCleanup('all')">
+                        <button class="btn btn-danger" onclick="runCleanup('all')" title="WARNING: Wipes the entire database to a factory fresh state">
                             <i class="bi bi-exclamation-octagon"></i> Clear Database Completely
                         </button>
                     </div>
                 </div>
             </div>
         </div>
-
+        <!-- Card 3: Update section -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-secondary">
                 <div class="card-header bg-secondary-subtle text-secondary-emphasis">
@@ -729,14 +789,14 @@
                     <!-- Line 2: Updating From -->
                     <div class="small mb-3 d-flex align-items-center">
                         <strong class="me-2 text-muted">Updating From:</strong>
-                        <select id="update-channel-select" class="form-select form-select-sm w-auto" onchange="changeUpdateChannel()">
+                        <select id="update-channel-select" class="form-select form-select-sm w-auto" onchange="changeUpdateChannel()" title="Select the release channel (Stable vs Development) to receive updates from">
                             <!-- Options populated dynamically by JS -->
                         </select>
                     </div>
                     
                     <!-- Line 3: Check for Updates Button -->
                     <div class="mt-auto">
-                        <button class="btn btn-sm btn-outline-primary w-100" onclick="openUpdateModal()">
+                        <button class="btn btn-sm btn-outline-primary w-100" onclick="openUpdateModal()" title="Connect to GitHub to verify your version against the latest release">
                             <i class="bi bi-arrow-repeat"></i> Check for Updates
                         </button>
                     </div>
@@ -744,7 +804,7 @@
             </div>
         </div>
 
-        <!-- Card 4: Network Connection Types (Now on the Right) -->
+        <!-- Card 4: Network Connection Types -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-info">
                 <div class="card-header bg-info-subtle text-info-emphasis">
@@ -754,14 +814,14 @@
                     <p class="small text-muted">Manage the connection types available in the Speed Test dropdown.</p>
                     <ul class="list-group mb-3" id="connection-type-list" style="max-height: 180px; overflow-y: auto;"></ul>
                     <div class="input-group">
-                        <input type="text" id="new-conn-type" class="form-control form-control-sm" placeholder="e.g. 5G Home Internet" maxlength="50" onkeydown="if(event.key === 'Enter') addConnectionType()">
-                        <button class="btn btn-primary btn-sm" onclick="addConnectionType()">Add Type</button>
+                        <input type="text" id="new-conn-type" class="form-control form-control-sm" placeholder="e.g. 5G Home Internet" maxlength="50" onkeydown="if(event.key === 'Enter') addConnectionType()" title="Custom name for a network connection type">
+                        <button class="btn btn-primary btn-sm" onclick="addConnectionType()" title="Save the new connection type">Add Type</button>
                     </div>
                 </div>
             </div>
         </div>
         
-<!-- Card 5: App Preferences -->
+        <!-- Card 5: App Preferences -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-success">
                 <div class="card-header bg-success-subtle text-success-emphasis">
@@ -770,44 +830,42 @@
                 <div class="card-body">
                     <p class="small text-muted mb-2">Manage startup behavior and UI preferences.</p>
                     <div class="form-check form-switch mb-3">
-                        <input class="form-check-input" type="checkbox" id="autostart-toggle" onchange="toggleAutostart()">
+                        <input class="form-check-input" type="checkbox" id="autostart-toggle" onchange="toggleAutostart()" title="Automatically open the dashboard in your default browser when the server starts">
                         <label class="form-check-label" for="autostart-toggle">Open Web Browser on Startup</label>
                     </div>
                     <hr>
-<hr>
                     <p class="small text-muted mb-2">Web Server Port</p>
                     <div class="input-group input-group-sm mb-2">
                         <span class="input-group-text">Port</span>
-                        <input type="number" id="web-port" class="form-control" placeholder="81" min="1" max="65535" oninput="if(this.value > 65535) this.value = 65535;">
-                        <button class="btn btn-outline-primary" onclick="savePort()">Apply & Restart</button>
+                        <input type="number" id="web-port" class="form-control" placeholder="81" min="1" max="65535" oninput="if(this.value > 65535) this.value = 65535;" title="The port the dashboard web server listens on">
+                        <button class="btn btn-outline-primary" onclick="savePort()" title="Save and restart the server on the new port">Apply & Restart</button>
                     </div>
                     
-                    <!-- NEW LOGGING SECTION HERE -->
                     <hr>
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <p class="small text-muted mb-0">System Diagnostics</p>
                         <span id="log-size-badge" class="badge bg-secondary">0.00 MB</span>
                     </div>
                     <div class="form-check form-switch mb-2">
-                        <input class="form-check-input" type="checkbox" id="logging-toggle" onchange="toggleLogging('full')">
+                        <input class="form-check-input" type="checkbox" id="logging-toggle" onchange="toggleLogging('full')" title="Record every system action to the background logs">
                         <label class="form-check-label small fw-bold" for="logging-toggle">Full Diagnostic Logging</label>
                     </div>
                     <div class="form-check form-switch mb-2">
-                        <input class="form-check-input" type="checkbox" id="disable-logging-toggle" onchange="toggleLogging('disable')">
+                        <input class="form-check-input" type="checkbox" id="disable-logging-toggle" onchange="toggleLogging('disable')" title="Completely halt all file logging to save disk space">
                         <label class="form-check-label small fw-bold text-danger" for="disable-logging-toggle">Disable All Logs</label>
                     </div>
                     <div class="d-flex gap-2 mb-2">
-                        <button class="btn btn-sm btn-outline-secondary flex-grow-1" onclick="location.href='/api/system/logs/download'">
+                        <button class="btn btn-sm btn-outline-secondary flex-grow-1" onclick="location.href='/api/system/logs/download'" title="Download a ZIP containing all current diagnostic logs">
                             <i class="bi bi-download"></i> Download Logs
                         </button>
-                        <button class="btn btn-sm btn-outline-danger flex-grow-1" onclick="deleteSystemLogs()">
+                        <button class="btn btn-sm btn-outline-danger flex-grow-1" onclick="deleteSystemLogs()" title="Delete all diagnostic logs">
                             <i class="bi bi-trash"></i> Clear Logs
                         </button>
                     </div>
                     <hr>
                     <p class="small text-muted mb-2">Access Control</p>
                     <div class="form-check form-switch mb-2">
-                        <input class="form-check-input" type="checkbox" id="auth-toggle" onchange="toggleAuthFields()">
+                        <input class="form-check-input" type="checkbox" id="auth-toggle" onchange="toggleAuthFields()" title="Require a username and password to view the dashboard">
                         <label class="form-check-label fw-bold" for="auth-toggle">Require Login</label>
                     </div>
                     
@@ -822,11 +880,11 @@
                             </button>
                         </div>
                     </div>
-                    <button class="btn btn-sm btn-success w-100 mt-2" onclick="saveAuthSettings()">Save Access Settings</button>
+                    <button class="btn btn-sm btn-success w-100 mt-2" onclick="saveAuthSettings()" title="Apply access control settings">Save Access Settings</button>
                 </div>
             </div>
         </div>
-        <!-- Card: Performance & Worker Concurrency -->
+        <!-- Card 6: Performance & Worker Concurrency -->
         <div class="col-md-6 mb-4">
             <div class="card shadow-sm h-100 border-primary">
                 <div class="card-header bg-primary-subtle text-primary d-flex justify-content-between align-items-center">
@@ -839,30 +897,278 @@
                     <div class="row g-2 mb-3">
                         <div class="col-4">
                             <label class="form-label small fw-bold mb-1">Server Threads</label>
-                            <input type="number" id="workers-server" class="form-control form-control-sm" min="1" max="100">
+                            <input type="number" id="workers-server" class="form-control form-control-sm" min="1" max="100" title="The number of concurrent requests the web server can handle">
                             <span class="text-muted" style="font-size: 0.7rem;">Waitress (Req. restart)</span>
                         </div>
                         <div class="col-4">
                             <label class="form-label small fw-bold mb-1">Scan Workers</label>
-                            <input type="number" id="workers-scan" class="form-control form-control-sm" min="1" max="100">
+                            <input type="number" id="workers-scan" class="form-control form-control-sm" min="1" max="100" title="The number of devices the system will attempt to port-scan concurrently">
                             <span class="text-muted" style="font-size: 0.7rem;">Device info & ports</span>
                         </div>
                         <div class="col-4">
                             <label class="form-label small fw-bold mb-1">Ping Workers</label>
-                            <input type="number" id="workers-ping" class="form-control form-control-sm" min="1" max="100">
+                            <input type="number" id="workers-ping" class="form-control form-control-sm" min="1" max="100" title="The number of raw ICMP sweep tasks allowed to execute simultaneously">
                             <span class="text-muted" style="font-size: 0.7rem;">Subnet sweep fallback</span>
                         </div>
                     </div>
                     <div class="d-flex gap-2">
-                        <button class="btn btn-primary btn-sm flex-grow-1" onclick="saveWorkerSettings()">Save Worker Settings</button>
-                        <button class="btn btn-outline-secondary btn-sm" onclick="resetWorkerSettings()" title="Reset to hardware defaults">Reset</button>
+                        <button class="btn btn-primary btn-sm flex-grow-1" onclick="saveWorkerSettings()" title="Apply and immediately restart the server with new thread pools">Save Worker Settings</button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="resetWorkerSettings()" title="Reset to the recommended defaults based on your detected hardware">Reset</button>
                     </div>
+                </div>
+            </div>
+        </div>
+        <!-- Card 7: Power & Execution Controls -->
+        <div class="col-md-6 mb-4">
+            <div class="card shadow-sm h-100 border-danger">
+                <div class="card-header bg-danger-subtle text-danger-emphasis">
+                    <h5 class="mb-0"><i class="bi bi-power"></i> Power Controls</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted mb-2">Control the application and background supervisor.</p>
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-outline-warning w-50" onclick="restartApp()" title="Restart the dashboard application">Restart App</button>
+                        <button class="btn btn-outline-danger w-50" onclick="shutdownApp()" title="Completely stop the dashboard and background supervisor">Shutdown App</button>
+                    </div>
+                    
+                    <!-- DEDICATED SERVER MODE: Only renders if 'standalone' file exists -->
+                    {% if is_standalone %}
+                    <hr>
+                    <p class="small text-danger fw-bold mb-2"><i class="bi bi-exclamation-triangle"></i> Dedicated Server Mode</p>
+                    <p class="small text-muted mb-2">These controls will affect the entire host operating system.</p>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-danger w-50" onclick="osAction('reboot')" title="Reboot the host machine">OS Reboot</button>
+                        <button class="btn btn-dark w-50" onclick="osAction('shutdown')" title="Shut down the host machine">OS Shutdown</button>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
     </div> <!-- End of Row -->
 </div>
 
+<!-- ==============================================
+     NEW: HELP PAGE SECTION 
+     ============================================== -->
+<div id="help" class="page-section hidden">
+    <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center flex-nowrap bg-info-subtle">
+            <h5 class="mb-0 text-nowrap me-3 text-info-emphasis"><i class="bi bi-question-circle-fill"></i> System Help & Documentation</h5>
+            <input type="text" id="help-search" class="form-control form-control-sm w-50" placeholder="Search documentation..." onkeyup="filterHelp()" title="Search for a specific feature or button">
+        </div>
+        <div class="card-body p-0">
+            <div class="row g-0">
+                <!-- Sidebar Menu -->
+                <div class="col-md-3 border-end bg-body-tertiary">
+                    <div class="nav flex-column nav-pills p-3" id="help-tabs" role="tablist" aria-orientation="vertical">
+                        <button class="nav-link active text-start mb-1" data-target="help-general" onclick="switchHelpTab(this)"><i class="bi bi-house me-2"></i> General</button>
+                        <button class="nav-link text-start mb-1" data-target="help-interfaces" onclick="switchHelpTab(this)"><i class="bi bi-hdd-network me-2"></i> Interfaces</button>
+                        <button class="nav-link text-start mb-1" data-target="help-netscan" onclick="switchHelpTab(this)"><i class="bi bi-pc-display-horizontal me-2"></i> Network Scanning</button>
+                        <button class="nav-link text-start mb-1" data-target="help-wifiscan" onclick="switchHelpTab(this)"><i class="bi bi-wifi me-2"></i> Wi-Fi Scanning</button>
+                        <button class="nav-link text-start mb-1" data-target="help-tools" onclick="switchHelpTab(this)"><i class="bi bi-tools me-2"></i> Other Tools</button>
+                        <button class="nav-link text-start mb-1" data-target="help-settings" onclick="switchHelpTab(this)"><i class="bi bi-gear me-2"></i> Settings</button>
+                        <!-- NEW: Config Files Help Tab -->
+                        <button class="nav-link text-start" data-target="help-files" onclick="switchHelpTab(this)"><i class="bi bi-file-earmark-code me-2"></i> Config Files</button>
+                    </div>
+                </div>
+                
+                <!-- Main Content Area -->
+                <div class="col-md-9 p-4" id="help-content-container" style="max-height: 65vh; overflow-y: auto;">
+                    
+                    <!-- General Help -->
+                    <div id="help-general" class="help-section">
+                        <h5 class="text-primary border-bottom pb-2 mb-3">About Network Diagnostics</h5>
+                        <p>A robust, fault-tolerant network diagnostic dashboard designed for troubleshooting network issues across home, office, and managed environments. Built using Python, Flask, SQLite, and Scapy.</p>
+                        
+                        <div class="d-flex gap-2 mb-4">
+                            <p>Should you have any issues or suggestions on improvements, please log them via github. I will try to get to them and respond to it</p>
+                            <a href="https://github.com/Chrisb003/Network-Testing-Tools" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="bi bi-github"></i> GitHub Repository</a>
+                            <!-- Change the email address below to your actual support email -->
+                          <!--<a href="mailto:a@a.a" class="btn btn-sm btn-outline-secondary"><i class="bi bi-envelope"></i> Contact Support</a> -->
+                        </div>
+
+                       <h5 class="text-primary border-bottom pb-2 mb-3 mt-4">Setup & Launcher Scripts</h5>
+                        <p class="text-muted small">The application uses several automated wrapper scripts to handle environment setup automatically across different operating systems:</p>
+                        <p class="text-muted small">For the most part these have the same functionality but are tailored for each OS. The main difference is that on the Mac OS install script there is no option to enable a hotspot on the device.</p>
+                        <p class="text-muted small">These same scripts can be used to fully remove the application as well.</p>
+
+                        <div class="help-item">
+                            <strong><code>Windows-Installer.ps1</code> PowerShell script: Requests administrator privileges, checks for Python (opening the Microsoft Store if missing), downloads or updates project files from GitHub into the user's profile directory, and prompts for dedicated test device features (such as generating <code>standalone</code>, <code>disablecleanup</code>, and <code>webport</code> configuration files, or setting up a Windows Wi-Fi Mobile Hotspot). It also configures user-login startup, individual desktop/start menu shortcuts using the custom app logo, and hands off execution to the setup script.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, and network-manager), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). It also handles optional systemd background services, desktop shortcuts with custom logo integration, and launches the environment supervisor.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3 and Xcode tools if missing), downloads or updates project files from GitHub into the user's home folder, and offers dedicated test device options to write configuration triggers. It also manages background <code>launchd</code> boot agents, builds a native macOS <code>.app</code> bundle in the Applications folder with a high-resolution custom icon converted from the project logo, and executes the setup script.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>setup_env.py</code>:</strong> The core supervisor script. Manages virtual environments, installs Python requirements, downloads/updates the Speedtest CLI, enforces file permissions across the OS, and monitors the main application for crashes.
+                        </div>
+
+                        <h5 class="text-primary border-bottom pb-2 mb-3 mt-4">Dashboard Basics</h5>
+                        <div class="help-item">
+                            <strong>Live Status Dot:</strong> Indicates that the dashboard is actively communicating with the backend server.
+                        </div>
+                        <div class="help-item">
+                            <strong>Refresh Network Info:</strong> Forces an immediate OS-level query to update the physical adapters and active IP data without waiting for the background cache.
+                        </div>
+                        <div class="help-item">
+                            <strong>Touch Mode (Hand Icon):</strong> Increases the size of buttons, checkboxes, and table rows to make the interface much easier to tap on tablets and mobile devices.
+                        </div>
+                        <div class="help-item">
+                            <strong>Theme Toggle (Sun/Moon):</strong> Switches the application between Light and Dark mode. This preference is saved to your browser automatically.
+                        </div>
+                        <div class="help-item">
+                            <strong>Speed Test Tool:</strong> Runs an immediate bandwidth test (Download, Upload, and Ping) against Ookla Speedtest servers. You can select the active connection type (e.g., Ethernet vs Wi-Fi) and type a custom location name which will be stored alongside the result in your history.
+                        </div>
+                    </div>
+
+                    <!-- Interfaces Help -->
+                    <div id="help-interfaces" class="help-section hidden">
+                        <h5 class="text-primary border-bottom pb-2 mb-3">Network Adapters</h5>
+                        <p class="text-muted small">This tab displays the active state of the physical hardware attached to your system.</p>
+                        
+                        <div class="help-item">
+                            <strong>Hide / Unhide Selected:</strong> Select adapters using the checkboxes to hide them from the main view. This is useful for removing virtual adapters, VPNs, or loopbacks that clutter your dashboard.
+                        </div>
+                        <div class="help-item">
+                            <strong>Hide No-MAC:</strong> Instantly filters out software-based interfaces that lack a physical MAC address.
+                        </div>
+                        <div class="help-item">
+                            <strong>Show Hidden:</strong> Temporarily reveals adapters you have previously hidden. A green "Unhide Selected" button will appear allowing you to restore them permanently.
+                        </div>
+                        <div class="help-item">
+                            <strong>Edit / Pin Adapter (Gear or Pencil Icon):</strong> Click the adapter name or the gear icon to open its settings. From there you can:
+                            <ul>
+                                <li class="mt-1">Rename the adapter.</li>
+                                <li><strong>Pin as Primary:</strong> Locks the dashboard header (Router IP, DNS, and Traffic Speeds) exclusively to this adapter's statistics.</li>
+                                <li><strong>Lock Wi-Fi Scanner:</strong> If the adapter supports Wi-Fi, you can force the system to exclusively use it for airwave scanning, preventing drops on your primary connection.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Network Scanning Help -->
+                    <div id="help-netscan" class="help-section hidden">
+                        <h5 class="text-primary border-bottom pb-2 mb-3">Network Scanning</h5>
+                        <p class="text-muted small">Manage devices connected to your Local Area Network via ARP mapping and ICMP sweeps.</p>
+                        
+                        <div class="help-item">
+                            <strong>Scan (New Scan):</strong> Performs a deep sweep of the active subnet to discover connected devices, checking for common open services (like HTTP, SSH) and resolving manufacturer names. This scan attempts to match against previous networks in your database automatically.
+                        </div>
+                        <div class="help-item">
+                            <strong>Continue Scan:</strong> Resumes scanning the currently loaded network. To save time, this mode skips deep-port-checks on devices that were previously detected as offline.
+                        </div>
+                        <div class="help-item">
+                            <strong>Split Scan:</strong> Runs a scan but saves the result as a completely independent network profile in the database, breaking it away from the current one.
+                        </div>
+                        <div class="help-item">
+                            <strong>Isolated Scan:</strong> Runs a fresh scan but intentionally blocks the system from attempting to merge or match the results with any past historical data.
+                        </div>
+                        <div class="help-item">
+                            <strong>Remove Selected / Offline:</strong> Permanently deletes the selected (or fully offline) devices from the active network's historical database.
+                        </div>
+                        <div class="help-item">
+                            <strong>Network Scan History -> Merge:</strong> Check two or more networks in the history table and click "Merge". You will be asked to choose a "Main" network. All devices and history will be bundled into the main network, and the duplicates will be deleted.
+                        </div>
+                        <div class="help-item">
+                            <strong>Auto-Match Toggle (Network History):</strong> Clicking the network icon (<i class="bi bi-diagram-3-fill text-success"></i>) in the Actions column allows you to disable or enable whether future "New Scans" are allowed to merge into that specific profile.
+                        </div>
+                    </div>
+
+                    <!-- Wi-Fi Help -->
+                    <div id="help-wifiscan" class="help-section hidden">
+                        <h5 class="text-primary border-bottom pb-2 mb-3">Wi-Fi Scanning</h5>
+                        <p class="text-muted small">Analyze local airwaves and historical Access Point data.</p>
+                        
+                        <div class="help-item">
+                            <strong>Adapter Dropdown:</strong> Select which hardware to use. Choosing "Auto" will instruct the system to intelligently scan across ALL of your un-hidden Wi-Fi adapters simultaneously to merge the most comprehensive signal data (e.g., merging 2.4/5GHz results with a newer 6GHz adapter).
+                        </div>
+                        <div class="help-item">
+                            <strong>Scan Wi-Fi:</strong> Triggers the OS to query nearby airspace. Note that this often disrupts active Wi-Fi connections momentarily while the radio listens for beacons.
+                        </div>
+                        <div class="help-item">
+                            <strong>Auto-Logging:</strong> Every time you press Scan, the results are automatically saved to the database. You can rename the scan or add comments in the "WiFi Scan History" tab.
+                        </div>
+                        <div class="help-item">
+                            <strong>Global Wi-Fi History:</strong> An aggregate list of every single unique SSID your system has ever seen, including how many times it was detected and the date it was last seen.
+                        </div>
+                    </div>
+                    
+                    <!-- Tools Help -->
+                    <div id="help-tools" class="help-section hidden">
+                        <h5 class="text-primary border-bottom pb-2 mb-3">Other Tools</h5>
+                        
+                        <div class="help-item">
+                            <strong>DNS Lookup:</strong> Enter a domain name (like google.com) and the system will attempt to resolve its primary IP Address. The result is logged alongside the network you were connected to at the time.
+                        </div>
+                        <div class="help-item">
+                            <strong>Ping Tool:</strong> Enter an IP or Domain. The system will send 4 ICMP echo packets to test reachability, measuring latency and packet loss. Results are logged to the database.
+                        </div>
+                        <div class="help-item">
+                            <strong>Record Protection (Padlock Icon):</strong> Clicking the padlock on any historical log (DNS, Ping, Networks, Wi-Fi) locks the record. A locked record will be protected and ignored when you execute bulk database cleanups via the Settings tab.
+                        </div>
+                    </div>
+
+                    <!-- Settings Help -->
+                    <div id="help-settings" class="help-section hidden">
+                        <h5 class="text-primary border-bottom pb-2 mb-3">Settings & Maintenance</h5>
+                        
+                        <div class="help-item">
+                            <strong>Create Local Backup:</strong> Generates an instant snapshot of your `.db` file in the backend `backups` folder. The system will automatically prune older backups based on predefined quotas to save disk space.
+                        </div>
+                        <div class="help-item">
+                            <strong>Database Maintenance (Cleaning):</strong> The "Old > X Days" buttons permanently wipe historical logs and inactive devices that exceed that age limit. Items you have manually "Locked" (Padlocked) will survive this process.
+                        </div>
+                        <div class="help-item">
+                            <strong>System Updates:</strong> Ensure your 'Update Channel' is set to Stable. Clicking "Check for Updates" compares your core application files against the GitHub repository. It will list the changes and handle the download, installation, and server restart automatically.
+                        </div>
+                        <div class="help-item">
+                            <strong>App Preferences (Logging):</strong> "Full Diagnostic Logging" writes every backend action to a file for troubleshooting. "Disable All Logs" prevents the backend from writing to disk entirely (useful for Raspberry Pi SD Cards).
+                        </div>
+                        <div class="help-item">
+                            <strong>Concurrency & Workers:</strong> Adjusts the ThreadPool executors. Increasing Scan Workers makes Network Scans faster, but requires more CPU power. If the dashboard freezes or crashes frequently during scans, reduce these numbers.
+                        </div>
+                        <div class="help-item">
+                            <strong>Power Controls:</strong> "Restart App" safely reboots the Python server. "Shutdown App" kills the server and background supervisor completely. If <em>Dedicated Server Mode</em> is active, you will also see options to physically Reboot or Shut Down the host machine OS.
+                        </div>
+                    </div>
+
+                    <!-- Config Files Help -->
+                    <div id="help-files" class="help-section hidden">
+                        <h5 class="text-primary border-bottom pb-2 mb-3">Advanced Configuration Files</h5>
+                        <p class="text-muted small">You can change advanced system settings or trigger emergency recovery actions by creating blank files (with no file extension) in the same folder as your <code>app.py</code> script.</p>
+                        
+                        <div class="help-item">
+                            <strong><code>webport</code></strong>: Write a number (e.g., <code>8080</code>) inside this file. On the next startup, the dashboard will switch to this port and delete the file.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>standalone</code></strong>: Create this blank file to enable <em>Dedicated Server Mode</em>. This unlocks the dangerous "OS Reboot" and "OS Shutdown" buttons in the Settings tab.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>disablecleanup</code></strong>: Create this blank file to completely disable the folder isolation safety checks. The setup script will always install/run in the current directory, regardless of other foreign files present.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>passwordreset</code></strong>: Create this blank file if you are locked out. On the next startup, the system will disable authentication, clear your passwords, and delete the file.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>cleardatabase</code></strong>: <strong>Warning:</strong> Create this blank file to perform a complete, irrecoverable factory wipe of your SQLite database on the next startup.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>reinstall</code></strong>: <strong>Warning:</strong> Create this blank file to trigger a complete wipe of the application directory. The supervisor will re-download the latest production files from GitHub and reinstall all dependencies from scratch.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>dev</code></strong>: Create this blank file to forcefully switch the application to the "Development" update channel on the next boot.
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ==============================================
+     MODALS 
+     ============================================== -->
 <div class="modal fade" id="updateModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -884,26 +1190,29 @@
         </div>
     </div>
 </div>
-<div class="modal fade" id="updateFailedModal" tabindex="-1">
+
+<div class="modal fade" id="mergeNetworkModal" tabindex="-1">
     <div class="modal-dialog">
-        <div class="modal-content border-danger">
-            <div class="modal-header bg-danger-subtle text-danger">
-                <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill"></i> Update Failed</h5>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-sign-merge-left-fill text-warning"></i> Merge Networks</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
+            <div class="modal-body">
+                <div id="merge-warnings"></div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Select Target (Main) Network:</label>
+                    <select id="merge-target-select" class="form-select"></select>
+                    <small class="text-muted d-block mt-2">
+                        <strong>Important:</strong> The network you select above will be kept. Its Gateway MAC and IP Address will be used for all future scans. All devices and history from the other selected networks will be merged into it, and the old networks will be deleted.
+                    </small>
+                </div>
+            </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-warning w-50" id="btn-execute-merge" onclick="executeMerge()">Merge Networks</button>
             </div>
         </div>
-    </div>
-</div>
-<div class="version-footer">
-    <div>Network Diagnostics <span class="badge bg-secondary">BETA</span></div>
-    <div>
-        <span id="footer-channel-badge" class="ver-tag {% if 'dev' in update_channel.lower() %}bg-warning text-dark{% else %}bg-success text-white{% endif %}">
-            {{ update_channel_name }}
-        </span>
-        <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Running V{{ global_version | replace('DEV', '') }}</span>
     </div>
 </div>
 
@@ -994,6 +1303,7 @@
         </div>
     </div>
 </div>
+
 <div class="modal fade" id="editSpeedTestModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -1018,6 +1328,62 @@
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="adapterModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Adapter Settings</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-mac">
+                <input type="hidden" id="modal-sys-id">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Custom Display Name</label>
+                    <input type="text" id="modal-custom-name" class="form-control" maxlength="50" placeholder="e.g. Office Ethernet" title="Assign a friendly name to this adapter">
+                </div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="modal-visible" title="Toggle whether this adapter is visible in the main table">
+                    <label class="form-check-label">Visible in Dashboard</label>
+                </div>
+                <div class="form-check mt-3 pt-3 border-top">
+                    <input class="form-check-input" type="checkbox" id="modal-pin-primary" title="Lock the dashboard header metrics to this specific adapter">
+                    <label class="form-check-label fw-bold" for="modal-pin-primary">
+                        Pin as Primary Adapter
+                    </label>
+                    <small class="text-muted d-block">The main dashboard header will always use this adapter's IP/Gateway/DNS info.</small>
+                </div>
+                
+                <div class="form-check mt-3 pt-3 border-top hidden" id="modal-wifi-scanner-container">
+                    <input class="form-check-input" type="checkbox" id="modal-wifi-scanner" title="Force all Wi-Fi scans to use this specific adapter">
+                    <label class="form-check-label fw-bold text-info" for="modal-wifi-scanner">
+                        Lock Wi-Fi Scanner to this Adapter
+                    </label>
+                    <small class="text-muted d-block">Wi-Fi scans will exclusively use this adapter.</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveAdapterSettings()" title="Save your adapter preferences">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==============================================
+     FOOTER
+     ============================================== -->
+<div class="version-footer">
+    <!-- UPDATED: Added Copyright symbol and year, plus a small margin (ms-1) to the Beta badge -->
+    <div>Network Diagnostics &copy; Chris Blewett 2026 <span class="badge bg-secondary ms-1">BETA</span></div>
+    <div>
+        <span id="footer-channel-badge" class="ver-tag {% if 'dev' in update_channel.lower() %}bg-warning text-dark{% else %}bg-success text-white{% endif %}">
+            {{ update_channel_name }}
+        </span>
+        <span class="ver-tag" id="ver-global" onclick="openUpdateModal()">Running V{{ global_version | replace('DEV', '') }}</span>
+    </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <!-- 1. Pass ALL Jinja variables to JavaScript first -->
 <script>

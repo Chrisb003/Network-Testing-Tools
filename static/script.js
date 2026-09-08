@@ -1,5 +1,5 @@
 
-    let updateModal, adapterModal, editSpeedTestModal, allDevices = [], allHistory = [], currentNetworkId = null;
+    let updateModal, adapterModal, editSpeedTestModal, mergeModal, allDevices = [], allHistory = [], currentNetworkId = null;
     let currentScanResults = [];
     let allWifiHistory = [];
     let pendingRemoteVersion = null;
@@ -55,6 +55,8 @@
             editSpeedTestModal = new bootstrap.Modal(document.getElementById('editSpeedTestModal'));
         if(document.getElementById('devHistModal'))
             devHistModal = new bootstrap.Modal(document.getElementById('devHistModal'));
+        if(document.getElementById('mergeNetworkModal'))
+            mergeModal = new bootstrap.Modal(document.getElementById('mergeNetworkModal'));
         // Initial Header Data Load
         fetch('/api/get_last_name').then(r=>r.json()).then(d => { 
             if(d.last_name && document.getElementById('st-network-name')) 
@@ -758,7 +760,8 @@ function renderNetworks() {
         tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
             const safeName = escapeJS(n.name);
             const isChecked = tableState.networks.selected.has(String(n.id)) ? 'checked' : '';
-            const isProtected = n.is_protected ? 1 : 0; // NEW
+            const isProtected = n.is_protected ? 1 : 0; 
+            const isMatchable = n.allow_matching !== undefined ? (n.allow_matching ? 1 : 0) : 1; 
             
             return `
             <tr>
@@ -770,6 +773,10 @@ function renderNetworks() {
                 <td><small>${n.last_scan}</small></td>
                 <td class="text-end">
                     <div class="btn-group">
+                        <!-- NEW: Auto-Match Toggle -->
+                        <button class="btn btn-sm ${isMatchable ? 'btn-outline-success' : 'btn-outline-secondary'}" onclick="toggleMatching(${n.id}, ${isMatchable})" title="${isMatchable ? 'Auto-Matching Enabled (Click to Disable)' : 'Auto-Matching Disabled (Click to Enable)'}">
+                            <i class="bi ${isMatchable ? 'bi-diagram-3-fill' : 'bi-diagram-3'}"></i>
+                        </button>
                         <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('networks', ${n.id}, ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
                             <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
                         </button>
@@ -784,6 +791,34 @@ function renderNetworks() {
 
         updateMasterCheckbox('networks', paginatedData.map(n => n.id));
     }
+
+function toggleMatching(id, currentState, force = false) {
+    const newState = currentState ? 0 : 1; 
+    
+    fetch('/api/system/toggle_matching', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: id, state: newState, force: force})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'conflict') {
+            // Warn the user about the existing matched network
+            if (confirm(d.message + "\n\nDo you want to proceed and make this network the active matching profile?")) {
+                // User clicked OK, retry the request with the force flag enabled
+                toggleMatching(id, currentState, true);
+            } else {
+                // User clicked Cancel, visually refresh to ensure the toggle switches back
+                loadNetworks(); 
+            }
+        } else if (d.status === 'success') {
+            loadNetworks(); // Refresh table to update badge colors
+        } else {
+            alert("Error: " + (d.error || "Failed to update matching state."));
+        }
+    })
+    .catch(err => alert("Communication error: " + err.message));
+}
 
     // --- 2. SPEED TEST HISTORY ---
     function fetchHistory() { 
@@ -1572,18 +1607,26 @@ function loadNetworkDevices(id, name) {
     currentNetworkId = id; 
     showPage('devices', document.querySelectorAll('.nav-link')[1]);
     
+    // Auto-update buttons for contextual loaded view
+    const b = document.getElementById('btn-scan-devices');
+    const cBtn = document.getElementById('btn-continue-scan');
+    const splitBtn = document.getElementById('btn-split-scan');
+    const isoBtn = document.getElementById('btn-isolation-scan');
+    
+    if (b) b.innerHTML = '<i class="bi bi-search"></i> New Scan';
+    if (cBtn) cBtn.classList.remove('hidden');
+    if (splitBtn) splitBtn.classList.remove('hidden'); // Reveal Split option
+    if (isoBtn) isoBtn.classList.add('hidden'); // Hide Isolation (Split acts as contextual isolation)
+    
     if(name) {
         document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
-        // Auto-Populate Speed Test Location
         const locationInput = document.getElementById('st-network-name');
         if(locationInput) locationInput.value = name;
         
-        // NEW: Reveal the edit pencil
         const editIcon = document.getElementById('btn-edit-active-network');
         if (editIcon) editIcon.classList.remove('hidden');
     }
     
-    // Hide the buttons initially while fetching
     const btnSel = document.getElementById('btn-remove-selected');
     const btnOff = document.getElementById('btn-remove-offline');
     if (btnSel) btnSel.classList.add('hidden');
@@ -1593,46 +1636,87 @@ function loadNetworkDevices(id, name) {
         allDevices = d; 
         renderDevices(d);
         
-        // Trigger background lookup for missing vendors
         resolveMissingVendors(allDevices);
         
-        // --- FIXED: Only show 'Remove Selected' for old/saved networks ---
         if (btnSel) btnSel.classList.remove('hidden');
-        if (btnOff) btnOff.classList.add('hidden'); // Explicitly keep 'Remove Offline' hidden
+        if (btnOff) btnOff.classList.add('hidden'); 
     });
 }
 
-function scanDevices() {
+function scanDevices(mode = 'new', forceMerge = false) {
     const b = document.getElementById('btn-scan-devices'); 
+    const cBtn = document.getElementById('btn-continue-scan');
+    const splitBtn = document.getElementById('btn-split-scan');
+    const isoBtn = document.getElementById('btn-isolation-scan');
+    const tb = document.getElementById('device-list');
+    
+    // Set UI to loading state
     b.disabled = true; 
-    b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+    if (cBtn) cBtn.disabled = true;
+    if (splitBtn) splitBtn.disabled = true;
+    if (isoBtn) isoBtn.disabled = true;
+    
+    if (mode === 'continue') {
+        if (cBtn) cBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+    } else if (mode === 'split') {
+        if (splitBtn) splitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+        allDevices = []; // Split creates a blank new table visually
+        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Split Scan...</h5></td></tr>`;
+    } else if (mode === 'isolation') {
+        if (isoBtn) isoBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+        allDevices = []; 
+        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Isolation Scan...</h5></td></tr>`;
+    } else {
+        b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+        allDevices = []; 
+        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Scanning Network...</h5></td></tr>`;
+    }
     
     const btnSel = document.getElementById('btn-remove-selected');
     const btnOff = document.getElementById('btn-remove-offline');
     if (btnSel) btnSel.classList.add('hidden');
     if (btnOff) btnOff.classList.add('hidden');
+    
     const editIcon = document.getElementById('btn-edit-active-network');
-    if (editIcon) editIcon.classList.add('hidden');
+    if (mode === 'new' && editIcon) editIcon.classList.add('hidden');
     
-    const tb = document.getElementById('device-list');
-    // UNIFIED LOADING STATE: Matches device history & adapter loading layout
-    if (tb) tb.innerHTML = `
-        <tr>
-            <td colspan="10" class="text-center p-5">
-                <div class="spinner-border text-primary mb-3"></div>
-                <h5 class="text-muted">Scanning Network...</h5>
-                <p class="small text-secondary">Discovering active network devices and services.</p>
-            </td>
-        </tr>`;    
-    
-    allDevices = [];
-    let isFirstDevice = true;
+    let isFirstDevice = (mode !== 'continue');
 
-    // Use SSE to stream devices live
-    const eventSource = new EventSource('/api/scan_network_stream');
+    // Attach mode flags for the backend
+    let queryParam = `?mode=${mode}`;
+    if ((mode === 'continue' || mode === 'split') && currentNetworkId) {
+        queryParam += `&network_id=${currentNetworkId}`;
+    }
+    if (forceMerge) queryParam += '&force_merge=true';
+    
+    const eventSource = new EventSource('/api/scan_network_stream' + queryParam);
 
     eventSource.onmessage = function(event) {
         const data = JSON.parse(event.data);
+
+        // --- NEW: Handle Network Mismatches ---
+        if (data.type === 'mismatch') {
+            eventSource.close();
+            
+            // Re-enable buttons immediately to prevent lockup
+            b.disabled = false;
+            b.innerHTML = '<i class="bi bi-search"></i> New Scan';
+            if (cBtn && mode === 'continue') {
+                cBtn.disabled = false;
+                cBtn.innerHTML = '<i class="bi bi-play-fill"></i> Continue Scan';
+            }
+            if (splitBtn && mode === 'split') {
+                splitBtn.disabled = false;
+                splitBtn.innerHTML = '<i class="bi bi-diagram-2"></i> Split Scan';
+            }
+            
+            if (confirm("We detected that the IP Subnet or Router MAC address is different from this loaded network.\n\nIs this the same network?\n- Click OK to force a merge into this network.\n- Click Cancel to safely start a New Scan instead.")) {
+                scanDevices('continue', true); 
+            } else {
+                scanDevices('new', false); 
+            }
+            return;
+        }
 
         if (data.type === 'init') {
             currentNetworkId = data.network_id;
@@ -1650,11 +1734,9 @@ function scanDevices() {
             if (idx >= 0) allDevices[idx] = data.device;
             else allDevices.push(data.device);
 
-            // Keep devices sorted numerically by IPv4 address (with safety fallbacks)
             allDevices.sort((a, b) => {
                 const ipA = a.ip_address || "0.0.0.0";
                 const ipB = b.ip_address || "0.0.0.0";
-                
                 const numA = ipA.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
                 const numB = ipB.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
                 return numA - numB;
@@ -1664,24 +1746,38 @@ function scanDevices() {
         } 
         else if (data.type === 'complete') {
             eventSource.close();
-            b.disabled = false;
-            b.innerHTML = '<i class="bi bi-search"></i> Scan';
             
-            // --- FIXED: Reveal ALL buttons because a live scan completed ---
+            // Restore contextual UI
+            b.disabled = false;
+            b.innerHTML = '<i class="bi bi-search"></i> New Scan';
+            
+            if (cBtn) {
+                cBtn.disabled = false;
+                cBtn.classList.remove('hidden');
+                cBtn.innerHTML = '<i class="bi bi-play-fill"></i> Continue Scan';
+            }
+            if (splitBtn) {
+                splitBtn.disabled = false;
+                splitBtn.classList.remove('hidden');
+                splitBtn.innerHTML = '<i class="bi bi-diagram-2"></i> Split Scan';
+            }
+            if (isoBtn) {
+                isoBtn.disabled = false;
+                isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolation Scan';
+                isoBtn.classList.add('hidden'); // Hide Isolation, switch to Split context
+            }
+            
             if (btnSel) btnSel.classList.remove('hidden');
             if (btnOff) btnOff.classList.remove('hidden');
-            if (editIcon) editIcon.classList.remove('hidden'); // NEW
+            if (editIcon) editIcon.classList.remove('hidden'); 
             
-            // Add offline devices to the list
             if (data.offline_devices && data.offline_devices.length > 0) {
                 data.offline_devices.forEach(offDev => {
-                    // Prevent duplicates just in case
-                    if (!allDevices.some(d => d.mac_address === offDev.mac_address)) {
-                        allDevices.push(offDev);
-                    }
+                    const idx = allDevices.findIndex(d => d.mac_address === offDev.mac_address);
+                    if (idx >= 0) allDevices[idx] = offDev; 
+                    else allDevices.push(offDev);
                 });
 
-                // Re-sort so offline devices show up natively based on their last IP
                 allDevices.sort((a, b) => {
                     const ipA = a.ip_address || "0.0.0.0";
                     const ipB = b.ip_address || "0.0.0.0";
@@ -1692,30 +1788,37 @@ function scanDevices() {
                 renderDevices(allDevices);
             }
             
-            // Trigger asynchronous background vendor lookups for unpopulated entries
             resolveMissingVendors(allDevices);
         }
         else if (data.type === 'error') {
             eventSource.close();
+            
             b.disabled = false;
-            b.innerHTML = '<i class="bi bi-search"></i> Scan';
+            b.innerHTML = '<i class="bi bi-search"></i> New Scan';
+            if (cBtn) { cBtn.disabled = false; cBtn.innerHTML = '<i class="bi bi-play-fill"></i> Continue Scan'; }
+            if (splitBtn) { splitBtn.disabled = false; splitBtn.innerHTML = '<i class="bi bi-diagram-2"></i> Split Scan'; }
+            if (isoBtn) { isoBtn.disabled = false; isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolation Scan'; }
+            
             alert(data.message || 'Scan failed.');
-            // Add table reset here
             if (allDevices.length === 0) {
-                tb.innerHTML = `<tr><td colspan="9" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> ${data.message}</td></tr>`;
+                tb.innerHTML = `<tr><td colspan="10" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> ${data.message}</td></tr>`;
             }
         }
     };
 
     eventSource.onerror = function() {
         eventSource.close();
+        
         b.disabled = false;
-        b.innerHTML = '<i class="bi bi-search"></i> Scan';
-        // NEW: Fix the table getting stuck visually if the stream crashes
+        b.innerHTML = '<i class="bi bi-search"></i> New Scan';
+        if (cBtn) { cBtn.disabled = false; cBtn.innerHTML = '<i class="bi bi-play-fill"></i> Continue Scan'; }
+        if (splitBtn) { splitBtn.disabled = false; splitBtn.innerHTML = '<i class="bi bi-diagram-2"></i> Split Scan'; }
+        if (isoBtn) { isoBtn.disabled = false; isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolation Scan'; }
+        
         if (allDevices.length === 0) {
-            tb.innerHTML = '<tr><td colspan="9" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> Connection to scanner lost.</td></tr>';
+            tb.innerHTML = '<tr><td colspan="10" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> Connection to scanner lost.</td></tr>';
         } else {
-            renderDevices(allDevices); // Render whatever was found before crash
+            renderDevices(allDevices); 
         }
     };
 }
@@ -1915,6 +2018,81 @@ function resolveMissingVendors(devices) {
                 method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id})
             }).then(loadNetworks); 
         }
+    }
+
+    function openMergeModal() {
+        const selectedIds = Array.from(tableState.networks.selected);
+        if (selectedIds.length < 2) return alert("Please select at least TWO networks to merge.");
+
+        const selectedNets = tableState.networks.data.filter(n => selectedIds.includes(String(n.id)));
+        
+        // --- 1. Analyze for Mismatches (Subnet & MAC) ---
+        let mismatchHtml = "";
+        let subnets = new Set();
+        let macs = new Set();
+        
+        selectedNets.forEach(n => {
+            macs.add(n.gateway_mac);
+            if (n.gateway_ip && n.gateway_ip !== '-' && n.gateway_ip !== 'Unknown') {
+                let parts = n.gateway_ip.split('.');
+                if (parts.length === 4) {
+                    subnets.add(`${parts[0]}.${parts[1]}.${parts[2]}.0/24`); // Treat as standard /24 for warning purposes
+                }
+            }
+        });
+
+        // Generate Warning Banners
+        if (subnets.size > 1) {
+            mismatchHtml += `<div class="alert alert-warning py-2 small shadow-sm"><i class="bi bi-exclamation-triangle-fill"></i> <strong>Subnet Mismatch!</strong> You are merging networks with different IP Subnets: <strong>${Array.from(subnets).join(', ')}</strong>.</div>`;
+        }
+        if (macs.size > 1) {
+            mismatchHtml += `<div class="alert alert-warning py-2 small shadow-sm"><i class="bi bi-exclamation-triangle-fill"></i> <strong>Hardware Mismatch!</strong> The Gateway MAC addresses differ. Only the MAC of your target network will be preserved.</div>`;
+        }
+
+        document.getElementById('merge-warnings').innerHTML = mismatchHtml;
+
+        // --- 2. Populate Dropdown with chosen networks ---
+        const select = document.getElementById('merge-target-select');
+        select.innerHTML = selectedNets.map(n => 
+            `<option value="${n.id}">${escapeHTML(n.name)} (IP: ${n.gateway_ip} | MAC: ${n.gateway_mac})</option>`
+        ).join('');
+
+        mergeModal.show();
+    }
+
+    function executeMerge() {
+        const targetId = document.getElementById('merge-target-select').value;
+        const sourceIds = Array.from(tableState.networks.selected).filter(id => id !== targetId);
+
+        if (!targetId || sourceIds.length === 0) return;
+
+        if(!confirm("Are you certain you want to merge these networks? This action cannot be undone.")) return;
+
+        const btn = document.getElementById('btn-execute-merge');
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Merging...';
+        btn.disabled = true;
+
+        fetch('/api/networks/merge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_id: targetId, source_ids: sourceIds })
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === 'success') {
+                mergeModal.hide();
+                tableState.networks.selected.clear();
+                loadNetworks(); // Refresh the list automatically
+            } else {
+                alert("Merge failed: " + d.error);
+            }
+        })
+        .catch(err => alert("Communication error: " + err.message))
+        .finally(() => {
+            btn.innerHTML = origHtml;
+            btn.disabled = false;
+        });
     }
 
     // --- Tools (DNS/Ping/WiFi/History) ---
@@ -3310,4 +3488,155 @@ function renameActiveWifiScan() {
             }
         }); 
     }
+}
+
+// ==============================================
+// HELP SECTION LOGIC
+// ==============================================
+
+function switchHelpTab(btn) {
+    // 1. Reset nav pills
+    document.querySelectorAll('#help-tabs .nav-link').forEach(l => l.classList.remove('active'));
+    btn.classList.add('active');
+    
+    // 2. Hide all help sections
+    document.querySelectorAll('.help-section').forEach(s => s.classList.add('hidden'));
+    
+    // 3. Clear search if switching via sidebar
+    document.getElementById('help-search').value = "";
+    resetHelpSearch();
+    
+    // 4. Show the target content
+    const targetId = btn.getAttribute('data-target');
+    const targetSection = document.getElementById(targetId);
+    if (targetSection) targetSection.classList.remove('hidden');
+}
+
+function filterHelp() {
+    const query = document.getElementById('help-search').value.toLowerCase();
+    
+    if (!query) {
+        // If the search bar is cleared, revert to the currently active tab
+        resetHelpSearch();
+        const activeBtn = document.querySelector('#help-tabs .nav-link.active');
+        if (activeBtn) switchHelpTab(activeBtn);
+        return;
+    }
+    
+    // If searching, Unhide ALL sections so the search looks globally across all pages
+    document.querySelectorAll('.help-section').forEach(section => {
+        section.classList.remove('hidden'); 
+        let hasVisibleMatch = false;
+        
+        // Loop through the individual help items inside the section
+        section.querySelectorAll('.help-item').forEach(item => {
+            if (item.innerText.toLowerCase().includes(query)) {
+                item.classList.remove('hidden');
+                hasVisibleMatch = true;
+            } else {
+                item.classList.add('hidden');
+            }
+        });
+        
+        // Hide the whole section header if no items inside it match the search
+        if (hasVisibleMatch) {
+            section.style.display = 'block';
+        } else {
+            section.style.display = 'none';
+        }
+    });
+}
+
+function resetHelpSearch() {
+    document.querySelectorAll('.help-section').forEach(section => {
+        section.style.display = '';
+        section.querySelectorAll('.help-item').forEach(item => {
+            item.classList.remove('hidden');
+        });
+    });
+}
+
+// ==============================================
+// TOUCH-FRIENDLY TOOLTIP ENGINE
+// ==============================================
+
+function upgradeTooltips() {
+    // Find any element that has a standard HTML 'title' attribute
+    document.querySelectorAll('[title]').forEach(el => {
+        // 1. Move the text to Bootstrap's data attribute
+        el.setAttribute('data-bs-title', el.getAttribute('title'));
+        el.setAttribute('data-bs-toggle', 'tooltip');
+        
+        // 2. Remove the native title so we don't get ugly double-tooltips on desktop
+        el.removeAttribute('title'); 
+        
+        // 3. Initialize the Bootstrap Tooltip
+        // 'hover focus' allows mouse hover on PC, and long-press on Touch Screens
+        new bootstrap.Tooltip(el, { 
+            trigger: 'hover focus' 
+        });
+    });
+}
+
+// Run once immediately to catch all static buttons on the page
+upgradeTooltips();
+
+// Create an automated observer that watches the page in the background.
+// Whenever a live scan finishes and generates new rows, this instantly upgrades their tooltips!
+const tooltipObserver = new MutationObserver(() => {
+    upgradeTooltips();
+});
+
+tooltipObserver.observe(document.body, { childList: true, subtree: true });
+
+// ==============================================
+// POWER & EXECUTION CONTROLS
+// ==============================================
+
+function restartApp() {
+    if (!confirm("Are you sure you want to restart the dashboard application?")) return;
+    
+    fetch('/api/system/restart_app', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+            alert(d.message || "Restarting...");
+            document.body.innerHTML = "<h2 style='color:white; text-align:center; margin-top:20%;'>Restarting...<br><div class='spinner-border mt-3'></div></h2>";
+            setTimeout(() => location.reload(), 4000);
+        }).catch(e => alert("Reconnecting..."));
+}
+
+function shutdownApp() {
+    if (!confirm("Are you sure you want to completely shut down the application and supervisor?\n\nYou will need to manually start the server again from the terminal.")) return;
+    
+    fetch('/api/system/shutdown_app', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+            alert(d.message || "Shutting down...");
+            document.body.innerHTML = "<h2 style='color:white; text-align:center; margin-top:20%;'><i class='bi bi-power text-danger mb-3' style='font-size: 3rem;'></i><br>Application Offline.</h2><p style='color:gray; text-align:center;'>You may close this tab.</p>";
+        }).catch(e => {
+            document.body.innerHTML = "<h2 style='color:white; text-align:center; margin-top:20%;'><i class='bi bi-power text-danger mb-3' style='font-size: 3rem;'></i><br>Application Offline.</h2><p style='color:gray; text-align:center;'>You may close this tab.</p>";
+        });
+}
+
+function osAction(action) {
+    let msg = action === 'reboot' 
+        ? "WARNING: You are about to completely REBOOT the host Operating System. This will disconnect all users and halt all background processes.\n\nProceed?" 
+        : "CRITICAL WARNING: You are about to SHUT DOWN the host Operating System. The server will physically power off and require a manual hardware boot to come back online.\n\nProceed?";
+        
+    if (!confirm(msg)) return;
+    
+    fetch('/api/system/os_action', { 
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: action})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            alert("Command accepted. The Operating System will now " + action + ".");
+            document.body.innerHTML = `<h2 style='color:white; text-align:center; margin-top:20%;'>Operating System is performing a ${action}...</h2>`;
+        } else {
+            alert("Error: " + d.error);
+        }
+    });
 }

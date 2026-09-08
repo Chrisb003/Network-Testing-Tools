@@ -1,3 +1,7 @@
+0.13.0 - Added help section, tool tips on each function, add isolated network scan function (This allow you to do a new network scan that isnt merged with previous data). Merge network scan results, choose whether to use the previous scan as data for new scan and various other fixes and enhancements to network scanning. Added option to restart and shutdown dashboard from settings, as well as option to restart and shutdown os if being used as standalone test device.
+File permission fixes, changed logic regading the setup script installing into current folder.
+Updated install scripts for linux, mac and windows.
+
 0.12.5 - Preformance fixes for windows, quality of life improvements.
 
 0.12.4 - Wifi scan fixes, UI fixes

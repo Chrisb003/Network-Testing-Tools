@@ -18,7 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "0.12.5"
+SETUP_VERSION = "0.13.0"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
@@ -31,8 +31,20 @@ if platform.system() == "Darwin":
     ])
 
 REQUIREMENTS = BASE_REQUIREMENTS
-
 APP_FILENAME = "app.py"
+
+# --- MASTER FILE LIST ---
+# Protects these files from the Isolation/Self-Containment security checks.
+KNOWN_APP_ITEMS = {
+    "setup_env.py", "app.py", "version.json", "github_settings.json", 
+    "README.md", "Changelog", "templates", "static", "logs", "backups", 
+    "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
+    "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
+    "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
+    "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", 
+    "windows launcher.bat", "install.md", "NetworkDiagnostics",
+    "standalone", "shutdown_signal", "system_alerts.json", "disablecleanup", "Install scripts" # Guaranteed protection
+}
 
 # GITHUB DEFAULT FALLBACK CONFIGURATION
 DEFAULT_GITHUB_CONFIG = {
@@ -51,6 +63,30 @@ DEFAULT_GITHUB_CONFIG = {
         "branch": "dev"
     }
 }
+
+def get_foreign_items(base_dir):
+    """
+    Scans the directory and returns a list of items that do NOT belong to this application.
+    Smart enough to ignore dynamically generated backups, caches, and databases.
+    """
+    current_items = set(os.listdir(base_dir))
+    foreign = []
+    
+    for item in current_items:
+        # 1. Ignore hidden files and python caches
+        if item.startswith('.') or item == "__pycache__":
+            continue
+        # 2. Ignore explicitly known app files/folders
+        if item in KNOWN_APP_ITEMS:
+            continue
+        # 3. Ignore dynamically generated backups/old files
+        if item.endswith('.old') or item.endswith('.bak') or item.endswith('.back'):
+            continue
+            
+        # If it reaches here, it's genuinely a foreign file
+        foreign.append(item)
+        
+    return foreign
 
 def is_dev_build(base_dir):
     """Determines if the system is on the DEV channel to route database and GitHub checks."""
@@ -100,6 +136,7 @@ def setup_supervisor_logging(base_dir):
     try:
         log_dir.mkdir(exist_ok=True)
         os.chmod(log_dir, 0o777) # Ensure normal users can access the folder
+        fix_permissions(log_dir) # Force permissions on the log folder via OS
     except: pass
 
     # 1. Clean up old logs (older than 7 days)
@@ -135,6 +172,7 @@ def setup_supervisor_logging(base_dir):
             try:
                 self.file = open(filename, 'a', encoding='utf-8')
                 os.chmod(filename, 0o666) # Ensure everyone can read/write to the log
+                fix_permissions(filename) # Force R/W/X for all users on the new log
             except PermissionError:
                 pass # If owned by root, silently skip file logging for setup script
             except Exception:
@@ -147,30 +185,12 @@ def setup_supervisor_logging(base_dir):
                 self.terminal.flush()
             except: pass
             
-            # --- NEW: Unconditionally log all setup script actions ---
-            # This ensures if a fresh installation fails, the logs are always captured.
+            # Unconditionally log all setup script actions
             if self.file:
                 try:
                     self.file.write(text)
                     self.file.flush()
                 except: pass
-                
-        def flush(self):
-            try: self.terminal.flush()
-            except: pass
-            if self.file:
-                try: self.file.flush()
-                except: pass
-            
-            if self.file:
-                # Dynamically check if we should write this line to the log file
-                is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
-                is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning', 'audit'])
-                if is_full or is_error:
-                    try:
-                        self.file.write(text)
-                        self.file.flush()
-                    except: pass
                 
         def flush(self):
             try: self.terminal.flush()
@@ -533,7 +553,19 @@ def run_application(base_dir, venv_python):
             # Wait for the application process to terminate or crash
             process.wait()
             
-            # If we reach here, the app died or crashed
+            # --- Check for intentional shutdown signal ---
+            shutdown_file = base_dir / "shutdown_signal"
+            if shutdown_file.exists():
+                print("\n[*] Intentional shutdown signal received. Stopping supervisor safely.")
+                try:
+                    shutdown_file.unlink() # Clean up the file
+                except OSError:
+                    # Fallback for Linux/macOS if the file is locked by Root
+                    if platform.system() != "Windows":
+                        subprocess.run(["sudo", "rm", "-f", str(shutdown_file)], stderr=subprocess.DEVNULL)
+                sys.exit(0) # Exit the supervisor loop completely
+            
+            # If we reach here and no signal exists, it was a legitimate crash
             print(f"\n[!] WARNING: Main application stopped unexpectedly (Exit code: {process.returncode}).")
             print("[*] Restarting application loop in 3 seconds...\n")
             
@@ -564,6 +596,16 @@ def fix_permissions(path):
             return True
     except:
         return False
+
+def fix_permissions_bulk(base_path):
+    """Recursively sets Read/Write/Execute permissions for the entire directory rapidly."""
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(['icacls', str(base_path), '/grant', 'Everyone:(F)', '/T', '/C', '/Q'], capture_output=True)
+        else:
+            subprocess.run(['sudo', 'chmod', '-R', '777', str(base_path)], stderr=subprocess.DEVNULL)
+    except:
+        pass
 
 def install_chocolatey():
     """Installs Chocolatey on Windows if not present and updates the current PATH."""
@@ -630,25 +672,33 @@ def get_configured_port(base_dir):
 def main():
     base_dir = Path(__file__).parent.resolve()
 
-    # --- VENV EXECUTION SAFEGUARD (SMART TRIGGER) ---
-    # Only break out of the virtual environment if we are performing a destructive 
-    # action that requires deleting or moving the venv folder.
+    # 1. WINDOWS ADMIN CHECK (MUST HAPPEN FIRST to prevent permission errors on cleanup)
+    if platform.system() == "Windows" and not is_admin():
+        print("[*] Requesting Administrative privileges...")
+        params = ' '.join([os.path.abspath(__file__)] + sys.argv[1:])
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+        sys.exit(0)
+
+    # 2. CLEANUP STALE SHUTDOWN SIGNAL
+    shutdown_file = base_dir / "shutdown_signal"
+    if shutdown_file.exists():
+        try:
+            shutdown_file.unlink()
+            print("[*] Cleared stale shutdown signal from a previous session.")
+        except OSError:
+            # Fallback for Linux/macOS if the file is locked by Root
+            if platform.system() != "Windows":
+                subprocess.run(["sudo", "rm", "-f", str(shutdown_file)], stderr=subprocess.DEVNULL)
+                print("[*] Cleared stale shutdown signal (via sudo).")
+
+    # 3. VENV EXECUTION SAFEGUARD & REINSTALL TRIGGERS
     reinstall_file = base_dir / "reinstall"
     needs_factory_reset = reinstall_file.exists()
+    disable_cleanup = (base_dir / "disablecleanup").exists()
     
     needs_isolation = False
-    if not (base_dir / APP_FILENAME).exists():
-        known_app_items = {
-            "setup_env.py", "app.py", "version.json", "github_settings.json", 
-            "README.md", "Changelog", "templates", "static", "logs", "backups", 
-            "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
-            "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
-            "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
-            "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "windows launcher.bat",
-            "install.md", "NetworkDiagnostics"
-        }
-        current_items = set(os.listdir(base_dir))
-        foreign_items = [item for item in current_items if item not in known_app_items and not item.startswith('.')]
+    if not (base_dir / APP_FILENAME).exists() and not disable_cleanup:
+        foreign_items = get_foreign_items(base_dir)
         if foreign_items:
             needs_isolation = True
 
@@ -712,15 +762,23 @@ def main():
             
             # Wipe old runtime environment, database, logs, and backups (Cross-Platform Safe)
             print("[*] Wiping old database, virtual environment, and runtime logs...")
+            
+            # --- SAFE DELETION LIST ---
+            # Explicitly deletes specific heavy components. Ignores standalone/webport configs.
             for target_name in ["network_data.db", "network_data.db-wal", "network_data.db-shm", "venv", "logs", "backups", "rollback.zip", "boot_attempts.txt", "workers", "autostart"]:
                 p = base_dir / target_name
                 if p.is_dir():
                     shutil.rmtree(p, ignore_errors=True)
+                    # Sudo fallback for Linux/Mac if root owns the folders
+                    if p.exists() and platform.system() != "Windows":
+                        subprocess.run(["sudo", "rm", "-rf", str(p)], stderr=subprocess.DEVNULL)
                 elif p.exists():
                     try:
                         p.unlink()
                     except OSError:
-                        pass # Safely ignore locked files
+                        # Sudo fallback for Linux/Mac if root owns the files
+                        if platform.system() != "Windows":
+                            subprocess.run(["sudo", "rm", "-f", str(p)], stderr=subprocess.DEVNULL)
             
             # Safely replace setup_env.py last (Handles Windows Execution Locks)
             new_setup_staging = base_dir / "setup_env_new.py"
@@ -760,9 +818,11 @@ def main():
     
     print(f"--- Network Diagnostics Setup Utility v{SETUP_VERSION} ---")
 
-    needs_permission_fix = False
+    # 4. ENFORCE GLOBAL PERMISSIONS (Runs rapidly on every boot)
+    print("[*] Enforcing file system permissions for all users (R/W/X)...")
+    fix_permissions_bulk(base_dir)
 
-    # 1. INTERNET CONNECTIVITY CHECK
+    # 5. INTERNET CONNECTIVITY CHECK
     online = has_internet()
     if not online:
         print("\n" + "!" * 60)
@@ -770,64 +830,51 @@ def main():
         print("    If this is the first time launching this, connect to the")
         print("    internet and run again to ensure all components are installed.")
         print("!" * 60 + "\n")
-    
-    # 2. WINDOWS ADMIN CHECK
-    if platform.system() == "Windows" and not is_admin():
-        print("[*] Requesting Administrative privileges...")
-        params = ' '.join([os.path.abspath(__file__)] + sys.argv[1:])
-        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
-        sys.exit(0)
 
-    # 3. RUN ONLINE-ONLY TASKS
+    # 6. RUN ONLINE-ONLY TASKS
     if online:
         ensure_linux_prerequisites()
         install_git()
         
         # Check if the app files are missing and we need to fetch from GitHub
         if not (base_dir / APP_FILENAME).exists():
-            # --- Self-Containment / Isolation Check ---
-            known_app_items = {
-                "setup_env.py", "app.py", "version.json", "github_settings.json", 
-                "README.md", "Changelog", "templates", "static", "logs", "backups", 
-                "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
-                "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
-                "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
-                "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", "windows launcher.bat",
-                "install.md"
-            }
             
-            current_items = set(os.listdir(base_dir))
-            foreign_items = [item for item in current_items if item not in known_app_items and not item.startswith('.')]
-            
-            if foreign_items:
-                app_folder = base_dir / "NetworkDiagnostics"
-                app_folder.mkdir(exist_ok=True)
-                print(f"[*] Foreign files detected. Isolating application into: {app_folder}")
+            if not disable_cleanup:
+                foreign_items = get_foreign_items(base_dir)
                 
-                for item in current_items:
-                    if item in known_app_items and item != "NetworkDiagnostics":
-                        src = base_dir / item
-                        dst = app_folder / item
-                        if src.exists() and not dst.exists():
-                            try:
-                                shutil.move(str(src), str(dst))
-                            except Exception as e:
-                                print(f"[!] Warning: Could not move {item}: {e}")
-                
-                new_setup = app_folder / "setup_env.py"
-                if not new_setup.exists():
-                    shutil.copy2(base_dir / "setup_env.py", new_setup)
-                
-                print(f"[*] Restarting setup script from isolated folder...")
-                os.chdir(app_folder)
-                system_py = shutil.which("python3") or shutil.which("python") or sys.executable
-                subprocess.run([system_py, str(new_setup)] + sys.argv[1:])
-                sys.exit(0)
+                if foreign_items:
+                    app_folder = base_dir / "NetworkDiagnostics"
+                    app_folder.mkdir(exist_ok=True)
+                    print(f"[*] Foreign files detected. Isolating application into: {app_folder}")
+                    
+                    # ONLY move files that are identified as belonging to our application
+                    # This explicitly prevents the isolation script from dragging the user's random files along
+                    for item in os.listdir(base_dir):
+                        if item not in foreign_items and item != "NetworkDiagnostics" and not item.startswith('.'):
+                            src = base_dir / item
+                            dst = app_folder / item
+                            if src.exists() and not dst.exists():
+                                try:
+                                    shutil.move(str(src), str(dst))
+                                except Exception as e:
+                                    print(f"[!] Warning: Could not move {item}: {e}")
+                    
+                    new_setup = app_folder / "setup_env.py"
+                    if not new_setup.exists():
+                        shutil.copy2(base_dir / "setup_env.py", new_setup)
+                    
+                    print(f"[*] Restarting setup script from isolated folder...")
+                    os.chdir(app_folder)
+                    system_py = shutil.which("python3") or shutil.which("python") or sys.executable
+                    subprocess.run([system_py, str(new_setup)] + sys.argv[1:])
+                    sys.exit(0)
+            else:
+                print("[*] 'disablecleanup' detected. Skipping folder isolation safety checks.")
             
             fetch_latest_from_github(base_dir)
-            needs_permission_fix = True
+            fix_permissions_bulk(base_dir) # Enforce permissions on newly downloaded files
     
-    # 4. ENVIRONMENT SETUP
+    # 7. ENVIRONMENT SETUP
     venv_path = base_dir / VENV_DIR_NAME
     if not venv_path.exists() and not online:
         print("[X] ERROR: No virtual environment found and no internet to create one.")
@@ -836,38 +883,14 @@ def main():
     venv_path = create_venv(base_dir)
     paths = get_venv_paths(venv_path)
     
-    # 5. INSTALLATION
+    # 8. INSTALLATION
     if online:
         install_requirements(paths["python"])
         if platform.system() == "Windows":
             install_npcap_windows()
         install_speedtest_cli(paths["bin_dir"])
     
-    # 6. CONDITIONAL PERMISSION FIX
-    if needs_permission_fix:
-        print("[*] New files detected. Verifying file system permissions...")
-        success_count = 0
-        fail_count = 0
-        for root, dirs, files in os.walk(base_dir):
-            if ".git" in dirs: dirs.remove(".git")
-            for d in dirs:
-                if fix_permissions(os.path.join(root, d)): success_count += 1
-                else: fail_count += 1
-            for f in files:
-                if any(x in f for x in [".db-shm", ".db-wal", "python3", "python.exe"]): continue
-                if fix_permissions(os.path.join(root, f)): success_count += 1
-                else:
-                    if not f.startswith("."): print(f"[!] Warning: Could not set permissions for {f}")
-                    fail_count += 1
-
-        if fail_count == 0:
-            print(f"[✓] Permission check complete. All {success_count} items verified.")
-        else:
-            print(f"[!] Permission check finished: {success_count} succeeded, {fail_count} skipped/failed.")
-    else:
-        print("[✓] Skipping permission check (No new files downloaded).")
-
-    # 7. LAUNCH
+    # 9. LAUNCH
     run_application(base_dir, paths["python"])
 
 if __name__ == "__main__":

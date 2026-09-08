@@ -33,6 +33,20 @@ from werkzeug.security import generate_password_hash, check_password_hash
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
+# ==========================================
+# PERMISSION ENGINE
+# ==========================================
+def fix_permissions(path):
+    """Sets path to full Read/Write/Execute for all users."""
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(['icacls', str(path), '/grant', 'Everyone:(F)'], capture_output=True)
+        else:
+            subprocess.run(['sudo', 'chmod', '777', str(path)], stderr=subprocess.DEVNULL)
+        return True
+    except:
+        return False
+    
 # ---------------------------------------------------------
 # --- LOGGING SETUP (Redirects ALL terminal output to file) ---
 # ---------------------------------------------------------
@@ -44,7 +58,7 @@ def setup_file_logging():
     log_dir = os.path.join(base_dir, 'logs')
     try:
         os.makedirs(log_dir, exist_ok=True)
-        os.chmod(log_dir, 0o777)
+        fix_permissions(log_dir) # Force permissions on the log folder
     except: pass
 
     # 1. Delete logs older than 7 days
@@ -84,7 +98,7 @@ def setup_file_logging():
             self.file = None
             try:
                 self.file = open(filename, 'a', encoding='utf-8')
-                os.chmod(filename, 0o666) # Ensure everyone can read/write to the log
+                fix_permissions(filename) # Force permissions on the log file
             except Exception: pass
             
         def write(self, text):
@@ -136,7 +150,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.12.5"
+APP_VERSION = "0.13.0"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -293,6 +307,7 @@ def execute_backup(prefix, max_count, force=False):
     try:
         # CHANGED: os.replace is safer than os.rename on Windows (prevents FileExistsError)
         os.replace(temp_backup, final_name)
+        fix_permissions(final_name) # Force permissions on the newly created backup file
         print(f"[*] Database backup created: {os.path.basename(final_name)}")
         manage_backup_rotation(prefix, max_count)
         return final_name
@@ -496,6 +511,13 @@ def init_db():
         for col in ["is_deleted INTEGER DEFAULT 0"]:
             try: c.execute(f"ALTER TABLE wifi_history ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
+
+        # --- NEW: Support for Auto-Matching Toggle ---
+        for col in ["allow_matching INTEGER DEFAULT 1"]:
+            try: c.execute(f"ALTER TABLE networks ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
+
+        conn.commit()
 
         conn.commit()
 
@@ -1384,6 +1406,9 @@ def index():
     # Get the display name for the footer
     all_settings = get_all_github_settings()
     channel_display_name = all_settings.get(current_channel, {}).get("display_name", current_channel.capitalize())
+    
+    # --- NEW: Check for Dedicated Server Mode ---
+    is_standalone = os.path.exists(os.path.join(app.root_path, "standalone"))
 
     return render_template('dashboard.html', 
                            local_ip=get_local_ip(), 
@@ -1396,7 +1421,8 @@ def index():
                            app_version=APP_VERSION,
                            html_version=get_html_version(),
                            update_channel=current_channel,
-                           update_channel_name=channel_display_name) # NEW VARIABLE
+                           update_channel_name=channel_display_name,
+                           is_standalone=is_standalone) # <-- NEW VARIABLE
 
 @app.route('/api/system/cleanup', methods=['POST'])
 def cleanup_database():
@@ -1874,14 +1900,51 @@ def list_networks():
         result = []
         for net in networks:
             count = conn.execute("SELECT COUNT(*) FROM devices WHERE network_id=?", (net['id'],)).fetchone()[0]
-            # Convert to dict to safely grab is_protected
             net_dict = dict(net)
             result.append({
                 "id": net_dict['id'], "name": net_dict['name'], "gateway_mac": net_dict['gateway_mac'],
                 "gateway_ip": net_dict['gateway_ip'], "last_scan": net_dict['last_scan'], "device_count": count,
-                "is_protected": net_dict.get('is_protected', 0)
+                "is_protected": net_dict.get('is_protected', 0),
+                "allow_matching": net_dict.get('allow_matching', 1) # Support UI toggle
             })
         return jsonify(result)
+
+@app.route('/api/system/toggle_matching', methods=['POST'])
+def toggle_matching():
+    """Toggles whether a network profile can be merged with future scans. Checks for conflicts."""
+    d = request.json
+    item_id = d.get('id')
+    state = 1 if d.get('state') else 0
+    force = d.get('force', False)
+    
+    if item_id is not None:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            if state == 1:
+                # 1. Check if another network with the same MAC & IP is already matching
+                net = cursor.execute("SELECT gateway_mac, gateway_ip FROM networks WHERE id=?", (item_id,)).fetchone()
+                if net:
+                    mac = net['gateway_mac']
+                    ip = net['gateway_ip']
+                    conflict = cursor.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 AND id!=?", (mac, ip, item_id)).fetchone()
+                    
+                    if conflict and not force:
+                        return jsonify({
+                            "status": "conflict", 
+                            "message": f"Another network ('{conflict['name']}') is already set to Auto-Match with this Gateway.\n\nEnabling Auto-Match for this scan will disable it for the older one."
+                        })
+                    elif conflict and force:
+                        # 2. User confirmed the overwrite: Disable matching on all others for this Gateway
+                        cursor.execute("UPDATE networks SET allow_matching=0 WHERE gateway_mac=? AND gateway_ip=? AND id!=?", (mac, ip, item_id))
+            
+            # Apply the requested state to the target network
+            cursor.execute("UPDATE networks SET allow_matching = ? WHERE id = ?", (state, item_id))
+            conn.commit()
+            
+        return jsonify({"status": "success"})
+    return jsonify({"error": "Invalid request"}), 400
 
 @app.route('/api/networks/delete', methods=['POST'])
 def delete_network():
@@ -1889,6 +1952,66 @@ def delete_network():
         conn.execute("DELETE FROM networks WHERE id=?", (request.json.get('id'),))
         conn.commit()
     return jsonify({"status": "success"})
+
+@app.route('/api/networks/merge', methods=['POST'])
+def merge_networks():
+    """
+    Merges multiple old networks into a single target network.
+    Resolves device conflicts by keeping the newest data and updates historical logs.
+    """
+    d = request.json
+    target_id = d.get('target_id')
+    source_ids = d.get('source_ids', [])
+    
+    if not target_id or not source_ids:
+        return jsonify({"error": "Invalid parameters provided for merge."}), 400
+        
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            target_net = cursor.execute("SELECT name FROM networks WHERE id=?", (target_id,)).fetchone()
+            if not target_net: return jsonify({"error": "Target network not found."}), 404
+            target_name = target_net['name']
+            
+            for src_id in source_ids:
+                if str(src_id) == str(target_id): continue
+                
+                # 1. Migrate all historical device_scans logs to the new Target Network
+                cursor.execute("UPDATE device_scans SET network_id=?, network_name=? WHERE network_id=?", (target_id, target_name, src_id))
+                
+                # 2. Safely merge devices, handling duplicates if a device existed on both networks
+                src_devices = cursor.execute("SELECT * FROM devices WHERE network_id=?", (src_id,)).fetchall()
+                for dev in src_devices:
+                    mac = dev['mac_address']
+                    target_dev = cursor.execute("SELECT * FROM devices WHERE mac_address=? AND network_id=?", (mac, target_id)).fetchone()
+                    
+                    if target_dev:
+                        # Conflict: Device exists in both. Keep Target row, but update metadata if Target is missing it
+                        new_last_seen = max(dev['last_seen'] or "", target_dev['last_seen'] or "")
+                        c_name = target_dev['custom_name'] or dev['custom_name']
+                        c_vend = target_dev['custom_vendor'] or dev['custom_vendor']
+                        
+                        cursor.execute("""
+                            UPDATE devices 
+                            SET last_seen=?, custom_name=?, custom_vendor=?, last_network_name=?
+                            WHERE mac_address=? AND network_id=?
+                        """, (new_last_seen, c_name, c_vend, target_name, mac, target_id))
+                        
+                        # Delete the duplicate source row
+                        cursor.execute("DELETE FROM devices WHERE mac_address=? AND network_id=?", (mac, src_id))
+                    else:
+                        # No Conflict: Safely migrate device to target network
+                        cursor.execute("UPDATE devices SET network_id=?, last_network_name=? WHERE mac_address=? AND network_id=?", (target_id, target_name, mac, src_id))
+                        
+                # 3. Delete the ghost source network
+                cursor.execute("DELETE FROM networks WHERE id=?", (src_id,))
+                
+            conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/networks/rename', methods=['POST'])
 def rename_network():
@@ -2149,6 +2272,10 @@ def scan_network():
 
 @app.route('/api/scan_network_stream')
 def scan_network_stream():
+    is_continue = request.args.get('mode') == 'continue'
+    force_merge = request.args.get('force_merge') == 'true'
+    expected_net_id = request.args.get('network_id')
+
     def generate():
         try:
             pinned_mac, target_iface, target_ip_val, target_mac_val = None, None, None, None
@@ -2181,6 +2308,30 @@ def scan_network_stream():
             target_subnet = f"{target_ip_val.rsplit('.', 1)[0]}.0/24"
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             worker_cfg = get_worker_config() if 'get_worker_config' in globals() else {"scan_workers": 20, "ping_workers": 30}
+
+            # --- 0. SMART PRE-CHECK FOR CONTINUE SCAN MISMATCH ---
+            ext_info = get_extended_iface_info()
+            gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
+            
+            if is_continue and expected_net_id and not force_merge:
+                with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                    db_net = conn.execute("SELECT gateway_mac, gateway_ip FROM networks WHERE id=?", (expected_net_id,)).fetchone()
+                    if db_net:
+                        db_mac, db_ip = db_net[0], db_net[1]
+                        
+                        mismatch = False
+                        # 1. Check if Subnets/Gateway IPs definitively differ
+                        if gateway_ip != "-" and db_ip != "-" and gateway_ip != db_ip:
+                            mismatch = True
+                        else:
+                            # 2. Check if Gateway Hardware MAC differs
+                            gw_mac = get_gateway_mac(gateway_ip) if gateway_ip != "-" else None
+                            if gw_mac and db_mac and gw_mac != db_mac and not db_mac.startswith("NO_MAC"):
+                                mismatch = True
+                                
+                        if mismatch:
+                            yield f"data: {json.dumps({'type': 'mismatch', 'message': 'Network change detected.'})}\n\n"
+                            return
 
             # --- 1. PERFORM SCAN FIRST ---
             ans = []
@@ -2234,18 +2385,15 @@ def scan_network_stream():
                     print(f"[*] OS Ping Sweep Parsing Failed: {e}")
 
             # --- 3. EXTRACT GATEWAY MAC FROM RESULTS ---
-            ext_info = get_extended_iface_info()
-            gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
             gateway_mac = None
-
             found_ips = []
+            
             for d in raw_candidates:
                 d_ip = getattr(d, 'psrc', getattr(d, 'ip', ''))
                 found_ips.append(d_ip)
                 if d_ip == gateway_ip:
                     gateway_mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
 
-            # Try direct targeted ARP if not found in ping sweep, otherwise NO_MAC
             if not gateway_mac and gateway_ip != "-" and gateway_ip != "Unknown":
                 gateway_mac = get_gateway_mac(gateway_ip)
                 if not gateway_mac:
@@ -2255,25 +2403,68 @@ def scan_network_stream():
             elif not gateway_mac:
                 gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
 
-            # Inject localhost if missing
             if target_ip_val not in found_ips and target_mac_val:
                 raw_candidates.append(MockDev(target_ip_val, target_mac_val))
 
             # --- 4. DB NETWORK CREATION / LOOKUP ---
+            is_isolation = request.args.get('mode') == 'isolation'
+            is_split = request.args.get('mode') == 'split'
+            
+            existing_states = {}
             with sqlite3.connect(DB_NAME, timeout=10) as conn:
                 c = conn.cursor()
                 
-                # VLAN Safe Check (MAC + IP)
-                c.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
-                row = c.fetchone()
-                if row:
-                    network_id, final_network_name = row[0], row[1]
-                    c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
-                else:
-                    final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-                    c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip) VALUES (?, ?, ?, ?)", 
+                # 1. SPLIT or ISOLATION (Forced New Network)
+                if is_isolation or is_split:
+                    final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip}) - {'Isolated' if is_isolation else 'Split'}"
+                    c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching) VALUES (?, ?, ?, ?, 0)", 
                               (gateway_mac, final_network_name, current_time, gateway_ip))
                     network_id = c.lastrowid
+                else:
+                    # 2. CONTINUE SCAN (Expected to map to a loaded UI network)
+                    if is_continue and expected_net_id:
+                        if force_merge:
+                            c.execute("SELECT id, name FROM networks WHERE id=?", (expected_net_id,))
+                            row = c.fetchone()
+                            if row:
+                                network_id, final_network_name = row[0], row[1]
+                                c.execute("UPDATE networks SET last_scan=?, gateway_mac=?, gateway_ip=? WHERE id=?", (current_time, gateway_mac, gateway_ip, network_id))
+                            else:
+                                network_id = expected_net_id
+                                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                        else:
+                            c.execute("SELECT id, name FROM networks WHERE id=?", (expected_net_id,))
+                            row = c.fetchone()
+                            if row:
+                                network_id, final_network_name = row[0], row[1]
+                                c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
+                            else:
+                                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                                c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching) VALUES (?, ?, ?, ?, 1)", 
+                                          (gateway_mac, final_network_name, current_time, gateway_ip))
+                                network_id = c.lastrowid
+                    else:
+                        # 3. STANDARD SCAN (Search for allow_matching = 1)
+                        c.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC", (gateway_mac, gateway_ip))
+                        row = c.fetchone()
+                        if row:
+                            network_id, final_network_name = row[0], row[1]
+                            c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
+                        else:
+                            # 4. DEFAULT FALLBACK: Create new. Ensure it doesn't pollute if it hits a known blocked MAC/IP.
+                            c.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
+                            existing = c.fetchone()
+                            allow_match_val = 0 if existing else 1
+                            
+                            final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                            c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching) VALUES (?, ?, ?, ?, ?)", 
+                                      (gateway_mac, final_network_name, current_time, gateway_ip, allow_match_val))
+                            network_id = c.lastrowid
+                
+                c.execute("SELECT mac_address, is_online, services FROM devices WHERE network_id=?", (network_id,))
+                for r in c.fetchall():
+                    existing_states[r[0]] = {'online': r[1], 'services': r[2]}
+                    
                 c.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
                 conn.commit()
 
@@ -2281,12 +2472,28 @@ def scan_network_stream():
             yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name})}\n\n"
 
             # --- 6. PROCESS DEVICES STREAM ---
+            tasks = []
+            for d in raw_candidates:
+                mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
+                skip_services = False
+                
+                # OPTIMIZATION: Bypass the deep port scan if this is a 'Continue' and the device was previously offline
+                if is_continue and mac in existing_states and existing_states[mac]['online'] == 0:
+                    skip_services = True
+                
+                tasks.append((d, skip_services))
+
             with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-                future_to_dev = {executor.submit(process_device_quick, d): d for d in raw_candidates}
+                future_to_dev = {executor.submit(process_device_quick, t): t[0] for t in tasks}
                 
                 for future in as_completed(future_to_dev):
                     try:
                         dev = future.result()
+                        
+                        if is_continue and dev["mac"] in existing_states and existing_states[dev["mac"]]["online"] == 0:
+                            if existing_states[dev["mac"]]["services"]:
+                                dev["services"] = existing_states[dev["mac"]]["services"]
+
                         if dev["ip"] == gateway_ip and "(Router)" not in dev["hostname"]:
                             dev["hostname"] += " (Router)"
                         elif dev["ip"] == target_ip_val and "(This device)" not in dev["hostname"]:
@@ -4207,15 +4414,16 @@ def update_device_vendor():
 from flask import stream_with_context
 from concurrent.futures import as_completed
 
-def process_device_quick(received):
-    """Processes device network info without making blocking online vendor calls."""
+def process_device_quick(args):
+    """Processes device network info with smart caching for continued scans."""
+    received, skip_services = args
     ip = getattr(received, 'psrc', getattr(received, 'ip', None))
     mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
     return {
         "ip": ip,
         "mac": mac,
         "hostname": resolve_hostname(ip, mac=None),  # Skip vendor appending in hostname
-        "services": check_open_ports(ip)['services']
+        "services": "None" if skip_services else check_open_ports(ip)['services']
     }
 
 
@@ -4479,6 +4687,54 @@ def delete_backups():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/system/restart_app', methods=['POST'])
+def api_restart_app():
+    """Triggers a clean restart via the supervisor."""
+    threading.Thread(target=restart_server).start()
+    return jsonify({"status": "success", "message": "Application is restarting. Please wait..."})
+
+@app.route('/api/system/shutdown_app', methods=['POST'])
+def api_shutdown_app():
+    """Gracefully shuts down the application and tells the supervisor to stop."""
+    def trigger_shutdown():
+        time.sleep(1) # Give the HTTP response time to reach the browser
+        try:
+            # Create a signal file for the supervisor
+            with open(os.path.join(app.root_path, "shutdown_signal"), "w") as f:
+                f.write("shutdown")
+        except: pass
+        
+        # Kill the Waitress/Flask process
+        os._exit(0)
+        
+    threading.Thread(target=trigger_shutdown).start()
+    return jsonify({"status": "success", "message": "Application and supervisor are shutting down..."})
+
+@app.route('/api/system/os_action', methods=['POST'])
+def api_os_action():
+    """Executes a full cross-platform OS reboot or shutdown if standalone is active."""
+    action = request.json.get('action')
+    
+    # Hard backend security check
+    if not os.path.exists(os.path.join(app.root_path, 'standalone')):
+        return jsonify({"error": "Dedicated Server Mode is not enabled."}), 403
+        
+    def execute_os_action():
+        time.sleep(2) # Give the HTTP response time to reach the browser
+        sys_plat = platform.system().lower()
+        try:
+            if action == 'reboot':
+                if sys_plat == 'windows': subprocess.run(["shutdown", "/r", "/t", "0"])
+                else: subprocess.run(["sudo", "reboot"])
+            elif action == 'shutdown':
+                if sys_plat == 'windows': subprocess.run(["shutdown", "/s", "/t", "0"])
+                else: subprocess.run(["sudo", "shutdown", "-h", "now"])
+        except Exception as e:
+            print(f"[!] OS Action failed: {e}")
+            
+    threading.Thread(target=execute_os_action).start()
+    return jsonify({"status": "success"})
+
 def manage_boot_counter():
     """
     Crash loop protection: Increments a counter on boot. 
@@ -4697,22 +4953,30 @@ if __name__ == '__main__':
     try:
         from waitress import serve
         
-        # --- NEW: Get the real LAN IP for the console output ---
         lan_ip = get_local_ip()
+        v_glob = get_global_version().replace('DEV', '').strip()
         
         print("\n" + "="*60)
         print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
         print(f"   (Local Access: http://127.0.0.1:{current_port})")
         print("   (Production WSGI Server - No Warnings)")
+        print("   " + "-"*54)
+        print(f"   Versions: Global: {v_glob} | App: {APP_VERSION} | Setup: {get_setup_version()} | HTML: {get_html_version()}")
         print("="*60 + "\n")
         
         worker_cfg = get_worker_config()
         # We still bind to 0.0.0.0 so other devices on the network can access it
         serve(app, host='0.0.0.0', port=current_port, threads=worker_cfg['server_threads'])
+        
     except ImportError:
         lan_ip = get_local_ip()
+        v_glob = get_global_version().replace('DEV', '').strip()
+        
         print("\n" + "="*60)
         print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
         print("   (Development Server)")
+        print("   " + "-"*54)
+        print(f"   Versions: Global: {v_glob} | App: {APP_VERSION} | Setup: {get_setup_version()} | HTML: {get_html_version()}")
         print("="*60 + "\n")
+        
         app.run(debug=True, host='0.0.0.0', port=current_port)

@@ -27,3 +27,5 @@ boot_attempts
 rollback.zip
 backups/
 system_alerts.json
+standalone
+disablecleanup
