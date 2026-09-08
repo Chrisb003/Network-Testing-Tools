@@ -1,5 +1,4 @@
-
-    let updateModal, adapterModal, editSpeedTestModal, mergeModal, allDevices = [], allHistory = [], currentNetworkId = null;
+let updateModal, adapterModal, editSpeedTestModal, mergeModal, networkModal, wifiScanModal, toolLogModal, allDevices = [], allHistory = [], currentNetworkId = null;
     let currentScanResults = [];
     let allWifiHistory = [];
     let pendingRemoteVersion = null;
@@ -11,7 +10,8 @@
     let selectedDevHistMacs = new Set();
     let currentModalDevData = [];
     let liveBandwidthInterval = null;
-    let pauseTimeout = null; // NEW: Tracks the 1-hour countdown
+    let pauseTimeout = null;
+    let deviceConfigModal, wifiSSIDModal;
 
     function escapeHTML(str) {
         if (str === null || str === undefined) return "";
@@ -30,7 +30,9 @@
             .replace(/'/g, "\\'")
             .replace(/"/g, "&quot;")
             .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
+            .replace(/>/g, "&gt;")
+            .replace(/\n/g, "\\n")
+            .replace(/\r/g, "\\r");
     }
 
     const SERVICE_PORT_MAP = {
@@ -57,6 +59,30 @@
             devHistModal = new bootstrap.Modal(document.getElementById('devHistModal'));
         if(document.getElementById('mergeNetworkModal'))
             mergeModal = new bootstrap.Modal(document.getElementById('mergeNetworkModal'));
+        if(document.getElementById('mergeWifiModal'))
+            mergeWifiModal = new bootstrap.Modal(document.getElementById('mergeWifiModal'));
+        if(document.getElementById('networkModal'))
+            networkModal = new bootstrap.Modal(document.getElementById('networkModal'));
+        if(document.getElementById('wifiScanModal'))
+            wifiScanModal = new bootstrap.Modal(document.getElementById('wifiScanModal'));
+        if(document.getElementById('toolLogModal'))
+            toolLogModal = new bootstrap.Modal(document.getElementById('toolLogModal'));
+        if(document.getElementById('deviceConfigModal')) deviceConfigModal = new bootstrap.Modal(document.getElementById('deviceConfigModal'));
+        if(document.getElementById('wifiSSIDModal')) wifiSSIDModal = new bootstrap.Modal(document.getElementById('wifiSSIDModal'));
+        
+        // --- NEW: AUTO-INITIALIZE TABLE SORT HEADERS ---
+        document.querySelectorAll('th[data-sort]').forEach(th => {
+            th.classList.add('sortable');
+            th.innerHTML += ' <i class="bi bi-arrow-down-up sort-icon text-muted opacity-25 ms-1"></i>';
+            
+            const tableEl = th.closest('table');
+            if (tableEl && tableEl.hasAttribute('data-table-id')) {
+                const tableType = tableEl.getAttribute('data-table-id');
+                const sortKey = th.getAttribute('data-sort');
+                th.addEventListener('click', () => handleSort(tableType, sortKey, th));
+            }
+        });
+
         // Initial Header Data Load
         fetch('/api/get_last_name').then(r=>r.json()).then(d => { 
             if(d.last_name && document.getElementById('st-network-name')) 
@@ -126,6 +152,112 @@
             channelSelect.value = window.APP_CONFIG.updateChannel;
         }
     });
+
+    // --- TABLE SORTING ENGINE ---
+    function handleSort(type, key, thEl) {
+        const state = tableState[type];
+        if (!state) return;
+
+        if (state.sortKey === key) {
+            state.sortAsc = !state.sortAsc;
+        } else {
+            state.sortKey = key;
+            state.sortAsc = true;
+            // Dates and counts default to descending so the newest/biggest are at the top
+            if (key.includes('time') || key.includes('last') || key.includes('count') || key.includes('dbm')) {
+                state.sortAsc = false;
+            }
+        }
+
+        // Update Icons visually
+        const table = thEl.closest('table');
+        table.querySelectorAll('.sort-icon').forEach(icon => {
+            icon.className = 'bi bi-arrow-down-up sort-icon text-muted opacity-25 ms-1';
+        });
+        const activeIcon = thEl.querySelector('.sort-icon');
+        if (activeIcon) {
+            activeIcon.className = state.sortAsc ? 'bi bi-arrow-up sort-icon text-primary ms-1' : 'bi bi-arrow-down sort-icon text-primary ms-1';
+        }
+
+        // Apply Sort and Re-Render
+        performSort(type);
+
+        if (type === 'adapters') renderAdaptersTable();
+        else if (type === 'devices') filterDevices(); // <--- FIXED: Now respects your active search filter!
+        else if (type === 'devHist') {
+            devHistCurrentPage = 1; 
+            renderDeviceHistory();
+        }
+        else if (type === 'devHistModalTable') renderDevHistModalTable();
+        else if (type === 'wifiNetModalTable') renderWifiNetModalTable();
+        else {
+            state.page = 1;
+            renderSpecificTable(type);
+        }
+    }
+
+    function performSort(type) {
+        const state = tableState[type];
+        if (!state || !state.sortKey) return;
+
+        let dataArray;
+        if (type === 'adapters' && lastAdaptersData) dataArray = lastAdaptersData.adapters;
+        else if (type === 'devices') dataArray = allDevices;
+        else if (type === 'devHist') dataArray = devHistFiltered;
+        else if (type === 'devHistModalTable') dataArray = currentModalDevData;
+        else if (type === 'wifiNetModalTable') dataArray = currentModalWifiNetData;
+        else dataArray = state.filtered;
+
+        if (!dataArray || dataArray.length === 0) return;
+
+        dataArray.sort((a, b) => {
+            let valA = a[state.sortKey] ?? '';
+            let valB = b[state.sortKey] ?? '';
+
+            // Handle IPs accurately
+            if (state.sortKey.includes('ip') || state.sortKey === 'gateway' || state.sortKey === 'result_ip' || state.sortKey === 'target') {
+                return state.sortAsc ? compareIP(valA, valB) : compareIP(valB, valA);
+            }
+
+            // Extract numeric values strictly
+            if (['speed', 'download', 'upload', 'ping', 'latency', 'packet_loss', 'device_count', 'mac_count', 'scan_count', 'dbm'].includes(state.sortKey)) {
+                const numA = extractNumber(valA);
+                const numB = extractNumber(valB);
+                return state.sortAsc ? numA - numB : numB - numA;
+            }
+
+            // Alphabetical / Text
+            valA = String(valA).toLowerCase();
+            valB = String(valB).toLowerCase();
+            if (valA < valB) return state.sortAsc ? -1 : 1;
+            if (valA > valB) return state.sortAsc ? 1 : -1;
+            return 0;
+        });
+    }
+
+    function extractNumber(val) {
+        if (typeof val === 'number') return val;
+        if (!val || val === '-' || String(val).toLowerCase().includes('unknown')) return -999999;
+        const match = String(val).match(/-?[\d.]+/);
+        return match ? parseFloat(match[0]) : -999999;
+    }
+
+    function compareIP(ipA, ipB) {
+        const parseIP = ip => {
+            if (!ip || ip === '-' || String(ip).toLowerCase().includes('unknown')) return null;
+            const parts = String(ip).split('.');
+            if(parts.length !== 4) return null;
+            const num = parts.reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+            return isNaN(num) ? null : num;
+        };
+        const numA = parseIP(ipA);
+        const numB = parseIP(ipB);
+        if (numA !== null && numB !== null) {
+            return numA - numB;
+        }
+        return String(ipA).localeCompare(String(ipB));
+    }
+
 
     // Function to handle database cleanup with confirmation prompts
 async function runCleanup(interval) {
@@ -429,6 +561,10 @@ async function refreshNetworkInfo() {
             if (!data || !data.adapters) return;
             
             lastAdaptersData = data; // Cache the data locally
+            
+            // Respect previous sorting state on auto-refresh
+            performSort('adapters');
+            
             renderAdaptersTable();   // Pass off to the instant renderer
             
         } catch (err) {
@@ -741,6 +877,7 @@ async function refreshNetworkInfo() {
             tableState.networks.filtered = d;
             tableState.networks.page = 1;
             tableState.networks.selected.clear();
+            performSort('networks');
             renderNetworks();
         });
     }
@@ -749,6 +886,7 @@ async function refreshNetworkInfo() {
         const q = document.getElementById('networks-filter').value.toLowerCase();
         tableState.networks.filtered = tableState.networks.data.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)));
         tableState.networks.page = 1;
+        performSort('networks');
         renderNetworks();
     }
 
@@ -759,6 +897,7 @@ function renderNetworks() {
 
         tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
             const safeName = escapeJS(n.name);
+            const safeComment = escapeJS(n.comments || '');
             const isChecked = tableState.networks.selected.has(String(n.id)) ? 'checked' : '';
             const isProtected = n.is_protected ? 1 : 0; 
             const isMatchable = n.allow_matching !== undefined ? (n.allow_matching ? 1 : 0) : 1; 
@@ -770,27 +909,28 @@ function renderNetworks() {
                 <td class="font-monospace small">${n.gateway_mac}</td>
                 <td>${n.gateway_ip}</td>
                 <td><span class="badge bg-secondary">${n.device_count}</span></td>
+                <td><small class="text-muted">${escapeHTML(n.comments || '')}</small></td>
                 <td><small>${n.last_scan}</small></td>
-                <td class="text-end">
+                <td class="text-end text-nowrap">
                     <div class="btn-group">
-                        <!-- NEW: Auto-Match Toggle -->
                         <button class="btn btn-sm ${isMatchable ? 'btn-outline-success' : 'btn-outline-secondary'}" onclick="toggleMatching(${n.id}, ${isMatchable})" title="${isMatchable ? 'Auto-Matching Enabled (Click to Disable)' : 'Auto-Matching Disabled (Click to Enable)'}">
                             <i class="bi ${isMatchable ? 'bi-diagram-3-fill' : 'bi-diagram-3'}"></i>
                         </button>
                         <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('networks', ${n.id}, ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
                             <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${safeName}')" title="View Devices"><i class="bi bi-eye"></i> Load</button> 
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadNetworkDevices(${n.id}, '${safeName}', '${safeComment}')" title="View Devices"><i class="bi bi-eye"></i> Load</button> 
                         <button class="btn btn-sm btn-outline-secondary" onclick="exportSpecificNetwork(${n.id}, '${safeName}')" title="Export Devices CSV"><i class="bi bi-download"></i></button> 
-                        <button class="btn btn-sm btn-outline-secondary" onclick="renameNetwork(${n.id}, '${safeName}')" title="Rename"><i class="bi bi-pencil"></i></button> 
+                        <button class="btn btn-sm btn-outline-secondary" onclick="openNetworkConfig(${n.id}, '${safeName}', '${safeComment}')" title="Edit Name & Comment"><i class="bi bi-pencil"></i></button> 
                         <button class="btn btn-sm btn-outline-danger" onclick="deleteNetwork(${n.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </div>
                 </td>
             </tr>`;
-        }).join('') : '<tr><td colspan="7" class="text-center text-muted p-4">No saved networks found.</td></tr>';
+        }).join('') : '<tr><td colspan="8" class="text-center text-muted p-4">No saved networks found.</td></tr>';
 
         updateMasterCheckbox('networks', paginatedData.map(n => n.id));
     }
+
 
 function toggleMatching(id, currentState, force = false) {
     const newState = currentState ? 0 : 1; 
@@ -827,6 +967,7 @@ function toggleMatching(id, currentState, force = false) {
             tableState.history.filtered = d;
             tableState.history.page = 1;
             tableState.history.selected.clear();
+            performSort('history');
             renderHistory(); 
         });
     }
@@ -835,6 +976,7 @@ function toggleMatching(id, currentState, force = false) {
         const q = document.getElementById('history-filter').value.toLowerCase(); 
         tableState.history.filtered = tableState.history.data.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q))); 
         tableState.history.page = 1;
+        performSort('history');
         renderHistory();
     }
 
@@ -860,9 +1002,8 @@ function toggleMatching(id, currentState, force = false) {
                 <td>${x.ping}</td>
                 <td class="text-muted small">${x.device_ip || '-'}</td> 
                 <td class="text-muted small">${x.wan_ip || '-'}</td>
-                <td class="text-end">
+                <td class="text-end text-nowrap">
                     <div class="btn-group">
-                        <!-- NEW: Lock Button -->
                         <button class="btn btn-sm ${x.is_protected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('history', ${x.id}, ${x.is_protected})" title="${x.is_protected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
                             <i class="bi ${x.is_protected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
                         </button>
@@ -885,6 +1026,7 @@ function toggleMatching(id, currentState, force = false) {
                 tableState.wifi.filtered = d;
                 tableState.wifi.page = 1;
                 tableState.wifi.selected.clear();
+                performSort('wifi');
                 renderWifiHistoryTable();
             })
             .catch(err => console.error("History Load Error:", err));
@@ -896,6 +1038,7 @@ function toggleMatching(id, currentState, force = false) {
             h.name.toLowerCase().includes(q) || (h.comments && h.comments.toLowerCase().includes(q))
         );
         tableState.wifi.page = 1;
+        performSort('wifi');
         renderWifiHistoryTable();
     }
 
@@ -914,15 +1057,14 @@ function toggleMatching(id, currentState, force = false) {
                 <td><small class="text-muted">${h.timestamp}</small></td>
                 <td><div class="fw-bold text-primary">${escapeHTML(h.name)}</div></td>
                 <td><small class="text-muted">${escapeHTML(h.comments) || 'No comments'}</small></td>
-                <td class="text-end">
+                <td class="text-end text-nowrap">
                     <div class="btn-group">
-                        <!-- NEW: Lock Button -->
                         <button class="btn btn-sm ${h.is_protected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('wifi', ${h.id}, ${h.is_protected})" title="${h.is_protected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
                             <i class="bi ${h.is_protected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
                         </button>
                         <button class="btn btn-sm btn-outline-primary" onclick="viewPastWifi(${h.id})" title="View Results"><i class="bi bi-eye"></i></button>
                         <button class="btn btn-sm btn-outline-secondary" onclick="exportWifiCSV(${h.id})" title="Export CSV"><i class="bi bi-download"></i></button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="editWifiHistory(${h.id}, '${safeName}', '${safeComment}')" title="Edit Name/Comment"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="openWifiScanConfig(${h.id}, '${safeName}', '${safeComment}')" title="Edit Name/Comment"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger" onclick="deleteWifiScan(${h.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </div>
                 </td>
@@ -938,6 +1080,7 @@ function toggleMatching(id, currentState, force = false) {
             tableState[type].filtered = d;
             tableState[type].page = 1;
             tableState[type].selected.clear();
+            performSort(type);
             renderToolLogs(type);
         });
     }
@@ -946,6 +1089,7 @@ function toggleMatching(id, currentState, force = false) {
         const q = document.getElementById(`${type}-filter`).value.toLowerCase();
         tableState[type].filtered = tableState[type].data.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)));
         tableState[type].page = 1;
+        performSort(type);
         renderToolLogs(type);
     }
 
@@ -957,7 +1101,9 @@ function toggleMatching(id, currentState, force = false) {
         if (type === 'dns') {
             tbody.innerHTML = paginatedData.length ? paginatedData.map(x => {
                 const isChecked = tableState.dns.selected.has(String(x.id)) ? 'checked' : '';
-                const isProtected = x.is_protected ? 1 : 0; // Grab protection state
+                const isProtected = x.is_protected ? 1 : 0; 
+                const safeName = escapeJS(x.network_name || '');
+                const safeComment = escapeJS(x.comments || '');
                 return `
                 <tr>
                     <td onclick="event.stopPropagation()"><input type="checkbox" class="dns-check" value="${x.id}" onchange="toggleSelection('dns', this)" ${isChecked}></td>
@@ -968,18 +1114,21 @@ function toggleMatching(id, currentState, force = false) {
                     <td><small>${x.router_ip || '-'}</small></td>
                     <td><small>${escapeHTML(x.network_name) || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
+                    <td><small class="text-muted">${escapeHTML(x.comments || '')}</small></td>
                     <td class="text-end text-nowrap">
                         <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'} border-0" onclick="toggleProtection('dns', ${x.id}, ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
                             <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-secondary border-0" onclick="editToolLogNetwork('dns', ${x.id}, '${escapeJS(x.network_name || '')}')" title="Edit Network Name"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary border-0" onclick="openToolLogConfig('dns', ${x.id}, '${safeName}', '${safeComment}')" title="Edit Network & Comment"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('dns', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </td>
-                </tr>`}).join('') : '<tr><td colspan="9" class="text-center p-4">No logs found.</td></tr>';
+                </tr>`}).join('') : '<tr><td colspan="10" class="text-center p-4">No logs found.</td></tr>';
         } else {
             tbody.innerHTML = paginatedData.length ? paginatedData.map(x => {
                 const isChecked = tableState.ping.selected.has(String(x.id)) ? 'checked' : '';
-                const isProtected = x.is_protected ? 1 : 0; // Grab protection state
+                const isProtected = x.is_protected ? 1 : 0; 
+                const safeName = escapeJS(x.network_name || '');
+                const safeComment = escapeJS(x.comments || '');
                 return `
                 <tr>
                     <td onclick="event.stopPropagation()"><input type="checkbox" class="ping-check" value="${x.id}" onchange="toggleSelection('ping', this)" ${isChecked}></td>
@@ -991,37 +1140,63 @@ function toggleMatching(id, currentState, force = false) {
                     <td><small>${x.router_ip || '-'}</small></td>
                     <td><small>${escapeHTML(x.network_name) || '-'}</small></td>
                     <td><small>${x.lan_ip || '-'}</small></td>
+                    <td><small class="text-muted">${escapeHTML(x.comments || '')}</small></td>
                     <td class="text-end text-nowrap">
                         <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'} border-0" onclick="toggleProtection('ping', ${x.id}, ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
                             <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-secondary border-0" onclick="editToolLogNetwork('ping', ${x.id}, '${escapeJS(x.network_name || '')}')" title="Edit Network Name"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary border-0" onclick="openToolLogConfig('ping', ${x.id}, '${safeName}', '${safeComment}')" title="Edit Network & Comment"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteSingleToolLog('ping', ${x.id})" title="Delete"><i class="bi bi-trash"></i></button>
                     </td>
-                </tr>`}).join('') : '<tr><td colspan="10" class="text-center p-4">No logs found.</td></tr>';
+                </tr>`}).join('') : '<tr><td colspan="11" class="text-center p-4">No logs found.</td></tr>';
         }
         updateMasterCheckbox(type, paginatedData.map(x => x.id));
     }
 
-    function editToolLogNetwork(type, id, oldName) {
-        const newName = prompt("Edit Network Name:", oldName);
-        if (newName === null || newName === oldName) return; // Cancelled or unchanged
-        
-        fetch('/api/tool_logs/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: type, id: id, name: newName })
-        })
-        .then(r => r.json())
-        .then(d => {
-            if (d.status === 'success') {
-                fetchToolLogs(type); // Refresh the table
-            } else {
-                alert("Error updating network name: " + d.error);
-            }
-        })
-        .catch(err => alert("Communication error: " + err.message));
-    }
+    function openToolLogConfig(type, id, name, comment) {
+    if (!id) return;
+    document.getElementById('modal-tool-type').value = type;
+    document.getElementById('modal-tool-id').value = id;
+    document.getElementById('modal-tool-name').value = name || "";
+    document.getElementById('modal-tool-comment').value = comment || "";
+    
+    document.getElementById('toolModalTitle').innerText = `Edit ${type.toUpperCase()} Log Entry`;
+    toolLogModal.show();
+}
+
+function saveToolLogSettings() {
+    const type = document.getElementById('modal-tool-type').value;
+    const id = document.getElementById('modal-tool-id').value;
+    const name = document.getElementById('modal-tool-name').value.trim();
+    const comment = document.getElementById('modal-tool-comment').value.trim();
+
+    if (!id || !type) return;
+
+    const btn = event.currentTarget || document.querySelector('#toolLogModal .btn-primary');
+    const origText = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+    btn.disabled = true;
+
+    fetch('/api/tool_logs/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: type, id: id, name: name, comment: comment })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            toolLogModal.hide();
+            fetchToolLogs(type); 
+        } else {
+            alert("Error updating record: " + d.error);
+        }
+    })
+    .catch(err => alert("Communication error: " + err.message))
+    .finally(() => {
+        btn.innerHTML = origText;
+        btn.disabled = false;
+    });
+}
 
     // --- 5. UNIFIED BULK EXPORT & DELETE HELPERS ---
     function bulkDelete(type) {
@@ -1125,12 +1300,12 @@ function toggleMatching(id, currentState, force = false) {
         }
 
         const rows = type === 'dns' 
-            ? dataToExport.map(d => [d.timestamp, d.domain, d.result_ip, d.status, d.router_ip||'-', d.network_name||'-', d.lan_ip||'-'])
-            : dataToExport.map(d => [d.timestamp, d.target, d.status, d.latency, d.packet_loss, d.router_ip||'-', d.network_name||'-', d.lan_ip||'-']);
+            ? dataToExport.map(d => [d.timestamp, d.domain, d.result_ip, d.status, d.router_ip||'-', d.network_name||'-', d.lan_ip||'-', d.comments ? d.comments.replace(/"/g, '""').replace(/\n/g, ' ') : ''])
+            : dataToExport.map(d => [d.timestamp, d.target, d.status, d.latency, d.packet_loss, d.router_ip||'-', d.network_name||'-', d.lan_ip||'-', d.comments ? d.comments.replace(/"/g, '""').replace(/\n/g, ' ') : '']);
         
         const headers = type === 'dns' 
-            ? ['Timestamp', 'Domain', 'Result IP', 'Status', 'Router IP', 'Network', 'LAN IP']
-            : ['Timestamp', 'Target', 'Status', 'Latency', 'Loss', 'Router IP', 'Network', 'LAN IP'];
+            ? ['Timestamp', 'Domain', 'Result IP', 'Status', 'Router IP', 'Network', 'LAN IP', 'Comments']
+            : ['Timestamp', 'Target', 'Status', 'Latency', 'Loss', 'Router IP', 'Network', 'LAN IP', 'Comments'];
 
         const csvContent = [headers.join(','), ...rows.map(r => `"${r.join('","')}"`)].join('\n');
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -1145,13 +1320,17 @@ function toggleMatching(id, currentState, force = false) {
 
 // --- UNIFIED STATE MANAGER ---
     const tableState = {
-        adapters: { selected: new Set() },
-        networks: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
-        dns: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
-        ping: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
-        wifi: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() },
-        wifiNetHist: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() }, // <-- ADDED THIS
-        history: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set() }
+        adapters: { selected: new Set(), sortKey: '', sortAsc: true },
+        networks: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set(), sortKey: 'last_scan', sortAsc: false },
+        dns: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set(), sortKey: 'timestamp', sortAsc: false },
+        ping: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set(), sortKey: 'timestamp', sortAsc: false },
+        wifi: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set(), sortKey: 'timestamp', sortAsc: false },
+        wifiNetHist: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set(), sortKey: 'last_seen', sortAsc: false }, 
+        history: { data: [], filtered: [], page: 1, perPage: 20, selected: new Set(), sortKey: 'timestamp', sortAsc: false },
+        devices: { sortKey: 'ip_address', sortAsc: true },
+        devHist: { sortKey: 'last_seen', sortAsc: false },
+        devHistModalTable: { sortKey: 'last_seen', sortAsc: false },
+        wifiNetModalTable: { sortKey: 'timestamp', sortAsc: false }
     };
     
     function getPaginatedData(type) {
@@ -1232,6 +1411,7 @@ function loadDeviceHistory() {
                 devHistFiltered = data; 
                 devHistCurrentPage = 1;
                 selectedDevHistMacs.clear(); // Clear selections when fetching fresh data
+                performSort('devHist');
                 renderDeviceHistory();
             })
             .catch(err => {
@@ -1268,129 +1448,140 @@ function toggleAllDevHist(masterCb) {
     }
 
 function renderDeviceHistory() {
-        const tb = document.getElementById('dev-hist-table');
-        if (!tb) return;
+    const tb = document.getElementById('dev-hist-table');
+    if (!tb) return;
 
-        if (!Array.isArray(devHistFiltered)) {
-            tb.innerHTML = '<tr><td colspan="8" class="text-center p-4 text-danger">Invalid data received from server.</td></tr>';
-            return;
-        }
-
-        const totalItems = devHistFiltered.length;
-        let totalPages = devHistItemsPerPage === 'all' ? 1 : Math.ceil(totalItems / devHistItemsPerPage);
-        if (totalPages === 0) totalPages = 1;
-        if (devHistCurrentPage > totalPages) devHistCurrentPage = totalPages;
-
-        const infoEl = document.getElementById('dev-hist-page-info');
-        if (infoEl) infoEl.innerText = `Page ${devHistCurrentPage} of ${totalPages} (${totalItems} items)`;
-        document.getElementById('btn-dev-hist-prev').disabled = devHistCurrentPage <= 1;
-        document.getElementById('btn-dev-hist-next').disabled = devHistCurrentPage >= totalPages;
-
-        let paginatedData = devHistFiltered;
-        if (devHistItemsPerPage !== 'all') {
-            const start = (devHistCurrentPage - 1) * devHistItemsPerPage;
-            const end = start + devHistItemsPerPage;
-            paginatedData = devHistFiltered.slice(start, end);
-        }
-
-        const missingVendors = [];
-
-        tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
-            const displayName = d.custom_name || d.clean_hostname || "Unknown";
-            const safeName = escapeJS(displayName);
-            const safeVendor = escapeJS(d.vendor);
-            const escapedMac = escapeJS(d.mac_address);
-            const safeCustomN = escapeJS(d.custom_name);
-            const isProtected = d.is_protected ? 1 : 0;
-            
-            let vendorHtml = escapeHTML(d.vendor);
-            if (!d.vendor || d.vendor === 'Unknown') {
-                const safeMacId = d.mac_address.replace(/:/g, '');
-                vendorHtml = `<span id="vendor-${safeMacId}" class="text-muted fst-italic"><span class="spinner-border spinner-border-sm me-1" style="width: 0.8rem; height: 0.8rem;"></span> Fetching...</span>`;
-                missingVendors.push(d.mac_address);
-            }
-            
-            const isChecked = selectedDevHistMacs.has(d.mac_address) ? 'checked' : '';
-            
-            return `
-            <tr style="cursor: pointer;" onclick="viewDeviceDetails('${d.mac_address}', '${safeName}', '${safeVendor}')">
-                <td onclick="event.stopPropagation()">
-                    <input type="checkbox" class="dev-hist-check" value="${d.mac_address}" onchange="toggleDevHistSelection(this)" ${isChecked}>
-                </td>
-                <td><strong>${escapeHTML(displayName)}</strong></td>
-                <td>${vendorHtml}</td>
-                <td class="font-monospace text-muted">${d.mac_address}</td>
-                <td><span class="badge bg-secondary">${d.network_name}</span></td>
-                <td>${d.ip_address}</td>
-                <td><small>${d.last_seen}</small></td>
-                <td class="text-end text-nowrap" onclick="event.stopPropagation()">
-                    <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('devices', '${escapedMac}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
-                        <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="updateDeviceName('${escapedMac}', '${safeCustomN}')" title="Edit Name"><i class="bi bi-pencil"></i></button>
-                </td>
-            </tr>`;
-        }).join('') : '<tr><td colspan="8" class="text-center p-4">No device history found.</td></tr>';
-
-        const masterCheck = document.getElementById('dev-hist-master-check');
-        if (masterCheck) {
-            const pageMacs = paginatedData.map(d => d.mac_address);
-            masterCheck.checked = pageMacs.length > 0 && pageMacs.every(mac => selectedDevHistMacs.has(mac));
-        }
-
-        if (missingVendors.length > 0) {
-            missingVendors.forEach(mac => fetchMissingVendor(mac));
-        }
+    if (!Array.isArray(devHistFiltered)) {
+        tb.innerHTML = '<tr><td colspan="9" class="text-center p-4 text-danger">Invalid data received from server.</td></tr>';
+        return;
     }
+
+    const totalItems = devHistFiltered.length;
+    let totalPages = devHistItemsPerPage === 'all' ? 1 : Math.ceil(totalItems / devHistItemsPerPage);
+    if (totalPages === 0) totalPages = 1;
+    if (devHistCurrentPage > totalPages) devHistCurrentPage = totalPages;
+
+    const infoEl = document.getElementById('dev-hist-page-info');
+    if (infoEl) infoEl.innerText = `Page ${devHistCurrentPage} of ${totalPages} (${totalItems} items)`;
+    document.getElementById('btn-dev-hist-prev').disabled = devHistCurrentPage <= 1;
+    document.getElementById('btn-dev-hist-next').disabled = devHistCurrentPage >= totalPages;
+
+    let paginatedData = devHistFiltered;
+    if (devHistItemsPerPage !== 'all') {
+        const start = (devHistCurrentPage - 1) * devHistItemsPerPage;
+        const end = start + devHistItemsPerPage;
+        paginatedData = devHistFiltered.slice(start, end);
+    }
+
+    const missingVendors = [];
+
+    tb.innerHTML = paginatedData.length ? paginatedData.map(d => {
+        const displayName = d.custom_name || d.clean_hostname || "Unknown";
+        const safeName = escapeJS(displayName);
+        const safeVendor = escapeJS(d.vendor);
+        const escapedMac = escapeJS(d.mac_address);
+        
+        const safeCustomN = escapeJS(d.custom_name);
+        const safeCustomV = escapeJS(d.custom_vendor || '');
+        const safeLookupV = escapeJS(d.vendor || '');
+        const safeComment = escapeJS(d.comments || '');
+        const isProtected = d.is_protected ? 1 : 0;
+        
+        let vendorHtml = escapeHTML(d.vendor);
+        if (!d.vendor || d.vendor === 'Unknown') {
+            const safeMacId = d.mac_address.replace(/:/g, '');
+            vendorHtml = `<span id="vendor-${safeMacId}" class="text-muted fst-italic"><span class="spinner-border spinner-border-sm me-1" style="width: 0.8rem; height: 0.8rem;"></span> Fetching...</span>`;
+            missingVendors.push(d.mac_address);
+        }
+        
+        const isChecked = selectedDevHistMacs.has(d.mac_address) ? 'checked' : '';
+        
+        return `
+        <tr style="cursor: pointer;" onclick="viewDeviceDetails('${d.mac_address}', '${safeName}', '${safeVendor}', '${safeComment}')">
+            <td onclick="event.stopPropagation()">
+                <input type="checkbox" class="dev-hist-check" value="${d.mac_address}" onchange="toggleDevHistSelection(this)" ${isChecked}>
+            </td>
+            <td onclick="event.stopPropagation(); openDeviceConfig('${escapedMac}', '${safeCustomN}', '${safeCustomV || safeLookupV}', '${safeComment}')" style="cursor:pointer" title="Edit Device Metadata">
+                <strong>${escapeHTML(displayName)}</strong> <i class="bi bi-pencil ms-2 small text-muted"></i>
+            </td>
+            <td>${vendorHtml}</td>
+            <td class="font-monospace text-muted">${d.mac_address}</td>
+            <td><span class="badge bg-secondary">${d.network_name}</span></td>
+            <td>${d.ip_address}</td>
+            <td><small>${d.last_seen}</small></td>
+            <td onclick="event.stopPropagation(); openDeviceConfig('${escapedMac}', '${safeCustomN}', '${safeCustomV || safeLookupV}', '${safeComment}')" style="cursor:pointer" title="Edit Device Metadata">
+                <small class="text-muted" style="font-size: 0.8rem;">${escapeHTML(d.comments || '')}</small>
+            </td>
+            <td class="text-end text-nowrap" onclick="event.stopPropagation()">
+                <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('devices', '${escapedMac}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
+                    <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="9" class="text-center p-4">No device history found.</td></tr>';
+
+    const masterCheck = document.getElementById('dev-hist-master-check');
+    if (masterCheck) {
+        const pageMacs = paginatedData.map(d => d.mac_address);
+        masterCheck.checked = pageMacs.length > 0 && pageMacs.every(mac => selectedDevHistMacs.has(mac));
+    }
+
+    if (missingVendors.length > 0) {
+        missingVendors.forEach(mac => fetchMissingVendor(mac));
+    }
+}
 
 function exportDevHistCSV() {
-        let dataToExport = [];
+    let dataToExport = [];
 
-        // 1. Check our persistent Set of selected MACs
-        if (selectedDevHistMacs.size > 0) {
-            const selectedMacs = Array.from(selectedDevHistMacs);
-            // Export manually selected items across ALL pages/filters
-            dataToExport = allDeviceHistory.filter(d => selectedMacs.includes(d.mac_address));
-        } else {
-            // 2. If nothing is checked, export everything visible under the current filter
-            const q = document.getElementById('dev-hist-filter').value.toLowerCase();
-            dataToExport = allDeviceHistory.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)));
-            
-            if (!dataToExport.length) return alert("No devices available to export.");
-            if (!confirm(`No specific items selected. Export all ${dataToExport.length} visible record(s)?`)) return;
-        }
-
-        const rows = dataToExport.map(d => ({
-            "Name": d.custom_name || d.clean_hostname,
-            "Make (Vendor)": d.vendor || "Unknown",
-            "MAC Address": d.mac_address,
-            "Last Network": d.network_name,
-            "Last IP": d.ip_address,
-            "Last Seen": d.last_seen
-        }));
-
-        fetch('/api/devices/export', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify({rows: rows})
-        })
-        .then(r => r.blob())
-        .then(b => {
-            const u = URL.createObjectURL(b);
-            const a = document.createElement('a');
-            a.href = u; 
-            a.download = `global_device_history_${new Date().getTime()}.csv`; 
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-        }); 
+    if (selectedDevHistMacs.size > 0) {
+        const selectedMacs = Array.from(selectedDevHistMacs);
+        dataToExport = allDeviceHistory.filter(d => selectedMacs.includes(d.mac_address));
+    } else {
+        const q = document.getElementById('dev-hist-filter').value.toLowerCase();
+        dataToExport = allDeviceHistory.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)));
+        
+        if (!dataToExport.length) return alert("No devices available to export.");
+        if (!confirm(`No specific items selected. Export all ${dataToExport.length} visible record(s)?`)) return;
     }
 
-function viewDeviceDetails(mac, name, vendor) {
+    const rows = dataToExport.map(d => ({
+        "Name": d.custom_name || d.clean_hostname,
+        "Make (Vendor)": d.vendor || "Unknown",
+        "MAC Address": d.mac_address,
+        "Last Network": d.network_name,
+        "Last IP": d.ip_address,
+        "Last Seen": d.last_seen,
+        "Comments": d.comments || ""
+    }));
+
+    fetch('/api/devices/export', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'}, 
+        body: JSON.stringify({rows: rows})
+    })
+    .then(r => r.blob())
+    .then(b => {
+        const u = URL.createObjectURL(b);
+        const a = document.createElement('a');
+        a.href = u; 
+        a.download = `global_device_history_${new Date().getTime()}.csv`; 
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }); 
+}
+
+function viewDeviceDetails(mac, name, vendor, comment) {
     let hasVendor = vendor && vendor.trim() !== "" && vendor !== "undefined" && vendor !== "Unknown";
     
-    // Build the HTML for the main title with a placeholder if vendor is missing
-    let modalTitleHtml = `<span class="fw-bold">${escapeHTML(name)}</span> <br><span class="text-muted small fs-7 fw-normal">${escapeHTML(mac)}</span>`;
+    // Add the Edit Pencil directly to the Modal Header
+    let modalTitleHtml = `
+        <div class="d-flex justify-content-between align-items-start">
+            <div>
+                <span class="fw-bold">${escapeHTML(name)}</span> 
+                <i class="bi bi-pencil ms-2 text-muted" style="font-size: 0.9rem; cursor:pointer;" onclick="openDeviceConfig('${escapeJS(mac)}', '${escapeJS(name)}', '${escapeJS(vendor)}', '${escapeJS(comment)}')" title="Edit Device Metadata"></i>
+                <br><span class="text-muted small fs-7 fw-normal">${escapeHTML(mac)}</span>`;
     
     if (hasVendor) {
         modalTitleHtml += `<br><span class="text-muted small fs-7 fw-normal" id="modal-vendor-container">Make: <span id="modal-vendor-val">${escapeHTML(vendor)}</span></span>`;
@@ -1398,34 +1589,30 @@ function viewDeviceDetails(mac, name, vendor) {
         modalTitleHtml += `<br><span class="text-muted small fs-7 fw-normal" id="modal-vendor-container">Make: <span id="modal-vendor-val" class="fst-italic"><span class="spinner-border spinner-border-sm me-1" style="width: 0.7rem; height: 0.7rem;"></span> Fetching...</span></span>`;
     }
     
+    modalTitleHtml += `</div></div>`;
+        
+    if(comment && comment !== 'undefined') {
+         modalTitleHtml += `<div class="mt-2 p-2 bg-body-tertiary rounded small border fw-normal">${escapeHTML(comment).replace(/\n/g, '<br>')}</div>`;
+    }
+    
     document.getElementById('devHistModalTitle').innerHTML = modalTitleHtml;
     const tbody = document.getElementById('devHistModalBody');
     const exportBtn = document.getElementById('btn-export-dev-modal');
     
     tbody.innerHTML = '<tr><td colspan="5" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
-    exportBtn.style.display = 'none'; // Hide export until data is loaded
-    
+    exportBtn.style.display = 'none'; 
     devHistModal.show();
 
-    // If vendor is missing, trigger an asynchronous background lookup
     if (!hasVendor) {
         fetch('/api/vendor/lookup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mac: mac })
-        })
-        .then(r => r.json())
-        .then(res => {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mac: mac })
+        }).then(r => r.json()).then(res => {
             const fetchedVendor = (res.vendor && res.vendor !== 'Unknown') ? res.vendor : 'Unknown';
             const valEl = document.getElementById('modal-vendor-val');
-            if (valEl) {
-                valEl.outerHTML = `<span id="modal-vendor-val">${escapeHTML(fetchedVendor)}</span>`;
-            }
-            // Sync with global history array so it updates if re-opened
+            if (valEl) valEl.outerHTML = `<span id="modal-vendor-val">${escapeHTML(fetchedVendor)}</span>`;
             const globalItem = allDeviceHistory.find(x => x.mac_address === mac);
             if (globalItem) globalItem.vendor = fetchedVendor;
-        })
-        .catch(() => {
+        }).catch(() => {
             const valEl = document.getElementById('modal-vendor-val');
             if (valEl) valEl.outerHTML = '<span id="modal-vendor-val">Unknown</span>';
         });
@@ -1435,34 +1622,40 @@ function viewDeviceDetails(mac, name, vendor) {
         .then(r => r.json())
         .then(data => {
             if (data.error) throw new Error(data.error);
-
-            currentModalDevData = data; // Save data for export feature
-            exportBtn.style.display = 'block'; // Reveal export button
+            currentModalDevData = data; 
+            exportBtn.style.display = 'block';
             exportBtn.onclick = () => exportSingleDeviceHistory(mac, name);
-
-            tbody.innerHTML = data.length ? data.map(x => {
-                let historyHtml = `<span class="badge bg-secondary">Unknown</span>`;
-                if (x.discovery_status === 'New Device') historyHtml = `<span class="badge bg-success">New Device</span>`;
-                else if (x.previous_ip) historyHtml = `<span class="badge bg-warning text-dark">IP Changed <small>(${x.previous_ip})</small></span>`;
-                else historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
-
-                let serviceHtml = x.services && x.services !== "None" && x.services !== "NONE" 
-                    ? `<span class="small">${escapeHTML(x.services)}</span>` 
-                    : '<span class="text-muted">-</span>';
-
-                return `
-                <tr>
-                    <td><strong>${escapeHTML(x.network_name)}</strong></td>
-                    <td class="font-monospace">${escapeHTML(x.ip_address)}</td>
-                    <td>${serviceHtml}</td>
-                    <td>${historyHtml}</td>
-                    <td><small>${escapeHTML(x.last_seen)}</small></td>
-                </tr>`;
-            }).join('') : '<tr><td colspan="5" class="text-center p-3">No data available.</td></tr>';
+            performSort('devHistModalTable');
+            renderDevHistModalTable();
         })
         .catch(err => {
             tbody.innerHTML = `<tr><td colspan="5" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
         });
+}
+
+function renderDevHistModalTable() {
+    const tbody = document.getElementById('devHistModalBody');
+    if (!currentModalDevData) return;
+    
+    tbody.innerHTML = currentModalDevData.length ? currentModalDevData.map(x => {
+        let historyHtml = `<span class="badge bg-secondary">Unknown</span>`;
+        if (x.discovery_status === 'New Device') historyHtml = `<span class="badge bg-success">New Device</span>`;
+        else if (x.previous_ip) historyHtml = `<span class="badge bg-warning text-dark">IP Changed <small>(${x.previous_ip})</small></span>`;
+        else historyHtml = `<span class="badge bg-info text-dark">Seen Before</span>`;
+
+        let serviceHtml = x.services && x.services !== "None" && x.services !== "NONE" 
+            ? `<span class="small">${escapeHTML(x.services)}</span>` 
+            : '<span class="text-muted">-</span>';
+
+        return `
+        <tr>
+            <td><strong>${escapeHTML(x.network_name)}</strong></td>
+            <td class="font-monospace">${escapeHTML(x.ip_address)}</td>
+            <td>${serviceHtml}</td>
+            <td>${historyHtml}</td>
+            <td><small>${escapeHTML(x.last_seen)}</small></td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="5" class="text-center p-3">No data available.</td></tr>';
 }
 
 function exportSingleDeviceHistory(mac, name) {
@@ -1475,7 +1668,7 @@ function exportSingleDeviceHistory(mac, name) {
             return {
             "Network Name": x.network_name,
             "IP Address": x.ip_address,
-            "Services (Ports)": convertServicesToPorts(x.services), // <-- Updated
+            "Services (Ports)": convertServicesToPorts(x.services), 
             "Status": historyText,
             "Last Seen": x.last_seen
         };
@@ -1527,6 +1720,7 @@ function filterDevHist() {
         const q = document.getElementById('dev-hist-filter').value.toLowerCase();
         devHistFiltered = allDeviceHistory.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)));
         devHistCurrentPage = 1; 
+        performSort('devHist');
         renderDeviceHistory();
     }
 
@@ -1543,29 +1737,27 @@ function changeDevHistPerPage() {
     }
 
 function exportSpecificNetwork(id, name) {
-    // 1. Fetch the devices for this specific network
     fetch(`/api/networks/${id}/devices`)
         .then(r => r.json())
         .then(devices => {
             if (!devices.length) return alert("This network has no devices to export.");
 
-            // 2. Format data for the existing CSV export tool
-    const rows = devices.map(d => {
-        let historyText = d.discovery_status || "Unknown";
-        if (d.previous_ip) historyText = `IP Changed (${d.previous_ip})`;
-        
-        return {
-            "Hostname": d.hostname || "Unknown",
-            "Custom Name": d.custom_name || "",
-            "IP Address": d.ip_address || "0.0.0.0",
-            "MAC Address": d.mac_address || "Unknown",
-            "Status": d.is_online ? "Online" : "Offline",
-            "Services (Ports)": convertServicesToPorts(d.services), // <-- Updated
-            "History": historyText
-        };
-    });
+            const rows = devices.map(d => {
+                let historyText = d.discovery_status || "Unknown";
+                if (d.previous_ip) historyText = `IP Changed (${d.previous_ip})`;
+                
+                return {
+                    "Hostname": d.hostname || "Unknown",
+                    "Custom Name": d.custom_name || "",
+                    "IP Address": d.ip_address || "0.0.0.0",
+                    "MAC Address": d.mac_address || "Unknown",
+                    "Status": d.is_online ? "Online" : "Offline",
+                    "Services (Ports)": convertServicesToPorts(d.services), 
+                    "History": historyText,
+                    "Comments": d.comments || ""
+                };
+            });
 
-            // 3. Trigger the CSV download
             fetch('/api/devices/export', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1603,11 +1795,10 @@ function updateTouchIcon(isTouch) {
     }
 }
 
-function loadNetworkDevices(id, name) {
+function loadNetworkDevices(id, name, comment = "") {
     currentNetworkId = id; 
     showPage('devices', document.querySelectorAll('.nav-link')[1]);
     
-    // Auto-update buttons for contextual loaded view
     const b = document.getElementById('btn-scan-devices');
     const cBtn = document.getElementById('btn-continue-scan');
     const splitBtn = document.getElementById('btn-split-scan');
@@ -1615,11 +1806,12 @@ function loadNetworkDevices(id, name) {
     
     if (b) b.innerHTML = '<i class="bi bi-search"></i> New Scan';
     if (cBtn) cBtn.classList.remove('hidden');
-    if (splitBtn) splitBtn.classList.remove('hidden'); // Reveal Split option
-    if (isoBtn) isoBtn.classList.add('hidden'); // Hide Isolation (Split acts as contextual isolation)
+    if (splitBtn) splitBtn.classList.remove('hidden'); 
+    if (isoBtn) isoBtn.classList.add('hidden'); 
     
     if(name) {
         document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
+        document.getElementById('device-tab-comment').innerText = comment || "";
         const locationInput = document.getElementById('st-network-name');
         if(locationInput) locationInput.value = name;
         
@@ -1634,13 +1826,67 @@ function loadNetworkDevices(id, name) {
     
     fetch(`/api/networks/${id}/devices`).then(r=>r.json()).then(d => {
         allDevices = d; 
-        renderDevices(d);
-        
+        performSort('devices');
+        filterDevices(); // <--- FIXED: Pass through the filter engine instead of raw render
         resolveMissingVendors(allDevices);
-        
         if (btnSel) btnSel.classList.remove('hidden');
         if (btnOff) btnOff.classList.add('hidden'); 
     });
+}
+
+function openNetworkConfig(id, name, comment) {
+    if (!id) return;
+    document.getElementById('modal-net-id').value = id;
+    document.getElementById('modal-net-name').value = name || "";
+    document.getElementById('modal-net-comment').value = comment || "";
+    networkModal.show();
+}
+
+function saveNetworkSettings() {
+    const id = document.getElementById('modal-net-id').value;
+    const name = document.getElementById('modal-net-name').value.trim();
+    const comment = document.getElementById('modal-net-comment').value.trim();
+
+    if (!id) return;
+
+    // Show loading state
+    const btn = event.currentTarget || document.querySelector('#networkModal .btn-primary');
+    const origText = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+    btn.disabled = true;
+
+    fetch('/api/networks/update', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'}, 
+        body: JSON.stringify({id: id, name: name, comment: comment})
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.status === 'success') {
+            networkModal.hide();
+            
+            // 1. Instantly update Active Scan UI if we are currently looking at it
+            if (String(id) === String(currentNetworkId)) {
+                const titleEl = document.getElementById('device-tab-title');
+                const commentEl = document.getElementById('device-tab-comment');
+                const locationInput = document.getElementById('st-network-name');
+                
+                if (titleEl) titleEl.innerText = `Devices in: ${name}`;
+                if (commentEl) commentEl.innerText = comment;
+                if (locationInput) locationInput.value = name;
+            }
+
+            // 2. Always refresh the Network History table in the background
+            loadNetworks();
+        } else {
+            alert("Failed to update network.");
+        }
+    })
+    .catch(err => alert("Communication error: " + err.message))
+    .finally(() => {
+        btn.innerHTML = origText;
+        btn.disabled = false;
+    }); 
 }
 
 function scanDevices(mode = 'new', forceMerge = false) {
@@ -1721,6 +1967,7 @@ function scanDevices(mode = 'new', forceMerge = false) {
         if (data.type === 'init') {
             currentNetworkId = data.network_id;
             document.getElementById('device-tab-title').innerText = `Devices in: ${data.network_name}`;
+            document.getElementById('device-tab-comment').innerText = data.network_comment || "";
             const locationInput = document.getElementById('st-network-name');
             if (locationInput) locationInput.value = data.network_name;
         } 
@@ -1734,19 +1981,16 @@ function scanDevices(mode = 'new', forceMerge = false) {
             if (idx >= 0) allDevices[idx] = data.device;
             else allDevices.push(data.device);
 
-            allDevices.sort((a, b) => {
-                const ipA = a.ip_address || "0.0.0.0";
-                const ipB = b.ip_address || "0.0.0.0";
-                const numA = ipA.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
-                const numB = ipB.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
-                return numA - numB;
-            });
-
-            renderDevices(allDevices);
-        } 
+            performSort('devices');
+            filterDevices(); // <--- FIXED
+        }
         else if (data.type === 'complete') {
             eventSource.close();
             
+            // Re-affirm the metadata state
+            document.getElementById('device-tab-title').innerText = `Devices in: ${data.network_name}`;
+            document.getElementById('device-tab-comment').innerText = data.network_comment || "";
+
             // Restore contextual UI
             b.disabled = false;
             b.innerHTML = '<i class="bi bi-search"></i> New Scan';
@@ -1778,14 +2022,8 @@ function scanDevices(mode = 'new', forceMerge = false) {
                     else allDevices.push(offDev);
                 });
 
-                allDevices.sort((a, b) => {
-                    const ipA = a.ip_address || "0.0.0.0";
-                    const ipB = b.ip_address || "0.0.0.0";
-                    const numA = ipA.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
-                    const numB = ipB.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
-                    return numA - numB;
-                });
-                renderDevices(allDevices);
+                performSort('devices');
+                filterDevices(); // <--- FIXED
             }
             
             resolveMissingVendors(allDevices);
@@ -1874,8 +2112,7 @@ function renderDevices(d) {
         const safeCustomV = escapeJS(x.custom_vendor);
         const safeLookupV = escapeJS(x.vendor); 
         const safeCustomN = escapeJS(x.custom_name);
-        
-        // Safety fallback: if we don't know the protection state yet, assume 0
+        const safeComment = escapeJS(x.comments || '');
         const isProtected = x.is_protected ? 1 : 0;
 
         return `
@@ -1884,8 +2121,8 @@ function renderDevices(d) {
                     <input type="checkbox" class="device-check" value="${escapeHTML(x.mac_address)}" onchange="updateDeviceMasterCheck()">
                 </td>
                 <td><strong>${escapeHTML(x.hostname) || 'Unknown'}</strong></td>
-                <td onclick="updateDeviceName('${escapedMac}', '${safeCustomN}')" style="cursor:pointer">
-                    ${escapeHTML(x.custom_name) || '<i class="text-muted">Set Name</i>'} <i class="bi bi-pencil small"></i>
+                <td onclick="openDeviceConfig('${escapedMac}', '${safeCustomN}', '${safeCustomV || safeLookupV}', '${safeComment}')" style="cursor:pointer" title="Edit Device Details">
+                    <strong>${escapeHTML(x.custom_name) || escapeHTML(x.hostname) || '<i class="text-muted">Set Name</i>'}</strong> <i class="bi bi-pencil ms-2 small text-muted"></i>
                 </td>
                 <td onclick="updateDeviceVendor('${escapedMac}', '${safeCustomV}', '${safeLookupV}')" style="cursor:pointer" title="Click to customize vendor">
                     ${vendorDisplay} <i class="bi bi-pencil small text-muted"></i>
@@ -1895,13 +2132,16 @@ function renderDevices(d) {
                 <td class="${x.is_online ? 'text-success' : 'text-muted'}">${x.is_online ? 'Online' : 'Offline'}</td>
                 <td>${serviceBadges}</td>
                 <td>${historyHtml}</td>
+                <td onclick="openDeviceConfig('${escapedMac}', '${safeCustomN}', '${safeCustomV || safeLookupV}', '${safeComment}')" style="cursor:pointer">
+                    <small class="text-muted" style="font-size: 0.8rem;">${escapeHTML(x.comments || '')}</small>
+                </td>
                 <td class="text-end text-nowrap">
                     <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('devices', '${escapedMac}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
                         <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
                     </button>
                 </td>
             </tr>`;
-    }).join('') : '<tr><td colspan="10" class="text-center p-4">No devices found.</td></tr>';
+    }).join('') : '<tr><td colspan="11" class="text-center p-4">No devices found.</td></tr>';
 }
 
 function updateDeviceVendor(mac, currentCustom, currentLookup) {
@@ -1970,8 +2210,7 @@ function resolveMissingVendors(devices) {
     }
     
     function exportDevicesCSV() { 
-        // We define the specific columns and headers we want in the CSV here
-        const rows = allDevices.map(d => {
+    const rows = allDevices.map(d => {
         let historyText = d.discovery_status || "Unknown";
         if (d.previous_ip) historyText = `IP Changed (${d.previous_ip})`;
         
@@ -1981,27 +2220,28 @@ function resolveMissingVendors(devices) {
             "IP Address": d.ip_address || "0.0.0.0",
             "MAC Address": d.mac_address || "Unknown",
             "Status": d.is_online ? "Online" : "Offline",
-            "Services (Ports)": convertServicesToPorts(d.services), // <-- Updated
-            "History": historyText
+            "Services (Ports)": convertServicesToPorts(d.services),
+            "History": historyText,
+            "Comments": d.comments || ""
         };
     });
 
-        fetch('/api/devices/export', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'}, 
-            body: JSON.stringify({rows: rows})
-        })
-        .then(r => r.blob())
-        .then(b => {
-            const u = URL.createObjectURL(b);
-            const a = document.createElement('a');
-            a.href = u; 
-            a.download = 'devices_list.csv'; 
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-        }); 
-    }
+    fetch('/api/devices/export', {
+        method: 'POST', 
+        headers: {'Content-Type': 'application/json'}, 
+        body: JSON.stringify({rows: rows})
+    })
+    .then(r => r.blob())
+    .then(b => {
+        const u = URL.createObjectURL(b);
+        const a = document.createElement('a');
+        a.href = u; 
+        a.download = 'devices_list.csv'; 
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }); 
+}
     
     function renameNetwork(id, old) { 
         const n = prompt("Rename Network:", old); 
@@ -2149,47 +2389,59 @@ function deleteSingleToolLog(type, id) {
         if(confirm(`Clear all ${type.toUpperCase()} history?`)) fetch(`/api/${type}/clear`, {method:'POST'}).then(() => fetchToolLogs(type));
     }
     
-    
-function scanWifi() { 
+function scanWifi(mode = 'new') { 
     const container = document.getElementById('wifi-list'); 
     const btn = document.getElementById('wifi-scan-btn');
+    const contBtn = document.getElementById('wifi-continue-btn');
     const exportBtn = document.getElementById('btn-wifi-export');
     const commentBtn = document.getElementById('btn-wifi-comment');
     
     // Grab the selected adapter
     const adapterSelect = document.getElementById('wifi-adapter-select');
-    let ifaceQuery = '';
+    let ifaceQuery = `?mode=${mode}`;
     if (adapterSelect && adapterSelect.value) {
-        ifaceQuery = `?iface=${encodeURIComponent(adapterSelect.value)}`;
+        ifaceQuery += `&iface=${encodeURIComponent(adapterSelect.value)}`;
+    }
+    
+    // Pass the active Scan ID if we are continuing a scan
+    if (mode === 'continue' && window.currentWifiScanId) {
+        ifaceQuery += `&scan_id=${window.currentWifiScanId}`;
+    } else {
+        window.currentWifiScanId = null; // Clear it on a fresh scan
     }
     
     // 1. Reset UI State
-    if(btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+    if (mode === 'continue') {
+        if(contBtn) { contBtn.disabled = true; contBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...'; }
+        if(btn) btn.disabled = true;
+    } else {
+        if(btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...'; }
+        if(contBtn) contBtn.disabled = true;
     }
     
     if(exportBtn) exportBtn.disabled = true;
     if(commentBtn) commentBtn.disabled = true;
     
-    // Hide edit pencil and reset title
+    // Hide edit pencil and reset title/comment
     const titleEl = document.getElementById('wifi-tab-title');
+    const commentEl = document.getElementById('wifi-tab-comment');
     const editIcon = document.getElementById('btn-edit-active-wifi');
-    if (titleEl) titleEl.innerText = "Scan Wi-Fi";
-    if (editIcon) editIcon.classList.add('hidden');
     
-    activeScanComment = "";
-    const metaDiv = document.getElementById('active-scan-meta');
-    if(metaDiv) metaDiv.innerText = "";
+    if (mode === 'new') {
+        if (titleEl) titleEl.innerText = "Scan Wi-Fi";
+        if (commentEl) commentEl.innerText = "";
+        if (editIcon) editIcon.classList.add('hidden');
+        if (contBtn) contBtn.classList.add('hidden');
+        
+        container.innerHTML = `
+            <div class="col-12 text-center p-5">
+                <div class="spinner-border text-info mb-3"></div>
+                <h5 class="text-muted">Deep Scanning Airwaves...</h5>
+                <p class="small text-secondary">Hardware reset initiated to detect all bands (2.4/5/6GHz).</p>
+            </div>`;
+    }
 
-    container.innerHTML = `
-        <div class="col-12 text-center p-5">
-            <div class="spinner-border text-info mb-3"></div>
-            <h5 class="text-muted">Deep Scanning Airwaves...</h5>
-            <p class="small text-secondary">Hardware reset initiated to detect all bands (2.4/5/6GHz).</p>
-        </div>`;
-
-    // 2. Perform Request to Python Backend WITH targeted interface
+    // 2. Perform Request to Python Backend WITH targeted interface and mode
     fetch(`/api/wifi${ifaceQuery}`)
         .then(r => {
             if (!r.ok) throw new Error(`HTTP Error! Status: ${r.status}`);
@@ -2207,7 +2459,7 @@ function scanWifi() {
                 return;
             }
 
-            // Extract the network array and metadata from the new backend response
+            // Extract the network array and metadata from the backend response
             const nets = data.networks || data;
 
             if (!nets || nets.length === 0) {
@@ -2218,14 +2470,16 @@ function scanWifi() {
             if(exportBtn) exportBtn.disabled = false;
             if(commentBtn) commentBtn.disabled = false;
             
-            // --- NEW: Apply the Scan Name and Reveal Edit Button ---
+            // Apply the Scan Name, Comment, and Reveal Edit/Continue Buttons
             if (data.scan_id) window.currentWifiScanId = data.scan_id;
             if (titleEl && data.scan_name) {
                 titleEl.innerText = data.scan_name;
+                if (commentEl) commentEl.innerText = data.scan_comment || "";
                 if (editIcon) editIcon.classList.remove('hidden');
             }
+            if (contBtn) contBtn.classList.remove('hidden');
 
-            // 3. Hand the data off to our newly unified rendering function!
+            // 3. Hand the data off to the rendering function
             renderWifiResults(nets, false);
         })
         .catch(err => {
@@ -2242,11 +2496,31 @@ function scanWifi() {
                 </div>`;
         })
         .finally(() => {
-            if(btn) {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-search"></i> Scan Wi-Fi';
-            }
+            if(btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-search"></i> Scan Wi-Fi'; }
+            if(contBtn) { contBtn.disabled = false; contBtn.innerHTML = '<i class="bi bi-play-fill"></i> Continue Scan'; }
         });
+}
+
+function viewPastWifi(id) {
+    fetch(`/api/wifi/history/${id}`).then(r => r.json()).then(d => {
+        showPage('wifi', document.querySelector('[onclick*="showPage(\'wifi\'"]'));
+        
+        window.currentWifiScanId = id;
+        const titleEl = document.getElementById('wifi-tab-title');
+        const commentEl = document.getElementById('wifi-tab-comment');
+        const editIcon = document.getElementById('btn-edit-active-wifi');
+        const contBtn = document.getElementById('wifi-continue-btn');
+        
+        if (titleEl) {
+            titleEl.innerText = d.name;
+            if (commentEl) commentEl.innerText = d.comments || "";
+            if (editIcon) editIcon.classList.remove('hidden');
+        }
+        
+        if (contBtn) contBtn.classList.remove('hidden');
+        
+        renderWifiResults(d.results, true);
+    });
 }
 
     function runSpeedTest() { 
@@ -2480,7 +2754,7 @@ function openUpdateModal() {
         }
     }
 
-    function renderWifiResults(data, isHistory = false) {
+function renderWifiResults(data, isHistory = false) {
     const container = document.getElementById('wifi-list');
     currentScanResults = data;
     
@@ -2489,7 +2763,6 @@ function openUpdateModal() {
     html += data.map(n => {
         let detailsHtml = '';
         
-        // Use raw_bssids to dynamically build our tables
         if (n.raw_bssids && n.raw_bssids.length > 0) {
             const bands = {};
             n.raw_bssids.forEach(b => {
@@ -2498,7 +2771,6 @@ function openUpdateModal() {
                 bands[band].push(b);
             });
 
-            // Sort bands (2.4, 5, 6)
             const sortedBands = Object.keys(bands).sort((a, b) => {
                 const wA = a.includes('2.4') ? 1 : a.includes('5') ? 2 : a.includes('6') ? 3 : 4;
                 const wB = b.includes('2.4') ? 1 : b.includes('5') ? 2 : b.includes('6') ? 3 : 4;
@@ -2507,12 +2779,9 @@ function openUpdateModal() {
 
             sortedBands.forEach((band, idx) => {
                 const bandClean = escapeHTML(band.replace('GHz', 'Ghz'));
-                const mtClass = idx === 0 ? '' : 'mt-4 ';
+                const mtClass = idx === 0 ? '' : 'mt-3 ';
                 
-                // Frequency Header (Significantly larger)
                 detailsHtml += `<div class="${mtClass}fw-bold text-info mb-1" style="font-size: 1.15rem;">${bandClean}</div>`;
-                
-                // Table Header Row for the data
                 detailsHtml += `
                 <div class="table-responsive overflow-hidden">
                     <table class="table table-sm table-borderless align-middle w-100 mb-1" style="table-layout: fixed; font-size: 0.95rem;">
@@ -2527,7 +2796,6 @@ function openUpdateModal() {
                         <tbody class="font-monospace">
                 `;
 
-                // Sort MACs by percentage descending
                 bands[band].sort((a, b) => {
                     const valA = (a.percent !== '' && a.percent !== null) ? a.percent : -100;
                     const valB = (b.percent !== '' && b.percent !== null) ? b.percent : -100;
@@ -2539,7 +2807,6 @@ function openUpdateModal() {
                     const ch = (b.channel && b.channel !== '0') ? b.channel : '-';
                     const auth = n.auth || 'Unknown';
                     
-                    // Format percentage colors natively in the column
                     let pctHtml = '<span class="fw-bold text-muted">-%</span>';
                     if (b.percent !== '' && b.percent !== null) {
                         let color = 'text-danger';
@@ -2548,7 +2815,6 @@ function openUpdateModal() {
                         pctHtml = `<span class="fw-bold ${color}">${escapeHTML(String(b.percent))}%</span>`;
                     }
 
-                    // Data Row
                     detailsHtml += `
                         <tr>
                             <td class="p-1 px-0">${escapeHTML(mac)}</td>
@@ -2562,26 +2828,43 @@ function openUpdateModal() {
                 detailsHtml += `</tbody></table></div>`;
             });
         } else if (n.details) {
-            // Safe fallback if raw_bssids is missing
             detailsHtml = n.details;
         } else {
-            // Extreme fallback for super old scans
             detailsHtml = `<span class="text-muted">${escapeHTML(n.band || '')}</span>`;
         }
 
         const chDisplay = n.channel ? (n.channel.startsWith('Ch:') ? n.channel : 'Ch: ' + n.channel) : 'Ch: -';
+        
+        // --- NEW: Expading Comment Support ---
+        const globalComment = n.global_comment || '';
+        const safeComment = escapeJS(globalComment);
+        const isMultiLine = globalComment.includes('\n') || globalComment.length > 60;
+        
+        let commentHtml = '';
+        if (globalComment) {
+            const uid = Math.random().toString(36).substr(2, 9);
+            commentHtml = `
+            <div class="mt-2 d-flex align-items-start border-top pt-2 border-secondary-subtle">
+                <div id="comment-${uid}" class="text-muted small text-break mb-0" style="max-height: 1.5em; overflow: hidden; transition: max-height 0.3s; flex-grow: 1;">
+                    ${escapeHTML(globalComment).replace(/\n/g, '<br>')}
+                </div>
+                ${isMultiLine ? `<i class="bi bi-chevron-down ms-2 text-secondary p-1" style="cursor: pointer; font-size: 0.9rem;" onclick="const b = document.getElementById('comment-${uid}'); if(b.style.maxHeight === '1.5em' || b.style.maxHeight === ''){b.style.maxHeight='none'; this.classList.replace('bi-chevron-down', 'bi-chevron-up');}else{b.style.maxHeight='1.5em'; this.classList.replace('bi-chevron-up', 'bi-chevron-down');}"></i>` : ''}
+            </div>`;
+        }
 
         return `
-        <div class="col-lg-6 mb-3"> <!-- Widened to col-lg-6 so the larger table text fits comfortably -->
+        <div class="col-lg-6 mb-3">
             <div class="card shadow-sm h-100 border-0 bg-body-tertiary">
                 <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
-                        <!-- Made the network SSID name larger -->
-                        <strong class="text-truncate fs-5" title="${escapeHTML(n.ssid)}" style="max-width: 55%;">${escapeHTML(n.ssid)}</strong>
-                        <span class="badge bg-primary text-nowrap text-truncate text-end" title="${escapeHTML(chDisplay)}" style="max-width: 45%; font-size: 0.85rem;">${escapeHTML(chDisplay)}</span>
+                    <div class="d-flex justify-content-between align-items-center mb-1 gap-2">
+                        <strong class="text-truncate fs-5" title="${escapeHTML(n.ssid)}" style="max-width: 65%;">
+                            ${escapeHTML(n.ssid)}
+                            <i class="bi bi-pencil ms-2 text-muted" style="font-size: 0.9rem; cursor:pointer;" onclick="openWifiSSIDConfig('${escapeJS(n.ssid)}', '${safeComment}')" title="Edit SSID Comment"></i>
+                        </strong>
+                        <span class="badge bg-primary text-nowrap text-truncate text-end" title="${escapeHTML(chDisplay)}" style="max-width: 35%; font-size: 0.85rem;">${escapeHTML(chDisplay)}</span>
                     </div>
-                    
-                    <div class="border-top pt-2 mt-2 w-100">
+                    ${commentHtml}
+                    <div class="border-top pt-2 mt-2 border-secondary-subtle w-100">
                         ${detailsHtml}
                     </div>
                 </div>
@@ -2597,24 +2880,6 @@ function exportWifiCSV(id) {
     window.location.href = `/api/wifi/export/${id}`;
 }
 
-
-function viewPastWifi(id) {
-    fetch(`/api/wifi/history/${id}`).then(r => r.json()).then(d => {
-        showPage('wifi', document.querySelector('[onclick*="showPage(\'wifi\'"]'));
-        
-        // Store ID globally and reveal the edit tools
-        window.currentWifiScanId = id;
-        const titleEl = document.getElementById('wifi-tab-title');
-        const editIcon = document.getElementById('btn-edit-active-wifi');
-        
-        if (titleEl) {
-            titleEl.innerText = d.name;
-            if (editIcon) editIcon.classList.remove('hidden');
-        }
-        
-        renderWifiResults(d.results, true);
-    });
-}
 
 function deleteWifiScan(id) {
     if(confirm("Delete this scan record?")) {
@@ -2637,11 +2902,42 @@ function clearAllWifiHistory() {
 // Export Active Scan Function
 function exportActiveWifiCSV() {
     if (!currentScanResults.length) return;
+    
+    // Convert dynamic results cleanly to the Python endpoint structure
+    const rows = [];
+    currentScanResults.forEach(net => {
+        const comment = net.global_comment || "";
+        if (net.raw_bssids && net.raw_bssids.length) {
+            net.raw_bssids.forEach(b => {
+                rows.push({
+                    "SSID": net.ssid || "Unknown",
+                    "MAC": b.mac || "-",
+                    "Signal (dBm)": b.dbm || "-",
+                    "Signal (%)": b.percent || "-",
+                    "Channel": b.channel || "-",
+                    "Band": b.band || "-",
+                    "Authentication": net.auth || "-",
+                    "Comments": comment
+                });
+            });
+        } else {
+            rows.push({
+                "SSID": net.ssid || "Unknown",
+                "MAC": net.mac || "-",
+                "Signal (dBm)": net.signal || "-",
+                "Signal (%)": "-",
+                "Channel": net.channel || "-",
+                "Band": net.band || "-",
+                "Authentication": net.auth || "-",
+                "Comments": comment
+            });
+        }
+    });
 
-    fetch('/api/wifi/export_active', {
+    fetch('/api/devices/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ results: currentScanResults })
+        body: JSON.stringify({ rows: rows })
     })
     .then(r => r.blob())
     .then(blob => {
@@ -2655,35 +2951,57 @@ function exportActiveWifiCSV() {
     });
 }
 
-function editWifiHistory(id, oldName, oldComment) {
-    // 1. Prompt for new Name
-    const newName = prompt("Edit Scan Name:", oldName);
-    if (newName === null) return; // Cancelled
-    
-    // 2. Prompt for new Comment
-    const newComment = prompt("Edit Comment:", oldComment);
-    if (newComment === null) return; // Cancelled
+function openWifiScanConfig(id, name, comment) {
+    if (!id) return;
+    document.getElementById('modal-wifi-scan-id').value = id;
+    document.getElementById('modal-wifi-scan-name').value = name || "";
+    document.getElementById('modal-wifi-scan-comment').value = comment || "";
+    wifiScanModal.show();
+}
 
-    // 3. Send update to server
+function saveWifiScanSettings() {
+    const id = document.getElementById('modal-wifi-scan-id').value;
+    const name = document.getElementById('modal-wifi-scan-name').value.trim();
+    const comment = document.getElementById('modal-wifi-scan-comment').value.trim();
+
+    if (!id) return;
+
+    const btn = event.currentTarget || document.querySelector('#wifiScanModal .btn-primary');
+    const origText = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+    btn.disabled = true;
+
     fetch('/api/wifi/history/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
             id: id, 
-            name: newName, 
-            comment: newComment 
+            name: name, 
+            comment: comment 
         })
     })
     .then(r => r.json())
     .then(data => {
         if (data.status === "success") {
-            loadWifiHistory(); // Refresh the list to show changes
+            wifiScanModal.hide();
+            
+            // Instantly update active title if viewing it
+            if (String(id) === String(window.currentWifiScanId)) {
+                const titleEl = document.getElementById('wifi-tab-title');
+                if (titleEl) titleEl.innerText = name;
+            }
+            
+            loadWifiHistory(); // Refresh table
         } else {
             alert("Error: " + data.error);
         }
     })
-    .catch(err => alert("Communication error: " + err.message));
-} // <--- THIS BRACE WAS MISSING. IT CLOSES THE FUNCTION PROPERLY.
+    .catch(err => alert("Communication error: " + err.message))
+    .finally(() => {
+        btn.innerHTML = origText;
+        btn.disabled = false;
+    });
+}
 
 // --- BULK ACTION HELPERS ---
 function toggleSelectAll(source, className) {
@@ -2723,6 +3041,7 @@ let currentModalWifiNetData = [];
                 tableState.wifiNetHist.filtered = d;
                 tableState.wifiNetHist.page = 1;
                 tableState.wifiNetHist.selected.clear();
+                performSort('wifiNetHist');
                 renderWifiNetworksHistory();
             })
             .catch(err => {
@@ -2734,87 +3053,117 @@ let currentModalWifiNetData = [];
         const q = document.getElementById('wifiNetHist-filter').value.toLowerCase();
         tableState.wifiNetHist.filtered = tableState.wifiNetHist.data.filter(x => Object.values(x).some(v => String(v).toLowerCase().includes(q)));
         tableState.wifiNetHist.page = 1;
+        performSort('wifiNetHist');
         renderWifiNetworksHistory();
     }
 
 function renderWifiNetworksHistory() {
-        const tb = document.getElementById('wifi-net-hist-table');
-        if (!tb) return;
-        const paginatedData = getPaginatedData('wifiNetHist');
+    const tb = document.getElementById('wifi-net-hist-table');
+    if (!tb) return;
+    const paginatedData = getPaginatedData('wifiNetHist');
 
-        tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
-            const isChecked = tableState.wifiNetHist.selected.has(n.ssid) ? 'checked' : '';
-            const safeSSID = escapeJS(n.ssid);
-            const isProtected = n.is_protected ? 1 : 0; // NEW
+    tb.innerHTML = paginatedData.length ? paginatedData.map(n => {
+        const isChecked = tableState.wifiNetHist.selected.has(n.ssid) ? 'checked' : '';
+        const safeSSID = escapeJS(n.ssid);
+        const safeComment = escapeJS(n.comments || '');
+        const isProtected = n.is_protected ? 1 : 0; 
+        
+        return `
+        <tr style="cursor: pointer;" onclick="viewWifiNetworkDetails('${safeSSID}')">
+            <td onclick="event.stopPropagation()"><input type="checkbox" class="wifiNetHist-check" value="${n.ssid}" onchange="toggleSelection('wifiNetHist', this)" ${isChecked}></td>
             
-            return `
-            <tr style="cursor: pointer;" onclick="viewWifiNetworkDetails('${safeSSID}')">
-                <td onclick="event.stopPropagation()"><input type="checkbox" class="wifiNetHist-check" value="${n.ssid}" onchange="toggleSelection('wifiNetHist', this)" ${isChecked}></td>
-                <td><strong>${escapeHTML(n.ssid)}</strong></td>
-                <td>${n.auth}</td>
-                <td><span class="badge bg-info text-dark">${n.mac_count}</span></td>
-                <td><span class="badge bg-secondary">${n.scan_count}</span></td>
-                <td><small class="text-muted">${n.first_seen}</small></td>
-                <td><small>${n.last_seen}</small></td>
-                <td class="text-end text-nowrap" onclick="event.stopPropagation()">
-                    <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('wifi_ssid', '${safeSSID}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock SSID (Protect from Cleanup)'}">
-                        <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteGlobalSSID('${safeSSID}')" title="Delete SSID"><i class="bi bi-trash"></i></button>
-                </td>
-            </tr>`;
-        }).join('') : '<tr><td colspan="8" class="text-center p-4">No Wi-Fi history found.</td></tr>';
+            <!-- NEW: The Unified SSID & Comment Editing Cell -->
+            <td onclick="event.stopPropagation(); openWifiSSIDConfig('${safeSSID}', '${safeComment}')" style="cursor:pointer" title="Edit SSID Global Comment">
+                <div class="d-flex align-items-center">
+                    <strong>${escapeHTML(n.ssid)}</strong>
+                    <i class="bi bi-pencil ms-2 small text-muted"></i>
+                </div>
+                <small class="text-muted" style="font-size: 0.75rem;">${escapeHTML(n.comments || '')}</small>
+            </td>
+            
+            <td>${n.auth}</td>
+            <td><span class="badge bg-info text-dark">${n.mac_count}</span></td>
+            <td><span class="badge bg-secondary">${n.scan_count}</span></td>
+            <td><small class="text-muted">${n.first_seen}</small></td>
+            <td><small>${n.last_seen}</small></td>
+            <td class="text-end text-nowrap" onclick="event.stopPropagation()">
+                <button class="btn btn-sm ${isProtected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('wifi_ssid', '${safeSSID}', ${isProtected})" title="${isProtected ? 'Unlock' : 'Lock SSID (Protect from Cleanup)'}">
+                    <i class="bi ${isProtected ? 'bi-lock-fill' : 'bi-unlock'}"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteGlobalSSID('${safeSSID}')" title="Delete SSID"><i class="bi bi-trash"></i></button>
+            </td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="8" class="text-center p-4">No Wi-Fi history found.</td></tr>';
 
-        updateMasterCheckbox('wifiNetHist', paginatedData.map(n => n.ssid));
+    updateMasterCheckbox('wifiNetHist', paginatedData.map(n => n.ssid));
+}
+
+function viewWifiNetworkDetails(ssid, comment) {
+    let modalTitleHtml = `
+        <div class="d-flex justify-content-between align-items-start">
+            <div>
+                <span class="fw-bold">History for: ${escapeHTML(ssid)}</span>
+                <i class="bi bi-pencil ms-2 text-muted" style="font-size: 0.9rem; cursor:pointer;" onclick="openWifiSSIDConfig('${escapeJS(ssid)}', '${escapeJS(comment)}')" title="Edit SSID Comment"></i>
+            </div>
+        </div>`;
+        
+    if(comment && comment !== 'undefined') {
+         modalTitleHtml += `<div class="mt-2 p-2 bg-body-tertiary rounded small border fw-normal text-muted">${escapeHTML(comment).replace(/\n/g, '<br>')}</div>`;
     }
 
-    function viewWifiNetworkDetails(ssid) {
-        document.getElementById('wifiNetModalTitle').innerText = `History for: ${ssid}`;
-        const tbody = document.getElementById('wifiNetModalBody');
-        const exportBtn = document.getElementById('btn-export-wifiNet-modal');
-        
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
-        exportBtn.style.display = 'none';
-        
-        // Setup Modal (Use singleton to prevent memory leaks if clicked multiple times)
-        let modal = bootstrap.Modal.getInstance(document.getElementById('wifiNetModal'));
-        if (!modal) modal = new bootstrap.Modal(document.getElementById('wifiNetModal'));
-        modal.show();
+    document.getElementById('wifiNetModalTitle').innerHTML = modalTitleHtml;
+    const tbody = document.getElementById('wifiNetModalBody');
+    const exportBtn = document.getElementById('btn-export-wifiNet-modal');
+    
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div></td></tr>';
+    exportBtn.style.display = 'none';
+    
+    let modal = bootstrap.Modal.getInstance(document.getElementById('wifiNetModal'));
+    if (!modal) modal = new bootstrap.Modal(document.getElementById('wifiNetModal'));
+    modal.show();
 
-        fetch('/api/wifi_networks_history/details', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ssid: ssid})
-        })
-        .then(r => r.json())
-        .then(data => {
-            if(data.error) throw new Error(data.error);
-            currentModalWifiNetData = data;
-            exportBtn.style.display = 'block';
-            exportBtn.onclick = () => exportSingleWifiNetworkHistory(ssid);
+    fetch('/api/wifi_networks_history/details', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ssid: ssid})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if(data.error) throw new Error(data.error);
+        currentModalWifiNetData = data;
+        exportBtn.style.display = 'block';
+        exportBtn.onclick = () => exportSingleWifiNetworkHistory(ssid);
 
-            tbody.innerHTML = data.length ? data.map(x => {
-                let sig = "";
-                if (x.dbm && x.percent) sig = `${x.dbm} dBm (${x.percent}%)`;
-                else if (x.dbm) sig = `${x.dbm} dBm`;
-                else if (x.percent) sig = `${x.percent}%`;
-                else sig = "-";
-                
-                return `
-                <tr>
-                    <td><small class="text-muted">${x.timestamp}</small></td>
-                    <td>${escapeHTML(x.scan_name)}</td>
-                    <td class="font-monospace">${x.mac}</td>
-                    <td>${x.band} (Ch ${x.channel})</td>
-                    <td>${sig}</td>
-                    <td>${x.auth}</td>
-                </tr>`;
-            }).join('') : '<tr><td colspan="6" class="text-center p-3">No data available.</td></tr>';
-        })
-        .catch(err => {
-            tbody.innerHTML = `<tr><td colspan="6" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
-        });
-    }
+        performSort('wifiNetModalTable');
+        renderWifiNetModalTable();
+    })
+    .catch(err => {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center p-3 text-danger">Failed to load details.</td></tr>`;
+    });
+}
+
+function renderWifiNetModalTable() {
+    const tbody = document.getElementById('wifiNetModalBody');
+    if (!currentModalWifiNetData) return;
+    
+    tbody.innerHTML = currentModalWifiNetData.length ? currentModalWifiNetData.map(x => {
+        let sig = "";
+        if (x.dbm && x.percent) sig = `${x.dbm} dBm (${x.percent}%)`;
+        else if (x.dbm) sig = `${x.dbm} dBm`;
+        else if (x.percent) sig = `${x.percent}%`;
+        else sig = "-";
+        
+        return `
+        <tr>
+            <td><small class="text-muted">${x.timestamp}</small></td>
+            <td>${escapeHTML(x.scan_name)}</td>
+            <td class="font-monospace">${x.mac}</td>
+            <td>${x.band} (Ch ${x.channel})</td>
+            <td>${sig}</td>
+            <td>${x.auth}</td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="6" class="text-center p-3">No data available.</td></tr>';
+}
 
     function exportSingleWifiNetworkHistory(ssid) {
         if (!currentModalWifiNetData.length) return;
@@ -2841,37 +3190,37 @@ function renderWifiNetworksHistory() {
         });
     }
 
-    function exportWifiNetHistCSV() {
-        let dataToExport = [];
-        if (tableState.wifiNetHist.selected.size > 0) {
-            const selected = Array.from(tableState.wifiNetHist.selected);
-            dataToExport = tableState.wifiNetHist.data.filter(d => selected.includes(d.ssid));
-        } else {
-            dataToExport = tableState.wifiNetHist.filtered;
-            if(!dataToExport.length) return alert("No networks to export.");
-            if(!confirm(`No specific items selected. Export all ${dataToExport.length} visible record(s)?`)) return;
-        }
-
-        const rows = dataToExport.map(d => ({
-            "SSID": d.ssid,
-            "Authentication": d.auth,
-            "Unique MACs": d.mac_count,
-            "Times Scanned": d.scan_count,
-            "First Seen": d.first_seen,
-            "Last Seen": d.last_seen
-        }));
-
-        fetch('/api/devices/export', {
-            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rows: rows})
-        }).then(r=>r.blob()).then(b=>{
-            const u = URL.createObjectURL(b);
-            const a = document.createElement('a');
-            a.href = u;
-            a.download = `global_wifi_networks_history_${new Date().getTime()}.csv`;
-            a.click();
-        });
+function exportWifiNetHistCSV() {
+    let dataToExport = [];
+    if (tableState.wifiNetHist.selected.size > 0) {
+        const selected = Array.from(tableState.wifiNetHist.selected);
+        dataToExport = tableState.wifiNetHist.data.filter(d => selected.includes(d.ssid));
+    } else {
+        dataToExport = tableState.wifiNetHist.filtered;
+        if(!dataToExport.length) return alert("No networks to export.");
+        if(!confirm(`No specific items selected. Export all ${dataToExport.length} visible record(s)?`)) return;
     }
 
+    const rows = dataToExport.map(d => ({
+        "SSID": d.ssid,
+        "Authentication": d.auth,
+        "Unique MACs": d.mac_count,
+        "Times Scanned": d.scan_count,
+        "First Seen": d.first_seen,
+        "Last Seen": d.last_seen,
+        "Comments": d.comments || ""
+    }));
+
+    fetch('/api/devices/export', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rows: rows})
+    }).then(r=>r.blob()).then(b=>{
+        const u = URL.createObjectURL(b);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = `global_wifi_networks_history_${new Date().getTime()}.csv`;
+        a.click();
+    });
+}
 
 function loadUpdateChannels() {
     fetch('/api/settings/channels')
@@ -3638,5 +3987,143 @@ function osAction(action) {
         } else {
             alert("Error: " + d.error);
         }
+    });
+}
+
+function openWifiMergeModal() {
+    const selectedIds = Array.from(tableState.wifi.selected);
+    if (selectedIds.length < 2) return alert("Please select at least TWO Wi-Fi scans to merge.");
+
+    const selectedScans = tableState.wifi.data.filter(s => selectedIds.includes(String(s.id)));
+    
+    const select = document.getElementById('merge-wifi-target-select');
+    select.innerHTML = selectedScans.map(s => 
+        `<option value="${s.id}">${escapeHTML(s.name)} (${s.timestamp})</option>`
+    ).join('');
+
+    mergeWifiModal.show();
+}
+
+function executeWifiMerge() {
+    const targetId = document.getElementById('merge-wifi-target-select').value;
+    const sourceIds = Array.from(tableState.wifi.selected).filter(id => id !== targetId);
+
+    if (!targetId || sourceIds.length === 0) return;
+
+    if(!confirm("Are you certain you want to merge these Wi-Fi scans? This action cannot be undone.")) return;
+
+    const btn = document.getElementById('btn-execute-wifi-merge');
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Merging...';
+    btn.disabled = true;
+
+    fetch('/api/wifi/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_id: targetId, source_ids: sourceIds })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'success') {
+            mergeWifiModal.hide();
+            tableState.wifi.selected.clear();
+            loadWifiHistory(); // Refresh the historical list
+        } else {
+            alert("Merge failed: " + d.error);
+        }
+    })
+    .catch(err => alert("Communication error: " + err.message))
+    .finally(() => {
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+    });
+}
+
+function openDeviceConfig(mac, name, vendor, comment) {
+    document.getElementById('modal-dev-mac').value = mac;
+    document.getElementById('modal-dev-name').value = name || "";
+    document.getElementById('modal-dev-vendor').value = vendor || "";
+    document.getElementById('modal-dev-comment').value = comment || "";
+    deviceConfigModal.show();
+}
+
+function saveDeviceConfig() {
+    const mac = document.getElementById('modal-dev-mac').value;
+    const name = document.getElementById('modal-dev-name').value.trim();
+    const vendor = document.getElementById('modal-dev-vendor').value.trim();
+    const comment = document.getElementById('modal-dev-comment').value.trim();
+
+    if (!mac) return;
+    const btn = event.currentTarget || document.querySelector('#deviceConfigModal .btn-primary');
+    const origText = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+    btn.disabled = true;
+
+    fetch('/api/devices/update_metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mac: mac, name: name, vendor: vendor, comment: comment, network_id: currentNetworkId || null })
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.status === 'success') {
+            deviceConfigModal.hide();
+            // Refresh whichever page is currently visible
+            if (!document.getElementById('devices').classList.contains('hidden') && currentNetworkId) {
+                loadNetworkDevices(currentNetworkId, ""); 
+            }
+            if (!document.getElementById('device-history-page').classList.contains('hidden')) {
+                loadDeviceHistory();
+            }
+        } else alert("Error: " + res.error);
+    }).finally(() => { btn.innerHTML = origText; btn.disabled = false; });
+}
+
+function openWifiSSIDConfig(ssid, comment) {
+    document.getElementById('modal-ssid-id').value = ssid;
+    document.getElementById('modal-ssid-display').value = ssid;
+    document.getElementById('modal-ssid-comment').value = comment || "";
+    wifiSSIDModal.show();
+}
+
+function saveWifiSSIDConfig() {
+    const ssid = document.getElementById('modal-ssid-id').value;
+    const comment = document.getElementById('modal-ssid-comment').value.trim();
+
+    const btn = event.currentTarget || document.querySelector('#wifiSSIDModal .btn-primary');
+    const origText = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+    btn.disabled = true;
+
+    fetch('/api/wifi/update_ssid_comment', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ssid: ssid, comment: comment })
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.status === 'success') {
+            wifiSSIDModal.hide();
+            
+            // --- FIX: Instantly update the local memory array with the new comment ---
+            if (currentScanResults && currentScanResults.length > 0) {
+                const targetNet = currentScanResults.find(n => n.ssid === ssid);
+                if (targetNet) {
+                    targetNet.global_comment = comment;
+                }
+            }
+            
+            // Refresh whichever page is visible
+            if (!document.getElementById('wifi-networks-history').classList.contains('hidden')) {
+                loadWifiNetworksHistory();
+            }
+            if (!document.getElementById('wifi').classList.contains('hidden') && currentScanResults.length) {
+                renderWifiResults(currentScanResults, false);
+            }
+        } else {
+            alert("Error: " + res.error);
+        }
+    }).finally(() => { 
+        btn.innerHTML = origText; 
+        btn.disabled = false; 
     });
 }

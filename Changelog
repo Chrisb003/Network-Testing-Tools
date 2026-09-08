@@ -1,3 +1,5 @@
+0.14.0 - Fixed various server restart mechanism. Unified the UI experience by making all popups etc look and work the same. Fixed comments not being availible with certain bits. Fixed csv export and comments are now exported. Tables can now be sorted via any of the columns
+
 0.13.0 - Added help section, tool tips on each function, add isolated network scan function (This allow you to do a new network scan that isnt merged with previous data). Merge network scan results, choose whether to use the previous scan as data for new scan and various other fixes and enhancements to network scanning. Added option to restart and shutdown dashboard from settings, as well as option to restart and shutdown os if being used as standalone test device.
 File permission fixes, changed logic regading the setup script installing into current folder.
 Updated install scripts for linux, mac and windows.

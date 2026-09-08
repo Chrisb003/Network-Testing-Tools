@@ -150,7 +150,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.14.0"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -482,9 +482,9 @@ def init_db():
             except sqlite3.OperationalError: pass
 
         for table in ['dns_logs', 'ping_logs']:
-            for col in ['router_ip TEXT', 'network_name TEXT', 'lan_ip TEXT']:
+            for col in ['router_ip TEXT', 'network_name TEXT', 'lan_ip TEXT', 'comments TEXT']:
                 try: c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
-                except sqlite3.OperationalError: pass 
+                except sqlite3.OperationalError: pass
 
         for table in ['history', 'wifi_history', 'dns_logs', 'ping_logs', 'devices', 'networks']:
             try: c.execute(f"ALTER TABLE {table} ADD COLUMN is_protected INTEGER DEFAULT 0")
@@ -512,12 +512,20 @@ def init_db():
             try: c.execute(f"ALTER TABLE wifi_history ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
 
-        # --- NEW: Support for Auto-Matching Toggle ---
-        for col in ["allow_matching INTEGER DEFAULT 1"]:
+       # --- NEW: Support for Auto-Matching Toggle & Comments ---
+        for col in ["allow_matching INTEGER DEFAULT 1", "comments TEXT"]:
             try: c.execute(f"ALTER TABLE networks ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
 
-        conn.commit()
+        # --- NEW: Support for Auto-Matching Toggle & Global Comments ---
+        for col in ["allow_matching INTEGER DEFAULT 1", "comments TEXT"]:
+            try: c.execute(f"ALTER TABLE networks ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
+            
+        c.execute('''CREATE TABLE IF NOT EXISTS global_wifi_comments (ssid TEXT PRIMARY KEY, comments TEXT)''')
+        for col in ["comments TEXT"]:
+            try: c.execute(f"ALTER TABLE global_device_names ADD COLUMN {col}")
+            except sqlite3.OperationalError: pass
 
         conn.commit()
 
@@ -730,13 +738,20 @@ def get_linux_dns(interface_name):
         return "Unknown"
 
 def restart_server():
-    """Signals the supervisor to restart the application."""
+    """Signals the supervisor to restart the application, or restarts in-place on Unix."""
     print("[*] Triggering application restart in 2 seconds...")
     time.sleep(2)  # Allow the HTTP response to finish sending
     
-    # Simply exit the process. The setup_env.py supervisor will catch this
-    # and automatically spin up a fresh instance after clearing the port.
-    os._exit(0)
+    if platform.system() == "Windows":
+        # On Windows, setup_env is fully elevated globally, so dropping to the supervisor loop works without UAC prompts
+        os._exit(0)
+    else:
+        # On Linux/macOS, replacing the process image natively preserves the active sudo token and PID forever!
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            print(f"[!] In-place restart failed: {e}. Falling back to supervisor loop.")
+            os._exit(0)
 
 def get_extended_iface_info():
     """
@@ -1891,7 +1906,6 @@ def audit_logger(response):
     return response
 
 # --- Network & Device Management Routes ---
-
 @app.route('/api/networks')
 def list_networks():
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
@@ -1905,7 +1919,8 @@ def list_networks():
                 "id": net_dict['id'], "name": net_dict['name'], "gateway_mac": net_dict['gateway_mac'],
                 "gateway_ip": net_dict['gateway_ip'], "last_scan": net_dict['last_scan'], "device_count": count,
                 "is_protected": net_dict.get('is_protected', 0),
-                "allow_matching": net_dict.get('allow_matching', 1) # Support UI toggle
+                "allow_matching": net_dict.get('allow_matching', 1),
+                "comments": net_dict.get('comments', '') # NEW
             })
         return jsonify(result)
 
@@ -2013,6 +2028,28 @@ def merge_networks():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/networks/update', methods=['POST'])
+def update_network():
+    d = request.json
+    name = str(d.get('name', '')).strip()[:50] 
+    comment = str(d.get('comment', '')).strip()[:200] 
+    net_id = d.get('id')
+    
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+        conn.execute("UPDATE networks SET name=?, comments=? WHERE id=?", (name, comment, net_id))
+        
+        # Propagate the custom name to the history tables
+        try: 
+            conn.execute("UPDATE devices SET last_network_name=? WHERE network_id=?", (name, net_id))
+        except sqlite3.OperationalError: pass
+        
+        try: 
+            conn.execute("UPDATE device_scans SET network_name=? WHERE network_id=?", (name, net_id))
+        except sqlite3.OperationalError: pass
+        
+        conn.commit()
+    return jsonify({"status": "success"})
+
 @app.route('/api/networks/rename', methods=['POST'])
 def rename_network():
     d = request.json
@@ -2034,39 +2071,27 @@ def rename_network():
         conn.commit()
     return jsonify({"status": "success"})
 
-@app.route('/api/devices/update_name', methods=['POST'])
-def update_device_name():
-    d = request.json
-    name = str(d.get('name', '')).strip()[:50] # Safely sliced
-    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        conn.execute("UPDATE devices SET custom_name=? WHERE mac_address=? AND network_id=?", 
-                     (name, d.get('mac'), d.get('network_id'))) # Use the variable!
-        conn.execute("INSERT OR REPLACE INTO global_device_names (mac_address, custom_name) VALUES (?, ?)", 
-                     (d.get('mac'), name)) # Use the variable!
-        conn.commit()
-    return jsonify({"status": "success"})
 
 @app.route('/api/networks/<int:net_id>/devices')
 def get_network_devices(net_id):
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
-        # ADDED is_protected to the SELECT query here:
         query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, custom_vendor, is_protected FROM devices WHERE network_id=?"
         devices = conn.execute(query, (net_id,)).fetchall()
         
         dev_list = [dict(d) for d in devices]
-        
         for dev in dev_list:
-            # Sync Global Names
-            g_name = conn.execute("SELECT custom_name FROM global_device_names WHERE mac_address=?", (dev['mac_address'],)).fetchone()
-            if g_name and g_name[0]: dev['custom_name'] = g_name[0]
-            
-            # Sync Global Vendors
+            g_data = conn.execute("SELECT custom_name, comments FROM global_device_names WHERE mac_address=?", (dev['mac_address'],)).fetchone()
+            if g_data:
+                if g_data[0]: dev['custom_name'] = g_data[0]
+                dev['comments'] = g_data[1] or ""
+            else:
+                dev['comments'] = ""
+                
             g_vendor = conn.execute("SELECT custom_vendor FROM global_device_vendors WHERE mac_address=?", (dev['mac_address'],)).fetchone()
             if g_vendor and g_vendor[0]: dev['custom_vendor'] = g_vendor[0]
 
-        try:
-            dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
+        try: dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
         except: pass
         return jsonify(dev_list)
 
@@ -2411,44 +2436,46 @@ def scan_network_stream():
             is_split = request.args.get('mode') == 'split'
             
             existing_states = {}
+            final_network_comment = ""
+            
             with sqlite3.connect(DB_NAME, timeout=10) as conn:
                 c = conn.cursor()
                 
                 # 1. SPLIT or ISOLATION (Forced New Network)
                 if is_isolation or is_split:
                     final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip}) - {'Isolated' if is_isolation else 'Split'}"
-                    c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching) VALUES (?, ?, ?, ?, 0)", 
+                    c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, 0, '')", 
                               (gateway_mac, final_network_name, current_time, gateway_ip))
                     network_id = c.lastrowid
                 else:
                     # 2. CONTINUE SCAN (Expected to map to a loaded UI network)
                     if is_continue and expected_net_id:
                         if force_merge:
-                            c.execute("SELECT id, name FROM networks WHERE id=?", (expected_net_id,))
+                            c.execute("SELECT id, name, comments FROM networks WHERE id=?", (expected_net_id,))
                             row = c.fetchone()
                             if row:
-                                network_id, final_network_name = row[0], row[1]
+                                network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
                                 c.execute("UPDATE networks SET last_scan=?, gateway_mac=?, gateway_ip=? WHERE id=?", (current_time, gateway_mac, gateway_ip, network_id))
                             else:
                                 network_id = expected_net_id
                                 final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
                         else:
-                            c.execute("SELECT id, name FROM networks WHERE id=?", (expected_net_id,))
+                            c.execute("SELECT id, name, comments FROM networks WHERE id=?", (expected_net_id,))
                             row = c.fetchone()
                             if row:
-                                network_id, final_network_name = row[0], row[1]
+                                network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
                                 c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
                             else:
                                 final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-                                c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching) VALUES (?, ?, ?, ?, 1)", 
+                                c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, 1, '')", 
                                           (gateway_mac, final_network_name, current_time, gateway_ip))
                                 network_id = c.lastrowid
                     else:
                         # 3. STANDARD SCAN (Search for allow_matching = 1)
-                        c.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC", (gateway_mac, gateway_ip))
+                        c.execute("SELECT id, name, comments FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC", (gateway_mac, gateway_ip))
                         row = c.fetchone()
                         if row:
-                            network_id, final_network_name = row[0], row[1]
+                            network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
                             c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
                         else:
                             # 4. DEFAULT FALLBACK: Create new. Ensure it doesn't pollute if it hits a known blocked MAC/IP.
@@ -2457,7 +2484,7 @@ def scan_network_stream():
                             allow_match_val = 0 if existing else 1
                             
                             final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-                            c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching) VALUES (?, ?, ?, ?, ?)", 
+                            c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, ?, '')", 
                                       (gateway_mac, final_network_name, current_time, gateway_ip, allow_match_val))
                             network_id = c.lastrowid
                 
@@ -2469,7 +2496,7 @@ def scan_network_stream():
                 conn.commit()
 
             # --- 5. YIELD INIT TO FRONTEND ---
-            yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name})}\n\n"
+            yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment})}\n\n"
 
             # --- 6. PROCESS DEVICES STREAM ---
             tasks = []
@@ -2579,7 +2606,7 @@ def scan_network_stream():
                         if g_vend: dev['custom_vendor'] = g_vend[0]
                     offline_devices.append(dev)
 
-            yield f"data: {json.dumps({'type': 'complete', 'network_id': network_id, 'network_name': final_network_name, 'offline_devices': offline_devices})}\n\n"     
+            yield f"data: {json.dumps({'type': 'complete', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment, 'offline_devices': offline_devices})}\n\n"     
 
         except Exception as critical_err:
             print(f"[!!!] CRITICAL SCAN ERROR: {critical_err}")
@@ -2636,11 +2663,12 @@ def clear_dns_logs():
 
 @app.route('/api/tool_logs/update', methods=['POST'])
 def update_tool_log():
-    """Updates the network name of a DNS or Ping log entry."""
+    """Updates the network name and comments of a DNS or Ping log entry."""
     d = request.json or {}
     log_type = d.get('type')
     item_id = d.get('id')
-    new_name = str(d.get('name', '')).strip()[:50] # Safely limit to 50 characters
+    new_name = str(d.get('name', '')).strip()[:50] 
+    new_comment = str(d.get('comment', '')).strip()[:200] 
     
     if log_type not in ['dns', 'ping']:
         return jsonify({"error": "Invalid log type"}), 400
@@ -2649,7 +2677,7 @@ def update_tool_log():
     
     try:
         with sqlite3.connect(DB_NAME, timeout=5.0) as conn:
-            conn.execute(f"UPDATE {table} SET network_name = ? WHERE id = ?", (new_name, item_id))
+            conn.execute(f"UPDATE {table} SET network_name = ?, comments = ? WHERE id = ?", (new_name, new_comment, item_id))
             conn.commit()
         return jsonify({"status": "success"})
     except Exception as e:
@@ -2760,7 +2788,7 @@ def clear_ping_logs():
 
 @app.route('/api/export/tool_logs', methods=['POST'])
 def export_tool_logs():
-    """Exports DNS or Ping logs to CSV including new columns."""
+    """Exports DNS or Ping logs to CSV including new columns and comments."""
     log_type = request.json.get('type')
     out = io.StringIO()
     writer = csv.writer(out)
@@ -2769,14 +2797,14 @@ def export_tool_logs():
         conn.row_factory = sqlite3.Row
         if log_type == 'dns':
             rows = conn.execute("SELECT * FROM dns_logs ORDER BY id DESC").fetchall()
-            writer.writerow(['Timestamp', 'Domain', 'Result IP', 'Status', 'Router IP', 'Network', 'LAN IP'])
+            writer.writerow(['Timestamp', 'Domain', 'Result IP', 'Status', 'Router IP', 'Network', 'LAN IP', 'Comments'])
             for r in rows: 
-                writer.writerow([r['timestamp'], r['domain'], r['result_ip'], r['status'], r['router_ip'], r['network_name'], r['lan_ip']])
+                writer.writerow([r['timestamp'], r['domain'], r['result_ip'], r['status'], r['router_ip'], r['network_name'], r['lan_ip'], r['comments']])
         else:
             rows = conn.execute("SELECT * FROM ping_logs ORDER BY id DESC").fetchall()
-            writer.writerow(['Timestamp', 'Target', 'Status', 'Latency', 'Loss', 'Router IP', 'Network', 'LAN IP'])
+            writer.writerow(['Timestamp', 'Target', 'Status', 'Latency', 'Loss', 'Router IP', 'Network', 'LAN IP', 'Comments'])
             for r in rows: 
-                writer.writerow([r['timestamp'], r['target'], r['status'], r['latency'], r['packet_loss'], r['router_ip'], r['network_name'], r['lan_ip']])
+                writer.writerow([r['timestamp'], r['target'], r['status'], r['latency'], r['packet_loss'], r['router_ip'], r['network_name'], r['lan_ip'], r['comments']])
             
     return Response(out.getvalue(), mimetype="text/csv", headers={"Content-disposition": f"attachment; filename={log_type}_logs.csv"})
 
@@ -2880,22 +2908,72 @@ def api_wifi_interfaces():
     """Returns the visible interfaces to the dashboard dropdown."""
     return jsonify(get_visible_wifi_interfaces())
 
+def merge_wifi_results(existing_list, new_list):
+    """Deep merges two Wi-Fi scan results, prioritizing stronger signal strengths."""
+    merged = {}
+    for net in existing_list + new_list:
+        ssid = net.get('ssid', 'Unknown')
+        if ssid not in merged:
+            merged[ssid] = {"ssid": ssid, "auth": net.get('auth', 'Unknown'), "bssids": {}}
+        
+        # Update auth if new one is better/known
+        if net.get('auth') and net.get('auth') != 'Unknown':
+            merged[ssid]['auth'] = net.get('auth')
+            
+        for b in net.get('raw_bssids', []):
+            mac = b.get('mac')
+            if mac not in merged[ssid]['bssids']:
+                merged[ssid]['bssids'][mac] = b
+            else:
+                existing_b = merged[ssid]['bssids'][mac]
+                # Compare and merge DBms (Keep the strongest signal)
+                new_dbm = b.get('dbm')
+                old_dbm = existing_b.get('dbm')
+                if new_dbm is not None:
+                    if old_dbm is None or new_dbm > old_dbm:
+                        existing_b['dbm'] = new_dbm
+                        existing_b['percent'] = b.get('percent')
+                        
+                # Update channel and band if the new data is more valid
+                if b.get('channel') and str(b['channel']) not in ['0', '', '-']:
+                    existing_b['channel'] = b['channel']
+                if b.get('band') and b.get('band') not in ['Unknown', '', '-']:
+                    existing_b['band'] = b['band']
+                    
+    # Rebuild the final list formatted for the UI
+    result = []
+    for ssid, data in merged.items():
+        raw_b = list(data['bssids'].values())
+        best_ch = "0"
+        for b in raw_b:
+            if b.get('channel') and str(b['channel']) not in ['0', '', '-']:
+                best_ch = b['channel']
+                break # Just grab the first valid channel for the summary tag
+        result.append({
+            "ssid": ssid,
+            "auth": data['auth'],
+            "channel": best_ch,
+            "raw_bssids": raw_b
+        })
+    return result
+
 @app.route('/api/wifi')
 def get_wifi_networks():
     """
     Returns detailed Wi-Fi data grouped by SSID.
     Allows targeting a specific Wi-Fi adapter or intelligently scanning ALL visible adapters.
+    Supports 'continue' mode to merge new results into an existing scan.
     """
     networks_dict = {}
     sys_plat = platform.system()
-    req_iface = request.args.get('iface') 
+    req_iface = request.args.get('iface')
+    mode = request.args.get('mode', 'new')
+    scan_id = request.args.get('scan_id')
     
-    # --- NEW: Build a list of targeted adapters ---
     target_ifaces = []
     if req_iface:
         target_ifaces = [req_iface]
     else:
-        # If "Auto", grab every Wi-Fi adapter that isn't hidden in the database
         visible_ifaces = get_visible_wifi_interfaces()
         if not visible_ifaces:
             return jsonify({"error": "No Wi-Fi Adapters", "message": "Could not find any visible Wi-Fi adapters to scan with."})
@@ -2975,7 +3053,6 @@ def get_wifi_networks():
         # 2. Windows Implementation (netsh)
         # ==========================================
         elif sys_plat == "Windows":
-            # Restart all targeted adapters simultaneously using a comma-separated PowerShell array
             iface_list_str = ",".join([f"'{i}'" for i in target_ifaces])
             subprocess.run(["powershell", "-Command", f"Get-NetAdapter -Name {iface_list_str} | Restart-NetAdapter"], capture_output=True)
             time.sleep(4) 
@@ -3068,10 +3145,8 @@ def get_wifi_networks():
                         for net in networks_dict.values() 
                         for b_data in net["bssids"].values()
                     )
-                    
                     if not missing_signals or attempt == 1:
                         break
-                        
                     time.sleep(2)
 
         # ==========================================
@@ -3080,7 +3155,7 @@ def get_wifi_networks():
         elif sys_plat == "Linux":
             for target_iface in target_ifaces:
                 subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", target_iface], capture_output=True)
-            time.sleep(2) # Give it time to populate
+            time.sleep(2) 
             
             for target_iface in target_ifaces:
                 cmd = ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi", "list", "ifname", target_iface]
@@ -3121,8 +3196,140 @@ def get_wifi_networks():
                             networks_dict[ssid]["bssids"][mac] = {"dbm": dbm_val, "percent": pct_val, "channel": ch, "band": b}
                 except: pass
 
+        # ==========================================
+        # 4. Final Formatting & Merge Logic
+        # ==========================================
+        final_networks = []
+        for ssid, net_data in networks_dict.items():
+            raw_b = []
+            best_ch = "0"
+            best_dbm = -1000
+            for mac, b_data in net_data["bssids"].items():
+                raw_b.append({
+                    "mac": mac, "dbm": b_data["dbm"], "percent": b_data["percent"],
+                    "channel": b_data["channel"], "band": b_data["band"]
+                })
+                curr_dbm = b_data["dbm"] if b_data["dbm"] is not None else -1000
+                if curr_dbm > best_dbm:
+                    best_dbm = curr_dbm
+                    best_ch = b_data["channel"]
+            
+            final_networks.append({
+                "ssid": ssid, "auth": net_data["auth"], "channel": best_ch, "raw_bssids": raw_b
+            })
+
+        # Save to Database with Continue Support
+        try:
+            with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                c = conn.cursor()
+                
+                # If continuing an existing scan, merge the data first
+                if mode == 'continue' and scan_id:
+                    c.execute("SELECT results_json, scan_name, comments FROM wifi_history WHERE id=?", (scan_id,))
+                    row = c.fetchone()
+                    if row:
+                        existing_nets = json.loads(row[0])
+                        final_networks = merge_wifi_results(existing_nets, final_networks)
+                        
+                        c.execute("UPDATE wifi_history SET results_json=? WHERE id=?", (json.dumps(final_networks), scan_id))
+                        conn.commit()
+                        
+                        # Attach Global Comments to the UI Data
+                        for net in final_networks:
+                            try:
+                                g_com = c.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net['ssid'],)).fetchone()
+                                net['global_comment'] = g_com[0] if g_com else ""
+                            except sqlite3.OperationalError:
+                                net['global_comment'] = ""
+                            
+                        return jsonify({"scan_id": scan_id, "scan_name": row[1], "scan_comment": row[2] or "", "networks": final_networks})
+                        
+                # Fallback or New Scan: Create a fresh entry
+                scan_name = f"Scan {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                scan_comment = ""
+                c.execute("INSERT INTO wifi_history (scan_name, comments, results_json) VALUES (?, ?, ?)", 
+                          (scan_name, scan_comment, json.dumps(final_networks)))
+                conn.commit()
+                scan_id_new = c.lastrowid
+                
+                # Attach Global Comments to the UI Data
+                for net in final_networks:
+                    try:
+                        g_com = c.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net['ssid'],)).fetchone()
+                        net['global_comment'] = g_com[0] if g_com else ""
+                    except sqlite3.OperationalError:
+                        net['global_comment'] = ""
+                    
+                return jsonify({"scan_id": scan_id_new, "scan_name": scan_name, "scan_comment": scan_comment, "networks": final_networks})
+                
+        except Exception as e:
+            return jsonify({"error": "Database Save Error", "message": str(e)})
+
     except Exception as e: 
         return jsonify({"error": "Critical Error", "message": str(e)})
+
+@app.route('/api/wifi/merge', methods=['POST'])
+def merge_wifi_scans():
+    """Merges multiple Wi-Fi scans into a single target scan, deleting the old ones."""
+    d = request.json
+    target_id = d.get('target_id')
+    source_ids = d.get('source_ids', [])
+    
+    if not target_id or not source_ids:
+        return jsonify({"error": "Invalid parameters"}), 400
+        
+    try:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            
+            target_row = c.execute("SELECT results_json FROM wifi_history WHERE id=?", (target_id,)).fetchone()
+            if not target_row: return jsonify({"error": "Target scan not found."}), 404
+            
+            target_nets = json.loads(target_row['results_json'])
+            
+            for src_id in source_ids:
+                if str(src_id) == str(target_id): continue
+                src_row = c.execute("SELECT results_json FROM wifi_history WHERE id=?", (src_id,)).fetchone()
+                if src_row:
+                    src_nets = json.loads(src_row['results_json'])
+                    target_nets = merge_wifi_results(target_nets, src_nets) # Re-use the smart helper
+                
+                # Soft delete the old source scan
+                c.execute("UPDATE wifi_history SET is_deleted=1 WHERE id=?", (src_id,))
+                
+            c.execute("UPDATE wifi_history SET results_json=? WHERE id=?", (json.dumps(target_nets), target_id))
+            conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/wifi/history/<int:scan_id>', methods=['GET'])
+def load_wifi_scan(scan_id):
+    try:
+        conn = sqlite3.connect(DB_NAME, timeout=10.0)
+        c = conn.cursor()
+        c.execute("SELECT results_json, scan_name, comments FROM wifi_history WHERE id = ?", (scan_id,))
+        row = c.fetchone()
+        
+        if row:
+            results = json.loads(row[0])
+            
+            # Attach Global Comments to the UI Data
+            for net in results:
+                try:
+                    g_com = c.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net['ssid'],)).fetchone()
+                    net['global_comment'] = g_com[0] if g_com else ""
+                except sqlite3.OperationalError:
+                    net['global_comment'] = ""
+                
+            conn.close()
+            return jsonify({"results": results, "name": row[1], "comments": row[2] or ""})
+            
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
@@ -3343,7 +3550,6 @@ def bulk_export_networks():
     ids = request.json.get('ids', [])
     if not ids: return jsonify({"error": "No IDs provided"}), 400
     
-    # Reverse map to convert service names back to port numbers
     PORT_MAP = {"SSH": "22", "HTTP": "80", "HTTPS": "443", "HTTP (8080)": "8080", "HTTPS (8443)": "8443", "Flask/UPnP": "5000", "Portainer/Admin": "9000"}
     
     memory_file = io.BytesIO()
@@ -3355,61 +3561,33 @@ def bulk_export_networks():
                 if not net: continue
                 
                 net_name = get_safe_filename(net['name'])
-                devices = conn.execute("SELECT hostname, custom_name, ip_address, previous_ip, discovery_status, mac_address, is_online, services FROM devices WHERE network_id=?", (net_id,)).fetchall()
+                
+                # Fetch devices with the global comments joined dynamically
+                devices = conn.execute("""
+                    SELECT d.hostname, d.custom_name, d.ip_address, d.previous_ip, d.discovery_status, 
+                           d.mac_address, d.is_online, d.services, g.comments
+                    FROM devices d
+                    LEFT JOIN global_device_names g ON d.mac_address = g.mac_address
+                    WHERE d.network_id=?
+                """, (net_id,)).fetchall()
                 
                 csv_out = io.StringIO()
                 writer = csv.writer(csv_out)
-                writer.writerow(['Hostname', 'Custom Name', 'IP Address', 'MAC Address', 'Status', 'Services (Ports)', 'History'])
+                writer.writerow(['Hostname', 'Custom Name', 'IP Address', 'MAC Address', 'Status', 'Services (Ports)', 'History', 'Comments'])
+                
                 for d in devices:
                     history_text = d['discovery_status']
                     if d['previous_ip']: history_text = f"IP Changed ({d['previous_ip']})"
                     
-                    # Convert services string to ports
                     raw_services = d['services'] or "None"
                     port_str = "None" if raw_services == "None" else ", ".join([PORT_MAP.get(s.strip(), s.strip()) for s in raw_services.split(",")])
                     
-                    writer.writerow([d['hostname'], d['custom_name'], d['ip_address'], d['mac_address'], 'Online' if d['is_online'] else 'Offline', port_str, history_text])
+                    writer.writerow([d['hostname'], d['custom_name'], d['ip_address'], d['mac_address'], 'Online' if d['is_online'] else 'Offline', port_str, history_text, d['comments'] or ""])
 
                 zf.writestr(f"network_{net_id}_{net_name}.csv", csv_out.getvalue())
     
     memory_file.seek(0)
     return send_file(memory_file, download_name="networks_bulk_export.zip", as_attachment=True)
-
-@app.route('/api/wifi/bulk_export', methods=['POST'])
-def bulk_export_wifi():
-    """Generates a ZIP file containing multiple CSVs for selected Wi-Fi scans."""
-    ids = request.json.get('ids', [])
-    if not ids: return jsonify({"error": "No IDs provided"}), 400
-    
-    memory_file = io.BytesIO()
-    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-            conn.row_factory = sqlite3.Row
-            for scan_id in ids:
-                scan = conn.execute("SELECT scan_name, results_json FROM wifi_history WHERE id=?", (scan_id,)).fetchone()
-                if not scan: continue
-                
-                scan_name = get_safe_filename(scan['scan_name'])
-                results = json.loads(scan['results_json'])
-                
-                csv_out = io.StringIO()
-                writer = csv.writer(csv_out)
-                
-                writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication"])
-                for net in results:
-                    if "raw_bssids" in net and net["raw_bssids"]:
-                        for b in net["raw_bssids"]:
-                            if "dbm" in b or "percent" in b:
-                                writer.writerow([net.get('ssid',''), b.get('mac', ''), b.get('dbm',''), b.get('percent',''), b.get('channel',''), b.get('band',''), net.get('auth','')])
-                            else:
-                                writer.writerow([net.get('ssid',''), b.get('mac', ''), b.get('signal',''), "-", b.get('channel',''), b.get('band',''), net.get('auth','')])
-                    else:
-                        writer.writerow([net.get('ssid',''), net.get('mac', ''), net.get('signal','').replace('<br>', ' | '), "-", net.get('channel',''), net.get('band','').replace('<br>', ' | '), net.get('auth','')])
-
-                zf.writestr(f"wifi_scan_{scan_id}_{scan_name}.csv", csv_out.getvalue())
-    
-    memory_file.seek(0)
-    return send_file(memory_file, download_name="wifi_scans_bulk_export.zip", as_attachment=True)
 
 @app.route('/api/history/clear', methods=['POST'])
 def clear_history():
@@ -3921,17 +4099,6 @@ def toggle_protection():
         return jsonify({"status": "success"})
     return jsonify({"error": "Invalid request"}), 400
 
-@app.route('/api/wifi/history/<int:scan_id>', methods=['GET'])
-def load_wifi_scan(scan_id):
-    conn = sqlite3.connect(DB_NAME, timeout=10.0)
-    c = conn.cursor()
-    c.execute("SELECT results_json, scan_name FROM wifi_history WHERE id = ?", (scan_id,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return jsonify({"results": json.loads(row[0]), "name": row[1]})
-    return jsonify({"error": "Not found"}), 404
-
 @app.route('/api/wifi/delete', methods=['POST'])
 def delete_wifi_scan():
     scan_id = request.json.get('id')
@@ -3940,35 +4107,85 @@ def delete_wifi_scan():
         conn.commit()
     return jsonify({"status": "deleted"})
 
+@app.route('/api/wifi/bulk_export', methods=['POST'])
+def bulk_export_wifi():
+    """Generates a ZIP file containing multiple CSVs for selected Wi-Fi scans."""
+    ids = request.json.get('ids', [])
+    if not ids: return jsonify({"error": "No IDs provided"}), 400
+    
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            for scan_id in ids:
+                scan = conn.execute("SELECT scan_name, results_json FROM wifi_history WHERE id=?", (scan_id,)).fetchone()
+                if not scan: continue
+                
+                scan_name = get_safe_filename(scan['scan_name'])
+                results = json.loads(scan['results_json'])
+                
+                csv_out = io.StringIO()
+                writer = csv.writer(csv_out)
+                writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication", "Comments"])
+                
+                for net in results:
+                    try:
+                        g_com = conn.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net.get('ssid',''),)).fetchone()
+                        comment_str = g_com['comments'] if g_com else ""
+                    except sqlite3.OperationalError:
+                        comment_str = ""
+                        
+                    if "raw_bssids" in net and net["raw_bssids"]:
+                        for b in net["raw_bssids"]:
+                            if "dbm" in b or "percent" in b:
+                                writer.writerow([net.get('ssid',''), b.get('mac', '-'), b.get('dbm',''), b.get('percent',''), b.get('channel',''), b.get('band',''), net.get('auth',''), comment_str])
+                            else:
+                                writer.writerow([net.get('ssid',''), b.get('mac', '-'), b.get('signal',''), "-", b.get('channel',''), b.get('band',''), net.get('auth',''), comment_str])
+                    else:
+                        writer.writerow([net.get('ssid',''), net.get('mac', '-'), net.get('signal','').replace('<br>', ' | '), "-", net.get('channel',''), net.get('band','').replace('<br>', ' | '), net.get('auth',''), comment_str])
+
+                zf.writestr(f"wifi_scan_{scan_id}_{scan_name}.csv", csv_out.getvalue())
+    
+    memory_file.seek(0)
+    return send_file(memory_file, download_name="wifi_scans_bulk_export.zip", as_attachment=True)
+
 @app.route('/api/wifi/export/<int:scan_id>')
 def export_wifi_csv(scan_id):
     try:
         conn = sqlite3.connect(DB_NAME, timeout=10.0)
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT scan_name, results_json FROM wifi_history WHERE id = ?", (scan_id,))
         row = c.fetchone()
-        conn.close()
 
         if not row:
+            conn.close()
             return "Scan not found", 404
 
-        scan_name = get_safe_filename(row[0])
-        results = json.loads(row[1])
+        scan_name = get_safe_filename(row['scan_name'])
+        results = json.loads(row['results_json'])
 
         output = io.StringIO()
         writer = csv.writer(output)
         
-        writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication"])
+        writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication", "Comments"])
         for net in results:
+            try:
+                g_com = c.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net.get('ssid',''),)).fetchone()
+                comment_str = g_com['comments'] if g_com else ""
+            except sqlite3.OperationalError:
+                comment_str = ""
+                
             if "raw_bssids" in net and net["raw_bssids"]:
                 for b in net["raw_bssids"]:
                     if "dbm" in b or "percent" in b:
-                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('dbm', '-'), b.get('percent', '-'), b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-')])
+                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('dbm', '-'), b.get('percent', '-'), b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-'), comment_str])
                     else:
-                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('signal', '-'), "-", b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-')])
+                        writer.writerow([net.get('ssid', 'Unknown'), b.get('mac', '-'), b.get('signal', '-'), "-", b.get('channel', '-'), b.get('band', '-'), net.get('auth', '-'), comment_str])
             else:
-                writer.writerow([net.get('ssid', 'Unknown'), net.get('mac', '-'), net.get('signal', '-').replace('<br>', ' | '), "-", net.get('channel', '-'), net.get('band', '-').replace('<br>', ' | '), net.get('auth', '-')])
+                writer.writerow([net.get('ssid', 'Unknown'), net.get('mac', '-'), net.get('signal', '-').replace('<br>', ' | '), "-", net.get('channel', '-'), net.get('band', '-').replace('<br>', ' | '), net.get('auth', '-'), comment_str])
 
+        conn.close()
         output.seek(0)
         return Response(
             output.getvalue(),
@@ -3977,8 +4194,6 @@ def export_wifi_csv(scan_id):
         )
     except Exception as e:
         return str(e), 500
-
-
 
 @app.route('/api/wifi/history/clear_all', methods=['POST'])
 def clear_all_wifi_history():
@@ -4085,7 +4300,7 @@ def api_device_history():
             # This turns an O(N^2) query (which freezes the app) into a lightning-fast O(N) query.
             query = """
                 SELECT d.mac_address, d.hostname, COALESCE(g.custom_name, d.custom_name) as custom_name,
-                       d.ip_address, MAX(d.last_seen) as last_seen, COALESCE(n.name, d.last_network_name, 'Deleted Network') as network_name, d.vendor, d.is_protected
+                     g.comments, d.ip_address, MAX(d.last_seen) as last_seen, COALESCE(n.name, d.last_network_name, 'Deleted Network') as network_name, d.vendor, d.is_protected
                 FROM devices d
                 LEFT JOIN networks n ON d.network_id = n.id
                 LEFT JOIN global_device_names g ON d.mac_address = g.mac_address
@@ -4242,14 +4457,23 @@ def api_wifi_networks_history():
                 v["mac_count"] = len(v["macs"])
                 v.pop("macs") # Remove the set so it converts to JSON cleanly
                 v["is_protected"] = 1 if v["ssid"] in protected_ssids else 0 # Add protection status
+                
+                # Fetch the global comment for this specific SSID
+                try:
+                    g_com = conn.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (v["ssid"],)).fetchone()
+                    v["comments"] = g_com['comments'] if g_com else ""
+                except sqlite3.OperationalError:
+                    v["comments"] = ""
+                    
                 result.append(v)
                 
             # Sort by most recently seen
             result.sort(key=lambda x: x["last_seen"], reverse=True)
             return jsonify(result)
+            
     except Exception as e:
         return jsonify({"error": str(e)})
-
+    
 @app.route('/api/wifi_networks_history/details', methods=['POST'])
 def api_wifi_network_details():
     ssid = request.json.get('ssid')
@@ -4389,30 +4613,52 @@ def save_workers_endpoint():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/api/devices/update_vendor', methods=['POST'])
-def update_device_vendor():
-    d = request.json or {}
+from flask import stream_with_context
+from concurrent.futures import as_completed
+
+@app.route('/api/devices/update_metadata', methods=['POST'])
+def update_device_metadata():
+    """Unified endpoint to save a device's custom name, vendor, and global comments."""
+    d = request.json
     mac = d.get('mac')
+    name = str(d.get('name', '')).strip()[:50]
     vendor = str(d.get('vendor', '')).strip()[:50]
+    comment = str(d.get('comment', '')).strip()[:200]
     network_id = d.get('network_id')
 
-    if not mac:
-        return jsonify({"status": "error", "message": "MAC required"}), 400
+    if not mac: return jsonify({"status": "error", "message": "MAC required"}), 400
 
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         if network_id:
-            conn.execute("UPDATE devices SET custom_vendor=? WHERE mac_address=? AND network_id=?", (vendor, mac, network_id))
+            conn.execute("UPDATE devices SET custom_name=?, custom_vendor=? WHERE mac_address=? AND network_id=?", (name, vendor, mac, network_id))
         else:
-            conn.execute("UPDATE devices SET custom_vendor=? WHERE mac_address=?", (vendor, mac))
+            conn.execute("UPDATE devices SET custom_name=?, custom_vendor=? WHERE mac_address=?", (name, vendor, mac))
         
         # Save globally so it persists across different network scans
+        conn.execute("""
+            INSERT INTO global_device_names (mac_address, custom_name, comments) 
+            VALUES (?, ?, ?) 
+            ON CONFLICT(mac_address) DO UPDATE SET custom_name=excluded.custom_name, comments=excluded.comments
+        """, (mac, name, comment))
+        
         conn.execute("INSERT OR REPLACE INTO global_device_vendors (mac_address, custom_vendor) VALUES (?, ?)", (mac, vendor))
         conn.commit()
 
-    return jsonify({"status": "success", "vendor": vendor})
+    return jsonify({"status": "success"})
 
-from flask import stream_with_context
-from concurrent.futures import as_completed
+@app.route('/api/wifi/update_ssid_comment', methods=['POST'])
+def update_ssid_comment():
+    """Saves a global comment for a specific Wi-Fi SSID."""
+    d = request.json
+    ssid = d.get('ssid')
+    comment = str(d.get('comment', '')).strip()[:200]
+
+    if not ssid: return jsonify({"status": "error", "message": "SSID required"}), 400
+
+    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+        conn.execute("INSERT INTO global_wifi_comments (ssid, comments) VALUES (?, ?) ON CONFLICT(ssid) DO UPDATE SET comments=excluded.comments", (ssid, comment))
+        conn.commit()
+    return jsonify({"status": "success"})
 
 def process_device_quick(args):
     """Processes device network info with smart caching for continued scans."""

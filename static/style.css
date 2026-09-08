@@ -146,3 +146,172 @@ body.touch-mode .custom-hover-dropdown > .dropdown-toggle {
     color: #fff;
     font-weight: bold;
 }
+
+body { padding-bottom: 70px; }
+        .hidden { display: none; }
+        .nav-link { cursor: pointer; }
+        .metric-card { 
+            background-color: var(--bs-card-bg); 
+            border: 1px solid var(--bs-border-color); 
+            border-radius: 12px; padding: 20px; text-align: center; 
+        }
+        .status-active { color: #198754; font-weight: bold; }
+        .status-inactive { color: #dc3545; }
+        .status-offline { color: #6c757d; font-style: italic; }
+        
+        .version-footer { 
+            position: fixed; bottom: 0; left: 0; width: 100%; 
+            background-color: var(--bs-tertiary-bg); color: var(--bs-body-color);
+            border-top: 1px solid var(--bs-border-color); font-size: 0.85em; 
+            padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; z-index: 1000; 
+        }
+
+                .ver-tag { 
+            cursor: pointer; 
+            margin-left: 6px; /* Reduced space between boxes */
+            padding: 3px 6px; 
+            border-radius: 4px; 
+            border: 1px solid var(--bs-border-color); 
+            transition: 0.2s; 
+            display: inline-flex;
+            align-items: center;
+        }
+        .ver-tag:hover { background-color: var(--bs-secondary-bg); }
+        .ver-update { color: #ffc107; border-color: #ffc107; font-weight: bold; }
+        
+        .log-container { max-height: 400px; overflow-y: auto; }
+        #history-table tr, #network-list tr { cursor: pointer; }
+
+
+#wifi-history-table tr td {
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
+
+/* Touch Screen View Adjustments */
+body.touch-mode .btn {
+    padding: 0.75rem 1.25rem !important;
+    font-size: 1.1rem !important;
+}
+body.touch-mode .nav-link {
+    padding: 1rem 1.5rem;
+    font-size: 1.2rem;
+}
+body.touch-mode .table td, body.touch-mode .table th {
+    padding: 1.25rem 0.75rem;
+    font-size: 1.1rem;
+}
+body.touch-mode .form-control, body.touch-mode .form-select {
+    padding: 0.75rem 1rem;
+    font-size: 1.1rem;
+}
+/* Standard checkboxes get larger squares */
+body.touch-mode .form-check-input {
+    width: 1.75em;
+    height: 1.75em;
+    margin-top: 0.1em;
+}
+
+/* Toggle switches need a 2:1 aspect ratio to keep their pill shape */
+body.touch-mode .form-switch .form-check-input {
+    width: 3.5em; 
+    border-radius: 2em;
+}
+
+body.touch-mode .form-check-label {
+    font-size: 1.1rem;
+    padding-left: 0.25rem;
+}
+
+/* Expands the main container globally to utilize empty side gaps */
+.container {
+    max-width: 96%; 
+}
+
+/* Reduce the horizontal space between navigation menu items */
+.nav-pills .nav-link {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+    margin: 0 0.1rem; /* Optional: adds a tiny gap so the active pill backgrounds don't touch */
+}
+
+/* =========================================
+   DROPDOWN MENU HOVER / TOUCH LOGIC
+   ========================================= */
+
+/* 1. Desktop (Normal Mode): Show on hover */
+body:not(.touch-mode) .custom-hover-dropdown:hover .dropdown-menu {
+    display: block;
+    top: 100%;
+}
+
+/* 2. Desktop (Normal Mode): Disable click on the header text so it doesn't stay stuck open */
+body:not(.touch-mode) .custom-hover-dropdown > .dropdown-toggle {
+    pointer-events: none;
+}
+
+/* 3. Touch Mode: Re-enable the click so Bootstrap's native JS takes over */
+body.touch-mode .custom-hover-dropdown > .dropdown-toggle {
+    pointer-events: auto;
+}
+
+/* Ensure inner dropdown items retain pointer events */
+.dropdown-item {
+    cursor: pointer;
+}
+
+/* =========================================
+   HELP DOCUMENTATION SECTION
+   ========================================= */
+
+/* Spacing between individual instruction blocks */
+.help-item {
+    margin-bottom: 1.1rem;
+    line-height: 1.5;
+}
+
+/* Ensure the titles inside the help sections align nicely */
+.help-section h5 {
+    color: var(--bs-primary);
+    border-bottom: 1px solid var(--bs-border-color);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+/* Make sure the sidebar fills the container nicely */
+#help-tabs .nav-link {
+    border-radius: 4px;
+    font-size: 0.95rem;
+    color: var(--bs-body-color);
+}
+
+#help-tabs .nav-link:hover {
+    background-color: var(--bs-secondary-bg);
+}
+
+#help-tabs .nav-link.active {
+    background-color: var(--bs-primary);
+    color: #fff;
+    font-weight: bold;
+}
+
+/* =========================================
+   TABLE SORTING
+   ========================================= */
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    transition: background-color 0.2s;
+}
+th.sortable:hover {
+    background-color: var(--bs-secondary-bg);
+}
+.sort-icon {
+    display: inline-block;
+    vertical-align: middle;
+    margin-left: 4px;
+    font-size: 0.8rem;
+    transition: 0.2s;
+}

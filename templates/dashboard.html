@@ -1,4 +1,4 @@
-<!-- Version number 0.13.0 -->
+<!-- Version number 0.14.0 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -146,11 +146,18 @@
                 </div>
             </div>
             <div class="card-body p-0">
-                <table class="table table-striped mb-0 small align-middle">
-                    <!-- NEW: Added Master Checkbox column -->
+                <table class="table table-striped mb-0 small align-middle" data-table-id="adapters">
                     <thead><tr>
                         <th><input type="checkbox" id="adapters-master-check" onchange="toggleAll('adapters', this)"></th>
-                        <th>Name</th><th>ID</th><th>Status</th><th>MAC</th><th>IPv4</th><th>Gateway</th><th>DNS</th><th>Speed</th><th></th>
+                        <th data-sort="name">Name</th>
+                        <th data-sort="id">ID</th>
+                        <th data-sort="status">Status</th>
+                        <th data-sort="mac">MAC</th>
+                        <th data-sort="ip4">IPv4</th>
+                        <th data-sort="gateway">Gateway</th>
+                        <th data-sort="dns">DNS</th>
+                        <th data-sort="speed">Speed</th>
+                        <th></th>
                     </tr></thead>
                     <tbody id="adapter-table">
                     <tr>
@@ -170,10 +177,14 @@
 <div id="devices" class="page-section hidden">
     <div class="card shadow-sm">
         <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-            <h5 class="mb-0 text-nowrap me-3 d-flex align-items-center">
-    <span id="device-tab-title">Network Scan</span>
-    <i class="bi bi-pencil ms-2 small text-muted hidden" id="btn-edit-active-network" style="cursor: pointer; font-size: 0.9rem;" onclick="renameActiveNetwork()" title="Rename this Network"></i>
-        </h5>
+            <h5 class="mb-0 text-nowrap me-3 d-flex flex-column">
+                <div class="d-flex align-items-center">
+                    <span id="device-tab-title">Network Scan</span>
+                    <!-- UPDATED: Now triggers the modal -->
+                    <i class="bi bi-pencil ms-2 small text-muted hidden" id="btn-edit-active-network" style="cursor: pointer; font-size: 0.9rem;" onclick="openNetworkConfig(currentNetworkId, document.getElementById('device-tab-title').innerText.replace('Devices in: ', ''), document.getElementById('device-tab-comment').innerText)" title="Edit Name & Comment"></i>
+                </div>
+                <small id="device-tab-comment" class="text-muted fw-normal mt-1" style="font-size: 0.75rem; white-space: normal;"></small>
+            </h5>
             <div class="d-flex gap-2 align-items-center">
                 <input type="text" id="device-filter" class="form-control form-control-sm" placeholder="Filter..." onkeyup="filterDevices()" title="Filter the device list by IP, Name, or MAC address">
                 
@@ -208,14 +219,21 @@
             </div>
         </div>
         <div class="card-body p-0">
-            <table class="table table-striped mb-0 small align-middle">
-                <!-- NEW: Added Master Checkbox column -->
+            <table class="table table-striped mb-0 small align-middle" data-table-id="devices">
                <thead><tr>
                     <th><input type="checkbox" id="device-master-check" onchange="toggleSelectAll(this, 'device-check'); updateDeviceMasterCheck()"></th>
-                    <th>Hostname</th><th>Name</th><th>Vendor</th><th>IP</th><th>MAC</th><th>Status</th><th>Services</th><th>History</th><th class="text-end">Actions</th>
+                    <th data-sort="hostname">Hostname</th>
+                    <th data-sort="custom_name">Name</th>
+                    <th data-sort="vendor">Vendor</th>
+                    <th data-sort="ip_address">IP</th>
+                    <th data-sort="mac_address">MAC</th>
+                    <th data-sort="is_online">Status</th>
+                    <th data-sort="services">Services</th>
+                    <th data-sort="discovery_status">History</th>
+                    <th data-sort="comments">Comments</th>
+                    <th class="text-end">Actions</th>
                 </tr></thead>
-                <!-- NEW: Updated colspan to 10 -->
-                <tbody id="device-list"><tr><td colspan="10" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
+                <tbody id="device-list"><tr><td colspan="11" class="text-center p-4">Click Scan to begin.</td></tr></tbody>
             </table>
         </div>
     </div>
@@ -234,16 +252,17 @@
                 </div>
             </div>
             <div class="card-body p-0">
-                <table class="table table-hover mb-0 small align-middle">
+                <table class="table table-hover mb-0 small align-middle" data-table-id="networks">
                 <thead>
                     <tr>
                         <th><input type="checkbox" id="networks-master-check" onchange="toggleAll('networks', this)"></th>
-                        <th>Name</th>
-                        <th>Gateway MAC</th>
-                        <th>IP</th>
-                        <th>Devices</th>
-                        <th>Last Scan</th>
-                        <th>Actions</th>
+                        <th data-sort="name">Name</th>
+                        <th data-sort="gateway_mac">Gateway MAC</th>
+                        <th data-sort="gateway_ip">IP</th>
+                        <th data-sort="device_count">Devices</th>
+                        <th data-sort="comments">Comments</th>
+                        <th data-sort="last_scan">Last Scan</th>
+                        <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                     <tbody id="network-list"></tbody>
@@ -287,11 +306,19 @@
                 </div>
             </div>
             <div class="card-body p-0 log-container">
-            <table class="table table-sm table-hover mb-0 small">
+            <table class="table table-sm table-hover mb-0 small" data-table-id="dns">
             <thead>
                 <tr>
                     <th><input type="checkbox" id="dns-master-check" onchange="toggleAll('dns', this)"></th>
-                    <th>Time</th><th>Domain</th><th>Result IP</th><th>Status</th><th>Router</th><th>Network</th><th>LAN IP</th><th class="text-end">Actions</th>
+                    <th data-sort="timestamp">Time</th>
+                    <th data-sort="domain">Domain</th>
+                    <th data-sort="result_ip">Result IP</th>
+                    <th data-sort="status">Status</th>
+                    <th data-sort="router_ip">Router</th>
+                    <th data-sort="network_name">Network</th>
+                    <th data-sort="lan_ip">LAN IP</th>
+                    <th data-sort="comments">Comments</th>
+                    <th class="text-end">Actions</th>
                 </tr>
             </thead>
                 <tbody id="dns-log-list"></tbody>
@@ -330,22 +357,23 @@
                 </div>
             </div>
             <div class="card-body p-0">
-                <table class="table table-hover mb-0 small align-middle">
+                <table class="table table-hover mb-0 small align-middle" data-table-id="devHist">
                     <thead>
                         <tr>
                             <th><input type="checkbox" id="dev-hist-master-check" onchange="toggleAllDevHist(this)"></th>
-                            <th>Name</th>
-                            <th>Make (Vendor)</th>
-                            <th>MAC Address</th>
-                            <th>Last Network</th>
-                            <th>Last IP</th>
-                            <th>Last Seen</th>
+                            <th data-sort="custom_name">Name</th>
+                            <th data-sort="vendor">Make (Vendor)</th>
+                            <th data-sort="mac_address">MAC Address</th>
+                            <th data-sort="network_name">Last Network</th>
+                            <th data-sort="ip_address">Last IP</th>
+                            <th data-sort="last_seen">Last Seen</th>
+                            <th data-sort="comments">Comments</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="dev-hist-table">
                         <tr>
-                            <td colspan="8" class="text-center p-5">
+                            <td colspan="9" class="text-center p-5">
                                 <div class="spinner-border text-primary mb-3"></div>
                                 <h5 class="text-muted">Loading History...</h5>
                                 <p class="small text-secondary">Gathering global device data.</p>
@@ -401,11 +429,20 @@
                 </div>
             </div>
             <div class="card-body p-0 log-container">
-                <table class="table table-sm table-hover mb-0 small">
+                <table class="table table-sm table-hover mb-0 small" data-table-id="ping">
                     <thead>
                         <tr>
                             <th><input type="checkbox" id="ping-master-check" onchange="toggleAll('ping', this)"></th>
-                            <th>Time</th><th>Target</th><th>Status</th><th>Latency</th><th>Loss</th><th>Router</th><th>Network</th><th>LAN IP</th><th class="text-end">Actions</th>
+                            <th data-sort="timestamp">Time</th>
+                            <th data-sort="target">Target</th>
+                            <th data-sort="status">Status</th>
+                            <th data-sort="latency">Latency</th>
+                            <th data-sort="packet_loss">Loss</th>
+                            <th data-sort="router_ip">Router</th>
+                            <th data-sort="network_name">Network</th>
+                            <th data-sort="lan_ip">LAN IP</th>
+                            <th data-sort="comments">Comments</th>
+                            <th class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="ping-log-list"></tbody>
@@ -443,9 +480,12 @@
 
         <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-                <h5 class="mb-0 text-nowrap me-3 d-flex align-items-center">
-                    <span id="wifi-tab-title">Scan Wi-Fi</span>
-                    <i class="bi bi-pencil ms-2 small text-muted hidden" id="btn-edit-active-wifi" style="cursor: pointer; font-size: 0.9rem;" onclick="renameActiveWifiScan()" title="Rename Wi-Fi Scan"></i>
+                <h5 class="mb-0 text-nowrap me-3 d-flex flex-column">
+                    <div class="d-flex align-items-center">
+                        <span id="wifi-tab-title">Scan Wi-Fi</span>
+                        <i class="bi bi-pencil ms-2 small text-muted hidden" id="btn-edit-active-wifi" style="cursor: pointer; font-size: 0.9rem;" onclick="openWifiScanConfig(window.currentWifiScanId, document.getElementById('wifi-tab-title').innerText, document.getElementById('wifi-tab-comment').innerText)" title="Edit Name & Comment"></i>
+                    </div>
+                    <small id="wifi-tab-comment" class="text-muted fw-normal mt-1" style="font-size: 0.75rem; white-space: normal;"></small>
                 </h5>
                 <div class="d-flex gap-2 align-items-center">
                     <!-- Wi-Fi Adapter Dropdown -->
@@ -457,9 +497,14 @@
                     <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportActiveWifiCSV()" id="btn-wifi-export" disabled title="Download the current scan results as CSV">
                         <i class="bi bi-download"></i> Export CSV
                     </button>
+                    
+                    <!-- NEW: Continue Scan Button -->
+                    <button class="btn btn-info btn-sm text-white text-nowrap hidden" id="wifi-continue-btn" onclick="scanWifi('continue')" title="Scan again and append new networks/better signals to this list">
+                        <i class="bi bi-play-fill"></i> Continue Scan
+                    </button>
 
                     <!-- Scan Button -->
-                    <button class="btn btn-info btn-sm text-white text-nowrap" id="wifi-scan-btn" onclick="scanWifi()" title="Perform a hardware-level scan of the surrounding Wi-Fi airspace">
+                    <button class="btn btn-info btn-sm text-white text-nowrap" id="wifi-scan-btn" onclick="scanWifi('new')" title="Perform a hardware-level scan of the surrounding Wi-Fi airspace">
                         <i class="bi bi-search"></i> Scan Wi-Fi
                     </button>
                 </div>
@@ -485,11 +530,20 @@
             </div>
             </div>
             <div class="card-body p-0">
-                <table class="table table-hover mb-0 small align-middle">
+                <table class="table table-hover mb-0 small align-middle" data-table-id="history">
                         <thead>
                             <tr>
                                 <th><input type="checkbox" id="history-master-check" onchange="toggleAll('history', this)"></th>
-                                <th>Date</th><th>Name</th><th>ISP</th><th>Type</th><th>Down</th><th>Up</th><th>Ping</th><th>Device IP</th><th>WAN IP</th><th class="text-end">Actions</th>
+                                <th data-sort="timestamp">Date</th>
+                                <th data-sort="network_name">Name</th>
+                                <th data-sort="isp">ISP</th>
+                                <th data-sort="connection_type">Type</th>
+                                <th data-sort="download">Down</th>
+                                <th data-sort="upload">Up</th>
+                                <th data-sort="ping">Ping</th>
+                                <th data-sort="device_ip">Device IP</th>
+                                <th data-sort="wan_ip">WAN IP</th>
+                                <th class="text-end">Actions</th>
                             </tr>
                         </thead>
                     <tbody id="history-table"></tbody>
@@ -520,15 +574,20 @@
             <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
                 <input type="text" id="wifi-filter" class="form-control form-control-sm w-50" placeholder="Filter..." onkeyup="filterWifiHistory()" title="Filter the local scan logs">
                 <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('wifi')" title="Permanently delete the selected scan histories">Delete Selected</button>
+                <!-- NEW: Merge Button -->
+                <button class="btn btn-outline-warning btn-sm text-nowrap" onclick="openWifiMergeModal()" title="Merge multiple old Wi-Fi scans into a single combined scan">Merge</button>
                 <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('wifi')" title="Download the selected Wi-Fi scans as a ZIP file">Export (ZIP)</button>
             </div>
         </div>
         <div class="card-body p-0">
-            <table class="table table-hover mb-0 small align-middle">
+            <table class="table table-hover mb-0 small align-middle" data-table-id="wifi">
                     <thead>
                         <tr>
                             <th><input type="checkbox" id="wifi-master-check" onchange="toggleAll('wifi', this)"></th>
-                            <th>Date/Time</th><th>Scan Name</th><th>Comments</th><th class="text-end">Actions</th>
+                            <th data-sort="timestamp">Date/Time</th>
+                            <th data-sort="name">Scan Name</th>
+                            <th data-sort="comments">Comments</th>
+                            <th class="text-end">Actions</th>
                         </tr>
                     </thead>
                 <tbody id="wifi-history-table"></tbody>
@@ -564,103 +623,16 @@
             </div>
         </div>
         <div class="card-body p-0">
-            <table class="table table-hover mb-0 small align-middle">
+            <table class="table table-hover mb-0 small align-middle" data-table-id="wifiNetHist">
                 <thead>
                     <tr>
                         <th><input type="checkbox" id="wifiNetHist-master-check" onchange="toggleAll('wifiNetHist', this)"></th>
-                        <th>SSID</th>
-                        <th>Authentication</th>
-                        <th>Unique MACs</th>
-                        <th>Times Scanned</th>
-                        <th>First Seen</th>
-                        <th>Last Seen</th>
-                        <th class="text-end">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="wifi-net-hist-table">
-                    <tr><td colspan="8" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>
-                </tbody>
-            </table>
-        </div>
-        <div class="card-footer d-flex justify-content-between align-items-center bg-body-tertiary">
-            <div class="d-flex align-items-center gap-2">
-                <span class="small text-muted text-nowrap">Rows per page:</span>
-                <select id="wifiNetHist-per-page" class="form-select form-select-sm w-auto" onchange="changePerPage('wifiNetHist')">
-                    <option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="all">ALL</option>
-                </select>
-            </div>
-            <div class="d-flex align-items-center gap-3">
-                <span id="wifiNetHist-page-info" class="small text-muted text-nowrap">Page 1 of 1</span>
-                <div class="btn-group">
-                    <button id="btn-wifiNetHist-prev" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifiNetHist', -1)" disabled><i class="bi bi-chevron-left"></i></button>
-                    <button id="btn-wifiNetHist-next" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifiNetHist', 1)" disabled><i class="bi bi-chevron-right"></i></button>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div id="wifi-history" class="page-section hidden">
-    <div class="card shadow-sm">
-        <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-            <h5 class="mb-0 text-nowrap me-3">Past Wi-Fi Scans</h5>
-            <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
-                <input type="text" id="wifi-filter" class="form-control form-control-sm w-50" placeholder="Filter..." onkeyup="filterWifiHistory()" title="Filter the local scan logs">
-                <button class="btn btn-outline-danger btn-sm text-nowrap" onclick="bulkDelete('wifi')" title="Permanently delete the selected scan histories">Delete Selected</button>
-                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="bulkExport('wifi')" title="Download the selected Wi-Fi scans as a ZIP file">Export (ZIP)</button>
-            </div>
-        </div>
-        <div class="card-body p-0">
-            <table class="table table-hover mb-0 small align-middle">
-                    <thead>
-                        <tr>
-                            <th><input type="checkbox" id="wifi-master-check" onchange="toggleAll('wifi', this)"></th>
-                            <th>Date/Time</th><th>Scan Name</th><th>Comments</th><th class="text-end">Actions</th>
-                        </tr>
-                    </thead>
-                <tbody id="wifi-history-table"></tbody>
-            </table>
-        </div>
-        <div class="card-footer d-flex justify-content-between align-items-center bg-body-tertiary">
-            <div class="d-flex align-items-center gap-2">
-                <span class="small text-muted text-nowrap">Rows per page:</span>
-                <select id="wifi-per-page" class="form-select form-select-sm w-auto" onchange="changePerPage('wifi')">
-                    <option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="all">ALL</option>
-                </select>
-            </div>
-            <div class="d-flex align-items-center gap-3">
-                <span id="wifi-page-info" class="small text-muted text-nowrap">Page 1 of 1</span>
-                <div class="btn-group">
-                    <button id="btn-wifi-prev" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifi', -1)" disabled><i class="bi bi-chevron-left"></i></button>
-                    <button id="btn-wifi-next" class="btn btn-sm btn-outline-secondary" onclick="changePage('wifi', 1)" disabled><i class="bi bi-chevron-right"></i></button>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div id="wifi-networks-history" class="page-section hidden">
-    <div class="card shadow-sm">
-        <div class="card-header d-flex justify-content-between align-items-center flex-nowrap">
-            <h5 class="mb-0 text-nowrap me-3">Global Wi-Fi History</h5>
-            <div class="d-flex gap-2 align-items-center w-50 justify-content-end">
-                <input type="text" id="wifiNetHist-filter" class="form-control form-control-sm w-50" placeholder="Filter SSID..." onkeyup="filterWifiNetHist()" title="Search the global list of all Wi-Fi networks ever seen">
-                <button class="btn btn-outline-primary btn-sm text-nowrap" onclick="exportWifiNetHistCSV()" title="Download the global Wi-Fi directory as a CSV spreadsheet">
-                    <i class="bi bi-download"></i> Export
-                </button>
-            </div>
-        </div>
-        <div class="card-body p-0">
-            <table class="table table-hover mb-0 small align-middle">
-                <thead>
-                    <tr>
-                        <th><input type="checkbox" id="wifiNetHist-master-check" onchange="toggleAll('wifiNetHist', this)"></th>
-                        <th>SSID</th>
-                        <th>Authentication</th>
-                        <th>Unique MACs</th>
-                        <th>Times Scanned</th>
-                        <th>First Seen</th>
-                        <th>Last Seen</th>
+                        <th data-sort="ssid">SSID & Notes</th>
+                        <th data-sort="auth">Authentication</th>
+                        <th data-sort="mac_count">Unique MACs</th>
+                        <th data-sort="scan_count">Times Scanned</th>
+                        <th data-sort="first_seen">First Seen</th>
+                        <th data-sort="last_seen">Last Seen</th>
                         <th class="text-end">Actions</th>
                     </tr>
                 </thead>
@@ -967,7 +939,6 @@
                         <button class="nav-link text-start mb-1" data-target="help-wifiscan" onclick="switchHelpTab(this)"><i class="bi bi-wifi me-2"></i> Wi-Fi Scanning</button>
                         <button class="nav-link text-start mb-1" data-target="help-tools" onclick="switchHelpTab(this)"><i class="bi bi-tools me-2"></i> Other Tools</button>
                         <button class="nav-link text-start mb-1" data-target="help-settings" onclick="switchHelpTab(this)"><i class="bi bi-gear me-2"></i> Settings</button>
-                        <!-- NEW: Config Files Help Tab -->
                         <button class="nav-link text-start" data-target="help-files" onclick="switchHelpTab(this)"><i class="bi bi-file-earmark-code me-2"></i> Config Files</button>
                     </div>
                 </div>
@@ -980,11 +951,9 @@
                         <h5 class="text-primary border-bottom pb-2 mb-3">About Network Diagnostics</h5>
                         <p>A robust, fault-tolerant network diagnostic dashboard designed for troubleshooting network issues across home, office, and managed environments. Built using Python, Flask, SQLite, and Scapy.</p>
                         
+                        <p>Should you have any issues or suggestions on improvements, please log them via github. I will try to get to them and respond to it.</p>
                         <div class="d-flex gap-2 mb-4">
-                            <p>Should you have any issues or suggestions on improvements, please log them via github. I will try to get to them and respond to it</p>
                             <a href="https://github.com/Chrisb003/Network-Testing-Tools" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="bi bi-github"></i> GitHub Repository</a>
-                            <!-- Change the email address below to your actual support email -->
-                          <!--<a href="mailto:a@a.a" class="btn btn-sm btn-outline-secondary"><i class="bi bi-envelope"></i> Contact Support</a> -->
                         </div>
 
                        <h5 class="text-primary border-bottom pb-2 mb-3 mt-4">Setup & Launcher Scripts</h5>
@@ -993,7 +962,7 @@
                         <p class="text-muted small">These same scripts can be used to fully remove the application as well.</p>
 
                         <div class="help-item">
-                            <strong><code>Windows-Installer.ps1</code> PowerShell script: Requests administrator privileges, checks for Python (downloads and installs it from the python website if missing), downloads or updates project files from GitHub into the user's profile directory, and prompts for dedicated test device features (such as generating <code>standalone</code>, <code>disablecleanup</code>, and <code>webport</code> configuration files, or setting up a Windows Wi-Fi Mobile Hotspot). It also configures user-login startup, individual desktop/start menu shortcuts using the custom app logo, and hands off execution to the setup script.
+                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests administrator privileges, checks for Python (downloads and installs it from the python website if missing), downloads or updates project files from GitHub into the user's profile directory, and prompts for dedicated test device features (such as generating <code>standalone</code>, <code>disablecleanup</code>, and <code>webport</code> configuration files, or setting up a Windows Wi-Fi Mobile Hotspot). It also configures user-login startup, individual desktop/start menu shortcuts using the custom app logo, and hands off execution to the setup script.
                         </div>
                         <div class="help-item">
                             <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, and network-manager), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). It also handles optional systemd background services, desktop shortcuts with custom logo integration, and launches the environment supervisor.
@@ -1011,6 +980,9 @@
                         </div>
                         <div class="help-item">
                             <strong>Refresh Network Info:</strong> Forces an immediate OS-level query to update the physical adapters and active IP data without waiting for the background cache.
+                        </div>
+                        <div class="help-item">
+                            <strong>Table Sorting:</strong> All data tables across the dashboard are dynamically sortable. Simply click on any column header (like Name, IP, Mac, or Date) to instantly toggle ascending or descending order.
                         </div>
                         <div class="help-item">
                             <strong>Touch Mode (Hand Icon):</strong> Increases the size of buttons, checkboxes, and table rows to make the interface much easier to tap on tablets and mobile devices.
@@ -1065,6 +1037,9 @@
                             <strong>Isolated Scan:</strong> Runs a fresh scan but intentionally blocks the system from attempting to merge or match the results with any past historical data.
                         </div>
                         <div class="help-item">
+                            <strong>Device Customization & Comments:</strong> Clicking on a device's Name or Comment cell opens the metadata editor. You can assign a custom name, manually set the vendor, and write multi-line global notes. These details automatically follow the device's MAC address across any network it connects to.
+                        </div>
+                        <div class="help-item">
                             <strong>Remove Selected / Offline:</strong> Permanently deletes the selected (or fully offline) devices from the active network's historical database.
                         </div>
                         <div class="help-item">
@@ -1090,6 +1065,9 @@
                             <strong>Auto-Logging:</strong> Every time you press Scan, the results are automatically saved to the database. You can rename the scan or add comments in the "WiFi Scan History" tab.
                         </div>
                         <div class="help-item">
+                            <strong>Wi-Fi Comments & Expanding Notes:</strong> You can click the pencil icon next to any SSID in the active scan or global history to add a global comment. In the active scan view, long multi-line comments are neatly tucked away—just click the dropdown arrow to expand and read them!
+                        </div>
+                        <div class="help-item">
                             <strong>Global Wi-Fi History:</strong> An aggregate list of every single unique SSID your system has ever seen, including how many times it was detected and the date it was last seen.
                         </div>
                     </div>
@@ -1103,6 +1081,9 @@
                         </div>
                         <div class="help-item">
                             <strong>Ping Tool:</strong> Enter an IP or Domain. The system will send 4 ICMP echo packets to test reachability, measuring latency and packet loss. Results are logged to the database.
+                        </div>
+                        <div class="help-item">
+                            <strong>Log Annotations:</strong> You can add context to your DNS and Ping logs by clicking the pencil icon to attach a network name and comments. These comments are fully preserved when exporting your logs to CSV.
                         </div>
                         <div class="help-item">
                             <strong>Record Protection (Padlock Icon):</strong> Clicking the padlock on any historical log (DNS, Ping, Networks, Wi-Fi) locks the record. A locked record will be protected and ignored when you execute bulk database cleanups via the Settings tab.
@@ -1129,7 +1110,7 @@
                             <strong>Concurrency & Workers:</strong> Adjusts the ThreadPool executors. Increasing Scan Workers makes Network Scans faster, but requires more CPU power. If the dashboard freezes or crashes frequently during scans, reduce these numbers.
                         </div>
                         <div class="help-item">
-                            <strong>Power Controls:</strong> "Restart App" safely reboots the Python server. "Shutdown App" kills the server and background supervisor completely. If <em>Dedicated Server Mode</em> is active, you will also see options to physically Reboot or Shut Down the host machine OS.
+                            <strong>Power Controls & Seamless Restarts:</strong> "Restart App" cleanly reboots the Python server. On macOS and Linux, the application uses an in-place process replacement, meaning it will seamlessly restart <strong>without asking for your sudo/admin password again!</strong> "Shutdown App" kills the server and background supervisor completely. If <em>Dedicated Server Mode</em> is active, you will also see options to physically Reboot or Shut Down the host machine OS.
                         </div>
                     </div>
 
@@ -1169,6 +1150,158 @@
 <!-- ==============================================
      MODALS 
      ============================================== -->
+
+<div class="modal fade" id="deviceConfigModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Device Metadata</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-dev-mac">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Custom Name</label>
+                    <input type="text" id="modal-dev-name" class="form-control" maxlength="50" placeholder="e.g. John's iPhone">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Custom Vendor (Make)</label>
+                    <input type="text" id="modal-dev-vendor" class="form-control" maxlength="50" placeholder="e.g. Apple">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Global Comments / Notes</label>
+                    <textarea id="modal-dev-comment" class="form-control" rows="3" maxlength="200" placeholder="Add optional details about this specific device..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveDeviceConfig()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="wifiSSIDModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Wi-Fi Network Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-ssid-id">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Network SSID</label>
+                    <input type="text" id="modal-ssid-display" class="form-control" disabled>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Global Comments / Notes</label>
+                    <textarea id="modal-ssid-comment" class="form-control" rows="3" maxlength="200" placeholder="Add optional details about this network globally..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveWifiSSIDConfig()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="toolLogModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="toolModalTitle">Edit Log Entry</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-tool-type">
+                <input type="hidden" id="modal-tool-id">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Network Name</label>
+                    <input type="text" id="modal-tool-name" class="form-control" maxlength="50" placeholder="e.g. Office LAN">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Comments / Notes</label>
+                    <textarea id="modal-tool-comment" class="form-control" rows="3" maxlength="200" placeholder="Add optional notes..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveToolLogSettings()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="wifiScanModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Wi-Fi Scan Profile</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-wifi-scan-id">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Scan Name</label>
+                    <input type="text" id="modal-wifi-scan-name" class="form-control" maxlength="50" placeholder="e.g. Office Area 1" title="Assign a friendly name to this scan">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Comments / Notes</label>
+                    <textarea id="modal-wifi-scan-comment" class="form-control" rows="3" maxlength="200" placeholder="Add optional notes about this Wi-Fi scan..." title="Add details or notes about this scan"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveWifiScanSettings()" title="Save your Wi-Fi scan changes">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="networkModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Network Profile</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-net-id">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Network Name</label>
+                    <input type="text" id="modal-net-name" class="form-control" maxlength="50" placeholder="e.g. Main Office" title="Assign a friendly name to this network">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Comments / Notes</label>
+                    <textarea id="modal-net-comment" class="form-control" rows="3" maxlength="200" placeholder="Add optional details about this network location..." title="Add details or notes about this network"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary w-100" onclick="saveNetworkSettings()" title="Save your network changes">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="mergeWifiModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-sign-merge-left-fill text-warning"></i> Merge Wi-Fi Scans</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label small fw-bold">Select Target (Main) Scan:</label>
+                    <select id="merge-wifi-target-select" class="form-select"></select>
+                    <small class="text-muted d-block mt-2">
+                        <strong>Important:</strong> The scan you select above will be kept. Its timestamp and name will be preserved. All SSIDs and signal data from the other selected scans will be merged into it, and the old duplicate scans will be deleted.
+                    </small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-warning w-50" id="btn-execute-wifi-merge" onclick="executeWifiMerge()">Merge Scans</button>
+            </div>
+        </div>
+    </div>
+</div>
 <div class="modal fade" id="updateModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -1229,14 +1362,14 @@
                 </div>
             </div>
             <div class="modal-body p-0 log-container">
-                <table class="table table-sm table-striped mb-0 small">
+                <table class="table table-sm table-striped mb-0 small" data-table-id="devHistModalTable">
                     <thead>
                         <tr>
-                            <th>Network</th>
-                            <th>IP Address</th>
-                            <th>Services</th> <!-- NEW COLUMN HEADER -->
-                            <th>Status</th>
-                            <th>Last Seen</th>
+                            <th data-sort="network_name">Network</th>
+                            <th data-sort="ip_address">IP Address</th>
+                            <th data-sort="services">Services</th> 
+                            <th data-sort="discovery_status">Status</th>
+                            <th data-sort="last_seen">Last Seen</th>
                         </tr>
                     </thead>
                     <tbody id="devHistModalBody"></tbody>
@@ -1259,15 +1392,15 @@
                 </div>
             </div>
             <div class="modal-body p-0 log-container">
-                <table class="table table-sm table-striped mb-0 small">
+                <table class="table table-sm table-striped mb-0 small" data-table-id="wifiNetModalTable">
                     <thead>
                         <tr>
-                            <th>Scan Date</th>
-                            <th>Scan Name</th>
-                            <th>MAC Address</th>
-                            <th>Band / Ch</th>
-                            <th>Signal</th>
-                            <th>Auth</th>
+                            <th data-sort="timestamp">Scan Date</th>
+                            <th data-sort="scan_name">Scan Name</th>
+                            <th data-sort="mac">MAC Address</th>
+                            <th data-sort="band">Band / Ch</th>
+                            <th data-sort="dbm">Signal</th>
+                            <th data-sort="auth">Auth</th>
                         </tr>
                     </thead>
                     <tbody id="wifiNetModalBody"></tbody>
