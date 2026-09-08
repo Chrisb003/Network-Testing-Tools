@@ -36,7 +36,7 @@ if [ -d "$TARGET_DIR" ]; then
             rm -f "$PLIST_PATH"
             
             echo "[*] Deleting application directory..."
-            rm -rf "$TARGET_DIR"
+            sudo rm -rf "$TARGET_DIR"
             
             # Remove applications folder bundle if present
             rm -rf "$HOME/Applications/Network Diagnostics.app"
@@ -133,8 +133,9 @@ else
 fi
 echo "--------------------------------------------------------"
 
-# Fix ownership so current user owns everything in TARGET_DIR
-chown -R "$USER" "$TARGET_DIR"
+# Fix ownership and permissions so anyone can modify/delete the folder
+chown -R "$USER" "$TARGET_DIR" 2>/dev/null || sudo chown -R "$USER" "$TARGET_DIR"
+sudo chmod -R 777 "$TARGET_DIR"
 
 # --- 7. OPTIONAL MACOS LAUNCHAGENT (BACKGROUND SERVICE) ---
 echo ""

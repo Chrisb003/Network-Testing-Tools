@@ -203,8 +203,9 @@ else
 fi
 echo "--------------------------------------------------------"
 
-# Fix ownership so user owns everything in TARGET_DIR, preventing root permission lockups
+# Fix ownership and permissions so anyone can modify/delete the folder
 sudo chown -R "$USER:$USER" "$TARGET_DIR"
+sudo chmod -R 777 "$TARGET_DIR"
 
 # --- 6. OPTIONAL SYSTEMD SERVICE CONFIGURATION ---
 echo ""

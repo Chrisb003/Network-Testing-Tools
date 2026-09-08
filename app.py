@@ -4887,14 +4887,21 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"[!] CoreLocation initialization failed: {e}")
 
-    # Disable Wi-Fi Power Management on Linux/Raspberry Pi
+    # Disable Wi-Fi Power Management on Linux/Raspberry Pi for stable scanning
     if platform.system() == "Linux":
         try:
-            subprocess.run(["sudo", "iw", "dev", "wlan0", "set", "power_save", "off"], 
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print("[*] Wi-Fi power management disabled for stable scanning.")
+            if shutil.which("iw"):
+                # Dynamically get ALL wireless interface names
+                out = subprocess.check_output("iw dev | awk '$1==\"Interface\"{print $2}'", shell=True, text=True).strip()
+                if out:
+                    for iface in out.split('\n'):
+                        iface = iface.strip()
+                        if iface:
+                            subprocess.run(["sudo", "iw", "dev", iface, "set", "power_save", "off"], 
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            print(f"[*] Wi-Fi power management disabled for {iface}.")
         except Exception as e:
-            print(f"[*] Note: Could not disable Wi-Fi power management: {e}")
+            pass
 
     cleanup_old_files()
     

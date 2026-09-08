@@ -3,19 +3,37 @@
     Network Diagnostics Installer & Manager
 #>
 
+# Capture the original user's paths before any elevation happens
+param (
+    [string]$OriginalProfile = $env:USERPROFILE,
+    [string]$OriginalDesktop = [Environment]::GetFolderPath('Desktop'),
+    [string]$OriginalAppData = $env:APPDATA
+)
+
 # ---------------------------------------------------------
 # 1. CHECK FOR ADMIN PRIVILEGES
 # ---------------------------------------------------------
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "[!] Requesting Administrative Privileges..." -ForegroundColor Yellow
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    
+    # Pass the original user's directories into the elevated Admin session
+    $Arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$PSCommandPath`"",
+        "-OriginalProfile", "`"$OriginalProfile`"",
+        "-OriginalDesktop", "`"$OriginalDesktop`"",
+        "-OriginalAppData", "`"$OriginalAppData`""
+    )
+    Start-Process powershell.exe -ArgumentList $Arguments -Verb RunAs
     exit
 }
 
 # ---------------------------------------------------------
 # 2. CONFIGURATION
 # ---------------------------------------------------------
-$script:TargetDir = "$env:USERPROFILE\Network-Testing-Tools\"
+# Map to the original user's folders, NOT the Admin's folders
+$script:TargetDir = "$OriginalProfile\Network-Testing-Tools\"
 $script:RepoOwner = "Chrisb003"
 $script:RepoName  = "Network-Testing-Tools"
 $script:Branch    = "main"
@@ -38,11 +56,11 @@ if (Test-Path "$script:TargetDir\app.py") {
         $confirmWipe = Read-Host "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion"
         if ($confirmWipe -eq 'yes') {
             Write-Host "[*] Removing Startup shortcut if present..." -ForegroundColor Gray
-            Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
+            Remove-Item "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Startup\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
             Write-Host "[*] Removing Desktop shortcut if present..." -ForegroundColor Gray
-            Remove-Item "$env:USERPROFILE\Desktop\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
+            Remove-Item "$OriginalDesktop\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
             Write-Host "[*] Removing Start Menu shortcut if present..." -ForegroundColor Gray
-            Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
+            Remove-Item "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
             
             Write-Host "[*] Deleting application directory..." -ForegroundColor Gray
             Remove-Item "$script:TargetDir" -Recurse -Force -ErrorAction SilentlyContinue
@@ -56,28 +74,43 @@ if (Test-Path "$script:TargetDir\app.py") {
 }
 
 # ---------------------------------------------------------
-# 4. CHECK FOR PYTHON (LOOP UNTIL FOUND)
+# 4. CHECK FOR PYTHON (AUTO-DOWNLOAD FROM PYTHON.ORG)
 # ---------------------------------------------------------
-while ($true) {
-    $pythonTest = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonTest) {
-        Write-Host "[✓] Python is detected." -ForegroundColor Green
-        break
-    }
-
+$pythonTest = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pythonTest) {
     Write-Host ""
     Write-Host "[!] Python was not found on this system." -ForegroundColor Red
-    Write-Host "[*] Opening Microsoft Store to Python 3.12 Page..." -ForegroundColor Yellow
-    Start-Process "ms-windows-store://pdp/?ProductId=9NCVDN91XZQP"
-
-    Write-Host "========================================================" -ForegroundColor Cyan
-    Write-Host "   PLEASE INSTALL PYTHON FROM THE WINDOWS STORE WINDOW" -ForegroundColor Cyan
-    Write-Host "========================================================" -ForegroundColor Cyan
-    Write-Host "   1. Click 'Get' or 'Install' in the Microsoft Store."
-    Write-Host "   2. Wait for the download and installation to finish."
-    Write-Host "   3. Once finished, press any key in this window to continue."
-    Write-Host "========================================================" -ForegroundColor Cyan
-    $null = $Host.UI.ReadLine()
+    Write-Host "[*] Downloading official Python 3.12 installer from python.org..." -ForegroundColor Cyan
+    
+    $pyVersion = "3.14.7"
+    $pyUrl = "https://www.python.org/ftp/python/$pyVersion/python-$pyVersion-amd64.exe"
+    $installerPath = "$env:TEMP\python_installer.exe"
+    
+    Invoke-WebRequest -Uri $pyUrl -OutFile $installerPath
+    
+    Write-Host "[*] Installing Python silently (this may take a minute). Please wait..." -ForegroundColor Yellow
+    $installArgs = "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0"
+    Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait
+    
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+    
+    Write-Host "[✓] Python installation complete. Refreshing environment..." -ForegroundColor Green
+    
+    # Refresh environment variables in the current session so 'python' command works immediately
+    foreach ($level in "Machine", "User") {
+        [Environment]::GetEnvironmentVariables($level).GetEnumerator() | ForEach-Object {
+            [Environment]::SetEnvironmentVariable($_.Key, $_.Value, "Process")
+        }
+    }
+    
+    # Verify it worked
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        Write-Host "[X] Python installed but not detected in PATH. Please restart your computer and run this script again." -ForegroundColor Red
+        pause
+        exit
+    }
+} else {
+    Write-Host "[✓] Python is detected." -ForegroundColor Green
 }
 
 # ---------------------------------------------------------
@@ -232,14 +265,18 @@ if ($isDedicated -eq 'y' -or $isDedicated -eq 'Y') {
 } else {
     Write-Host "    [*] Skipping dedicated test device configurations." -ForegroundColor Gray
 }
+
+# --- 8. FIX DIRECTORY PERMISSIONS FOR ALL USERS ---
+Write-Host "    [*] Unlocking folder permissions for all users..." -ForegroundColor Cyan
+icacls "$script:TargetDir" /grant "Everyone:(F)" /T /C /Q | Out-Null
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 # ---------------------------------------------------------
-# 8. OPTIONAL USER-LOGIN STARTUP (STARTUP FOLDER)
+# 9. OPTIONAL USER-LOGIN STARTUP (STARTUP FOLDER)
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
-$startupLnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Network Diagnostics.lnk"
+$startupLnk = "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Startup\Network Diagnostics.lnk"
 if (Test-Path $startupLnk) {
     Write-Host "[?] Background User-Login Startup is currently ENABLED." -ForegroundColor Yellow
     $toggleStartup = Read-Host "[?] Do you want to DISABLE/REMOVE the startup shortcut? (y/N)"
@@ -264,7 +301,7 @@ if (Test-Path $startupLnk) {
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 # ---------------------------------------------------------
-# 9. ICON PREPARATION HELPER
+# 10. ICON PREPARATION HELPER
 # ---------------------------------------------------------
 $logoPng = Join-Path $script:TargetDir 'static\Logo.png'
 $icoPath = Join-Path $script:TargetDir 'static\Logo.ico'
@@ -281,14 +318,13 @@ if ((Test-Path $logoPng) -and (-not (Test-Path $icoPath))) {
 }
 
 # ---------------------------------------------------------
-# 10. DESKTOP SHORTCUT CREATION
+# 11. DESKTOP SHORTCUT CREATION
 # ---------------------------------------------------------
 Write-Host ""
 $createDesktop = Read-Host "[?] Do you want to create a Desktop shortcut? (y/N)"
 if ($createDesktop -eq 'y' -or $createDesktop -eq 'Y') {
     Write-Host "    [*] Generating Desktop shortcut..." -ForegroundColor Cyan
-    $desktopPath = [Environment]::GetFolderPath('Desktop')
-    $lnkPath = Join-Path $desktopPath 'Network Diagnostics.lnk'
+    $lnkPath = Join-Path $OriginalDesktop 'Network Diagnostics.lnk'
     $ws = New-Object -ComObject WScript.Shell
     $sc = $ws.CreateShortcut($lnkPath)
     $sc.TargetPath = 'python'
@@ -300,13 +336,13 @@ if ($createDesktop -eq 'y' -or $createDesktop -eq 'Y') {
 }
 
 # ---------------------------------------------------------
-# 11. START MENU SHORTCUT CREATION
+# 12. START MENU SHORTCUT CREATION
 # ---------------------------------------------------------
 Write-Host ""
 $createStartMenu = Read-Host "[?] Do you want to create a Start Menu shortcut? (y/N)"
 if ($createStartMenu -eq 'y' -or $createStartMenu -eq 'Y') {
     Write-Host "    [*] Generating Start Menu shortcut..." -ForegroundColor Cyan
-    $startMenuPath = [Environment]::GetFolderPath('Programs')
+    $startMenuPath = Join-Path $OriginalAppData 'Microsoft\Windows\Start Menu\Programs'
     $lnkPath = Join-Path $startMenuPath 'Network Diagnostics.lnk'
     $ws = New-Object -ComObject WScript.Shell
     $sc = $ws.CreateShortcut($lnkPath)
@@ -319,7 +355,7 @@ if ($createStartMenu -eq 'y' -or $createStartMenu -eq 'Y') {
 }
 
 # ---------------------------------------------------------
-# 12. RUN THE SETUP SCRIPT FROM TARGET DIRECTORY
+# 13. RUN THE SETUP SCRIPT FROM TARGET DIRECTORY
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "[*] Launching Setup Script from $script:TargetDir..." -ForegroundColor Cyan

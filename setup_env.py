@@ -41,9 +41,10 @@ KNOWN_APP_ITEMS = {
     "venv", "network_data.db", "network_data.db-wal", "network_data.db-shm", 
     "autostart", "webport", "dev", "cleardatabase", "passwordreset", 
     "reinstall", "rollback.zip", "boot_attempts.txt", "workers", 
-    "local_python", "setup_env_new.py", ".gitignore", "Linux and MacOS Launcher.sh", 
-    "windows launcher.bat", "install.md", "NetworkDiagnostics",
-    "standalone", "shutdown_signal", "system_alerts.json", "disablecleanup", "Install scripts" # Guaranteed protection
+    "local_python", "setup_env_new.py", ".gitignore", "NetworkDiagnostics",
+    "standalone", "shutdown_signal", "system_alerts.json", "disablecleanup", 
+    "install.md", "Windows-Installer.bat", "Windows-Installer.ps1", 
+    "Linux-Installer.sh", "MacOS-Installer.sh", "Install scripts"
 }
 
 # GITHUB DEFAULT FALLBACK CONFIGURATION
@@ -227,29 +228,35 @@ def get_autostart_setting(base_dir):
 
 def ensure_linux_prerequisites():
     """
-    Ensures Ubuntu/Debian systems have the necessary Python build tools 
+    Ensures Linux systems have the necessary Python build tools 
     and venv modules installed BEFORE trying to create the virtual environment.
+    Supports APT (Debian/Ubuntu), DNF (Fedora/RHEL), Pacman (Arch), and Zypper (openSUSE).
     """
     if platform.system() == "Linux":
         print("[*] Checking Linux system prerequisites...")
         
-        if shutil.which("apt-get"):
-            try:
-                # 1. Update Package List
-                print("[*] Updating package lists...")
+        try:
+            if shutil.which("apt-get"):
+                print("[*] Updating package lists (APT)...")
                 subprocess.run(["sudo", "apt-get", "update"], check=True)
-                
-                # 2. Install Critical Dependencies
                 print("[*] Installing Python build tools and venv...")
-                subprocess.run([
-                    "sudo", "apt-get", "install", "-y", 
-                    "python3-venv", "python3-pip", "python3-dev", "build-essential", "git", "net-tools"
-                ], check=True)
+                subprocess.run(["sudo", "apt-get", "install", "-y", "python3-venv", "python3-pip", "python3-dev", "build-essential", "git", "net-tools"], check=True)
+            elif shutil.which("dnf"):
+                print("[*] Installing Python build tools and venv (DNF)...")
+                subprocess.run(["sudo", "dnf", "install", "-y", "python3", "python3-pip", "python3-devel", "gcc", "git", "net-tools"], check=True)
+            elif shutil.which("pacman"):
+                print("[*] Installing Python build tools and venv (Pacman)...")
+                subprocess.run(["sudo", "pacman", "-Syu", "--noconfirm", "python", "python-pip", "base-devel", "git", "net-tools"], check=True)
+            elif shutil.which("zypper"):
+                print("[*] Installing Python build tools and venv (Zypper)...")
+                subprocess.run(["sudo", "zypper", "install", "-y", "python3", "python3-pip", "python3-devel", "gcc", "git", "net-tools"], check=True)
+            else:
+                print("[!] Warning: Unknown package manager. Please ensure Python 3, venv, and build tools are installed.")
+                return
                 
-                print("[✓] Linux prerequisites installed.")
-            except subprocess.CalledProcessError as e:
-                print(f"[!] Warning: Failed to install Linux prerequisites: {e}")
-                print("    You may need to run: sudo apt-get install python3-venv python3-dev build-essential")
+            print("[✓] Linux prerequisites installed.")
+        except subprocess.CalledProcessError as e:
+            print(f"[!] Warning: Failed to install Linux prerequisites automatically: {e}")
 
 def install_git():
     """Checks for Git and installs it if missing."""
@@ -261,7 +268,6 @@ def install_git():
 
     try:
         if system == "Windows":
-            # Call our new Chocolatey installer
             if install_chocolatey():
                 subprocess.run(["choco", "install", "git", "-y"], check=True)
             else:
@@ -271,7 +277,14 @@ def install_git():
             if install_homebrew():
                 subprocess.run(["brew", "install", "git"], check=True)
         elif system == "Linux":
-            subprocess.run(["sudo", "apt-get", "install", "-y", "git"], check=True)
+            if shutil.which("apt-get"):
+                subprocess.run(["sudo", "apt-get", "install", "-y", "git"], check=True)
+            elif shutil.which("dnf"):
+                subprocess.run(["sudo", "dnf", "install", "-y", "git"], check=True)
+            elif shutil.which("pacman"):
+                subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "git"], check=True)
+            elif shutil.which("zypper"):
+                subprocess.run(["sudo", "zypper", "install", "-y", "git"], check=True)
         
         print("[✓] Git successfully installed.")
         return True
