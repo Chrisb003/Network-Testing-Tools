@@ -16,19 +16,26 @@ param (
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "[!] Requesting Administrative Privileges..." -ForegroundColor Yellow
     
-    # Pass the original user's directories into the elevated Admin session
-    $Arguments = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", "`"$PSCommandPath`"",
-        "-OriginalProfile", "`"$OriginalProfile`"",
-        "-OriginalDesktop", "`"$OriginalDesktop`"",
-        "-OriginalAppData", "`"$OriginalAppData`""
-    )
+    # Check if running from memory (no file path) or from a local file
+    if ([string]::IsNullOrEmpty($PSCommandPath)) {
+        # Re-run the in-memory download command for the elevated session
+        $MemCommand = "& ([scriptblock]::Create((irm 'https://christest.xo.je/install-scripts/Windows-Installer.ps1'))) -OriginalProfile `'$OriginalProfile`' -OriginalDesktop `'$OriginalDesktop`' -OriginalAppData `'$OriginalAppData`'"
+        $Arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $MemCommand)
+    } else {
+        # Pass the original user's directories into the elevated Admin session using the local file
+        $Arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", "`"$PSCommandPath`"",
+            "-OriginalProfile", "`"$OriginalProfile`"",
+            "-OriginalDesktop", "`"$OriginalDesktop`"",
+            "-OriginalAppData", "`"$OriginalAppData`""
+        )
+    }
+    
     Start-Process powershell.exe -ArgumentList $Arguments -Verb RunAs
     exit
 }
-
 # ---------------------------------------------------------
 # 2. CONFIGURATION
 # ---------------------------------------------------------
@@ -39,7 +46,8 @@ $script:RepoName  = "Network-Testing-Tools"
 $script:Branch    = "main"
 $script:Token     = "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"
 
-Set-Location $PSScriptRoot
+# Set to TEMP since in-memory scripts do not have a $PSScriptRoot
+Set-Location $env:TEMP
 
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
