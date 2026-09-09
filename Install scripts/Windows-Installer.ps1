@@ -36,8 +36,9 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     Start-Process powershell.exe -ArgumentList $Arguments -Verb RunAs
     exit
 }
+
 # ---------------------------------------------------------
-# 2. CONFIGURATION
+# 2. CONFIGURATION & WELCOME PROMPT
 # ---------------------------------------------------------
 # Map to the original user's folders, NOT the Admin's folders
 $script:TargetDir = "$OriginalProfile\Network-Testing-Tools\"
@@ -52,6 +53,14 @@ Set-Location $env:TEMP
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
 Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "This script installs, updates, or manages the Network" -ForegroundColor White
+Write-Host "Diagnostics Dashboard, Python dependencies, and tools." -ForegroundColor White
+Write-Host ""
+$proceed = Read-Host "[?] Do you want to proceed with the installation process? (y/N)"
+if ($proceed -ne 'y' -and $proceed -ne 'Y') {
+    Write-Host "[*] Installation cancelled by user." -ForegroundColor Yellow
+    exit
+}
 
 # ---------------------------------------------------------
 # 3. EXISTING INSTALLATION CHECK & UNINSTALL OPTION
@@ -113,7 +122,6 @@ if (-not $pythonTest) {
     
     Write-Host "[✓] Python installation complete. Refreshing environment..." -ForegroundColor Green
     
-    # FIX: Safely merge Machine and User PATH to prevent breaking built-in Windows commands like icacls
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
     [Environment]::SetEnvironmentVariable("Path", "$machinePath;$userPath", "Process")
@@ -121,7 +129,6 @@ if (-not $pythonTest) {
     Write-Host "[✓] Python is detected." -ForegroundColor Green
 }
 
-# FIX: Explicitly find the REAL python.exe to bypass PowerShell's cache of the Windows Store alias
 $script:PythonCmd = (Get-Command python -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps" } | Select-Object -ExpandProperty Source | Select-Object -First 1)
 
 if (-not $script:PythonCmd) {
@@ -145,6 +152,7 @@ if (-not $ping) {
     Write-Host "[✓] Internet detected. Installing system certificates..." -ForegroundColor Green
     & $script:PythonCmd -m pip install pip-system-certs | Out-Null
 }
+
 # ---------------------------------------------------------
 # 6. DOWNLOAD OR UPDATE CODE FROM GITHUB
 # ---------------------------------------------------------
@@ -191,7 +199,6 @@ if (-not (Test-Path "$script:TargetDir\app.py")) {
         
         $extractedFolder = Get-ChildItem $extractPath | Select-Object -First 1
         
-        # Copy files excluding webport, standalone, disablecleanup
         Get-ChildItem "$($extractedFolder.FullName)" -Recurse | ForEach-Object {
             $relPath = $_.FullName.Substring($extractedFolder.FullName.Length + 1)
             if ($relPath -notin @('webport', 'standalone', 'disablecleanup')) {
@@ -232,7 +239,6 @@ if ($isDedicated -eq 'y' -or $isDedicated -eq 'Y') {
         Write-Host "        [+] Created 'webport' file set to 80." -ForegroundColor Green
     }
     
-    # Optional Wi-Fi Hotspot Setup for Dedicated Test Devices
     Write-Host ""
     Write-Host "    [?] Windows Mobile Hotspot Configuration:" -ForegroundColor Cyan
     $toggleHotspot = Read-Host "    [?] Do you want to configure or toggle the Windows Wi-Fi Mobile Hotspot? (y/N)"
@@ -282,7 +288,9 @@ if ($isDedicated -eq 'y' -or $isDedicated -eq 'Y') {
     Write-Host "    [*] Skipping dedicated test device configurations." -ForegroundColor Gray
 }
 
-# --- 8. FIX DIRECTORY PERMISSIONS FOR ALL USERS ---
+# ---------------------------------------------------------
+# 8. FIX DIRECTORY PERMISSIONS FOR ALL USERS
+# ---------------------------------------------------------
 Write-Host "    [*] Unlocking folder permissions for all users..." -ForegroundColor Cyan
 icacls "$script:TargetDir" /grant "Everyone:(F)" /T /C /Q | Out-Null
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
@@ -292,7 +300,10 @@ Write-Host "--------------------------------------------------------" -Foregroun
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
+
+$icoPath = Join-Path $script:TargetDir 'static\favicon.ico'
 $startupLnk = "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Startup\Network Diagnostics.lnk"
+
 if (Test-Path $startupLnk) {
     Write-Host "[?] Background User-Login Startup is currently ENABLED." -ForegroundColor Yellow
     $toggleStartup = Read-Host "[?] Do you want to DISABLE/REMOVE the startup shortcut? (y/N)"
@@ -307,9 +318,12 @@ if (Test-Path $startupLnk) {
         Write-Host "    [*] Creating startup shortcut..." -ForegroundColor Cyan
         $ws = New-Object -ComObject WScript.Shell
         $sc = $ws.CreateShortcut($startupLnk)
-        $sc.TargetPath = 'python'
-        $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
+        $sc.TargetPath = "cmd.exe"
+        $sc.Arguments = "/c `"`"$script:PythonCmd`" `"$script:TargetDir\setup_env.py`"`""
         $sc.WorkingDirectory = $script:TargetDir
+        if (Test-Path $icoPath) { 
+            $sc.IconLocation = "$icoPath,0" 
+        }
         $sc.Save()
         Write-Host "    [✓] Startup shortcut created." -ForegroundColor Green
     }
@@ -317,21 +331,9 @@ if (Test-Path $startupLnk) {
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 # ---------------------------------------------------------
-# 10. ICON PREPARATION HELPER
+# 10. ICON PATH DEFINITION
 # ---------------------------------------------------------
-$logoPng = Join-Path $script:TargetDir 'static\Logo.png'
-$icoPath = Join-Path $script:TargetDir 'static\Logo.ico'
-if ((Test-Path $logoPng) -and (-not (Test-Path $icoPath))) {
-    try {
-        Add-Type -AssemblyName System.Drawing
-        $bmp = [System.Drawing.Bitmap]::FromFile($logoPng)
-        $ico = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
-        $fs = New-Object System.IO.FileStream($icoPath, [System.IO.FileMode]::Create)
-        $ico.Save($fs)
-        $fs.Close()
-        $bmp.Dispose()
-    } catch {}
-}
+$icoPath = Join-Path $script:TargetDir 'static\favicon.ico'
 
 # ---------------------------------------------------------
 # 11. DESKTOP SHORTCUT CREATION
@@ -343,10 +345,12 @@ if ($createDesktop -eq 'y' -or $createDesktop -eq 'Y') {
     $lnkPath = Join-Path $OriginalDesktop 'Network Diagnostics.lnk'
     $ws = New-Object -ComObject WScript.Shell
     $sc = $ws.CreateShortcut($lnkPath)
-    $sc.TargetPath = 'python'
-    $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
+    $sc.TargetPath = "cmd.exe"
+    $sc.Arguments = "/k `"`"$script:PythonCmd`" `"$script:TargetDir\setup_env.py`"`""
     $sc.WorkingDirectory = $script:TargetDir
-    if (Test-Path $icoPath) { $sc.IconLocation = "$icoPath,0" }
+    if (Test-Path $icoPath) { 
+        $sc.IconLocation = "$icoPath,0" 
+    }
     $sc.Save()
     Write-Host "[✓] Desktop shortcut created successfully." -ForegroundColor Green
 }
@@ -362,41 +366,48 @@ if ($createStartMenu -eq 'y' -or $createStartMenu -eq 'Y') {
     $lnkPath = Join-Path $startMenuPath 'Network Diagnostics.lnk'
     $ws = New-Object -ComObject WScript.Shell
     $sc = $ws.CreateShortcut($lnkPath)
-    $sc.TargetPath = 'python'
-    $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
+    $sc.TargetPath = "cmd.exe"
+    $sc.Arguments = "/k `"`"$script:PythonCmd`" `"$script:TargetDir\setup_env.py`"`""
     $sc.WorkingDirectory = $script:TargetDir
-    if (Test-Path $icoPath) { $sc.IconLocation = "$icoPath,0" }
+    if (Test-Path $icoPath) { 
+        $sc.IconLocation = "$icoPath,0" 
+    }
     $sc.Save()
     Write-Host "[✓] Start Menu shortcut created successfully." -ForegroundColor Green
 }
 
 # ---------------------------------------------------------
-# 13. INSTALL NPCAP (MANUAL GUI REQUIRED)
+# 13. CHECK AND INSTALL NPCAP (IF MISSING)
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
-Write-Host "[!] Npcap is required for network packet capture features." -ForegroundColor Yellow
-Write-Host "    (The free version requires you to click through the installer manually)." -ForegroundColor Gray
-$installNpcap = Read-Host "[?] Do you want to download and install Npcap now? (y/N)"
 
-if ($installNpcap -eq 'y' -or $installNpcap -eq 'Y') {
-    Write-Host "    [*] Downloading the latest Npcap installer..." -ForegroundColor Cyan
-    
-    # Download the latest stable Npcap version (1.88) directly from npcap.com
-    $npcapUrl = "https://npcap.com/dist/npcap-1.88.exe"
-    $npcapInstaller = "$env:TEMP\npcap_installer.exe"
-    
-    Invoke-WebRequest -Uri $npcapUrl -OutFile $npcapInstaller -UseBasicParsing
-    
-    Write-Host "    [*] Launching Npcap installer. Please complete the installation window that pops up." -ForegroundColor Yellow
-    
-    # -Wait pauses the PowerShell script until the user finishes the Npcap GUI installer
-    Start-Process -FilePath $npcapInstaller -Wait
-    
-    Remove-Item $npcapInstaller -Force -ErrorAction SilentlyContinue
-    Write-Host "    [✓] Npcap installation step completed." -ForegroundColor Green
+$npcapInstalled = Test-Path "$env:SystemRoot\System32\Npcap"
+
+if ($npcapInstalled) {
+    Write-Host "[✓] Npcap is already detected on this system. Skipping installation." -ForegroundColor Green
 } else {
-    Write-Host "    [*] Skipping Npcap installation." -ForegroundColor Gray
+    Write-Host "[!] Npcap is required for network packet capture features." -ForegroundColor Yellow
+    Write-Host "    (The free version requires you to click through the installer manually)." -ForegroundColor Gray
+    $installNpcap = Read-Host "[?] Do you want to download and install Npcap now? (y/N)"
+
+    if ($installNpcap -eq 'y' -or $installNpcap -eq 'Y') {
+        Write-Host "    [*] Downloading the latest Npcap installer..." -ForegroundColor Cyan
+        
+        $npcapUrl = "https://npcap.com/dist/npcap-1.88.exe"
+        $npcapInstaller = "$env:TEMP\npcap_installer.exe"
+        
+        Invoke-WebRequest -Uri $npcapUrl -OutFile $npcapInstaller -UseBasicParsing
+        
+        Write-Host "    [*] Launching Npcap installer. Please complete the installation window that pops up." -ForegroundColor Yellow
+        
+        Start-Process -FilePath $npcapInstaller -Wait
+        
+        Remove-Item $npcapInstaller -Force -ErrorAction SilentlyContinue
+        Write-Host "    [✓] Npcap installation step completed." -ForegroundColor Green
+    } else {
+        Write-Host "    [*] Skipping Npcap installation." -ForegroundColor Gray
+    }
 }
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 

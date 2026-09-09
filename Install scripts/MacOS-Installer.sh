@@ -3,6 +3,14 @@
 echo "========================================================"
 echo "   NETWORK DIAGNOSTICS - MACOS INSTALLER & MANAGER"
 echo "========================================================"
+echo "This script installs, updates, or manages the Network"
+echo "Diagnostics Dashboard, Python dependencies, and tools."
+echo ""
+read -p "[?] Do you want to proceed with the installation process? (y/N): " < /dev/tty
+if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+    echo "[*] Installation cancelled by user."
+    exit 0
+fi
 
 # --- 1. CONFIGURATION ---
 TARGET_DIR="$HOME/Network-Testing-Tools"
@@ -21,15 +29,14 @@ fi
 
 # --- 2. AUTO-DIRECTORY DETECTION ---
 cd "$(dirname "$0")" || exit
-echo "[*] Working Directory: $(pwd)"
 
 # --- 3. EXISTING INSTALLATION CHECK & UNINSTALL OPTION ---
 if [ -d "$TARGET_DIR" ]; then
     echo ""
     echo "[*] Existing installation detected at $TARGET_DIR."
-    read -p "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N): " remove_app
+    read -p "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N): " remove_app < /dev/tty
     if [[ "$remove_app" =~ ^[Yy]$ ]]; then
-        read -p "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion: " confirm_wipe
+        read -p "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion: " confirm_wipe < /dev/tty
         if [ "$confirm_wipe" == "yes" ]; then
             echo "[*] Stopping macOS background agent if active..."
             launchctl unload "$PLIST_PATH" &>/dev/null
@@ -90,7 +97,7 @@ if [ ! -d "$TARGET_DIR" ]; then
     echo "[✓] Files downloaded into $TARGET_DIR."
 else
     echo "[✓] Code directory already exists. Skipping full re-download to preserve existing configs/database."
-    read -p "[?] Do you want to pull/update latest code changes from GitHub repository? (y/N): " update_code
+    read -p "[?] Do you want to pull/update latest code changes from GitHub repository? (y/N): " update_code < /dev/tty
     if [[ "$update_code" =~ ^[Yy]$ ]]; then
         curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
         mkdir -p /tmp/network_dashboard_extract
@@ -112,7 +119,7 @@ fi
 # --- 6. DEDICATED TEST DEVICE PROMPT & CONFIG TRIGGERS ---
 echo ""
 echo "--------------------------------------------------------"
-read -p "[?] Are you using this device as a dedicated test device? (y/N): " is_dedicated
+read -p "[?] Are you using this device as a dedicated test device? (y/N): " is_dedicated < /dev/tty
 if [[ "$is_dedicated" =~ ^[Yy]$ ]]; then
     echo "    [*] Configuring for dedicated test device mode..."
     mkdir -p "$TARGET_DIR"
@@ -133,7 +140,6 @@ else
 fi
 echo "--------------------------------------------------------"
 
-# Fix ownership and permissions so anyone can modify/delete the folder
 chown -R "$USER" "$TARGET_DIR" 2>/dev/null || sudo chown -R "$USER" "$TARGET_DIR"
 sudo chmod -R 777 "$TARGET_DIR"
 
@@ -145,7 +151,7 @@ SERVICE_ACTIVE=false
 if [ -f "$PLIST_PATH" ]; then
     SERVICE_ACTIVE=true
     echo "[?] macOS Background Boot Agent is currently ENABLED."
-    read -p "[?] Do you want to DISABLE/REMOVE the background service? (y/N): " toggle_service
+    read -p "[?] Do you want to DISABLE/REMOVE the background service? (y/N): " toggle_service < /dev/tty
     if [[ "$toggle_service" =~ ^[Yy]$ ]]; then
         launchctl unload "$PLIST_PATH" &>/dev/null
         rm -f "$PLIST_PATH"
@@ -154,7 +160,7 @@ if [ -f "$PLIST_PATH" ]; then
     fi
 else
     echo "[?] macOS Background Boot Agent is currently DISABLED."
-    read -p "[?] Do you want to ENABLE automatic start on login and run in the background? (y/N): " toggle_service
+    read -p "[?] Do you want to ENABLE automatic start on login and run in the background? (y/N): " toggle_service < /dev/tty
     if [[ "$toggle_service" =~ ^[Yy]$ ]]; then
         echo "    [*] Setting up launchd agent..."
         mkdir -p "$HOME/Library/LaunchAgents"
@@ -188,22 +194,21 @@ echo "--------------------------------------------------------"
 
 # --- 8. APPLICATIONS FOLDER SHORTCUT (.APP BUNDLE) CREATION ---
 echo ""
-read -p "[?] Do you want to create an application shortcut in your Applications folder? (y/N): " create_app_shortcut
+read -p "[?] Do you want to create an application shortcut in your Applications folder? (y/N): " create_app_shortcut < /dev/tty
 if [[ "$create_app_shortcut" =~ ^[Yy]$ ]]; then
     APP_DIR="$HOME/Applications"
     mkdir -p "$APP_DIR"
     APP_PATH="$APP_DIR/Network Diagnostics.app"
     
-    echo "    [*] Building macOS Application Bundle with custom icon..."
+    echo "    [*] Building macOS Application Bundle with custom icon and visible terminal window..."
     rm -rf "$APP_PATH"
     mkdir -p "$APP_PATH/Contents/MacOS"
     mkdir -p "$APP_PATH/Contents/Resources"
     
-    # Create executable launcher wrapper inside the bundle
+    # Create executable launcher wrapper inside the bundle that opens a visible Terminal window
     cat << 'EOF' > "$APP_PATH/Contents/MacOS/launcher"
 #!/bin/bash
-cd "$HOME/Network-Testing-Tools"
-python3 setup_env.py
+osascript -e 'tell application "Terminal" to do script "cd \"$HOME/Network-Testing-Tools\" && python3 setup_env.py"'
 EOF
     chmod +x "$APP_PATH/Contents/MacOS/launcher"
     
@@ -227,8 +232,11 @@ EOF
 </plist>
 EOF
 
-    # Convert static/Logo.png into Apple's .icns format if available
-    if [ -f "$TARGET_DIR/static/Logo.png" ]; then
+    # Use favicon.ico directly or convert Logo.png into Apple's .icns format
+    if [ -f "$TARGET_DIR/static/favicon.ico" ]; then
+        # On macOS, converting .ico or using sips for icns
+        sips -s format icns "$TARGET_DIR/static/favicon.ico" --out "$APP_PATH/Contents/Resources/AppIcon.icns" &>/dev/null
+    elif [ -f "$TARGET_DIR/static/Logo.png" ]; then
         ICONSET_DIR="/tmp/icon.iconset"
         mkdir -p "$ICONSET_DIR"
         sips -z 16 16     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_16x16.png" &>/dev/null
@@ -253,7 +261,7 @@ LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/n
 if [ -z "$LOCAL_IP" ]; then
     LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 fi
-PORT="81" # Default fallback port if config is absent
+PORT=$(cat "$TARGET_DIR/webport" 2>/dev/null || echo "81")
 
 echo ""
 echo "========================================================"

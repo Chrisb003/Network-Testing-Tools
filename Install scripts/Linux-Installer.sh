@@ -3,6 +3,14 @@
 echo "========================================================"
 echo "   NETWORK DIAGNOSTICS - LINUX INSTALLER & MANAGER"
 echo "========================================================"
+echo "This script installs, updates, or manages the Network"
+echo "Diagnostics Dashboard, Python dependencies, and tools."
+echo ""
+read -p "[?] Do you want to proceed with the installation process? (y/N): " < /dev/tty
+if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+    echo "[*] Installation cancelled by user."
+    exit 0
+fi
 
 # --- 1. CONFIGURATION ---
 TARGET_DIR="$HOME/Network-Testing-Tools"
@@ -24,9 +32,9 @@ fi
 if [ -d "$TARGET_DIR" ]; then
     echo ""
     echo "[*] Existing installation detected at $TARGET_DIR."
-    read -p "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N): " remove_app
+    read -p "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N): " remove_app < /dev/tty
     if [[ "$remove_app" =~ ^[Yy]$ ]]; then
-        read -p "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion: " confirm_wipe
+        read -p "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion: " confirm_wipe < /dev/tty
         if [ "$confirm_wipe" == "yes" ]; then
             echo "[*] Stopping system service if active..."
             sudo systemctl stop network-dashboard.service &>/dev/null
@@ -81,7 +89,7 @@ if [ ! -d "$TARGET_DIR" ]; then
     echo "[✓] Files downloaded into $TARGET_DIR."
 else
     echo "[✓] Code directory already exists. Skipping full re-download to preserve existing configs/database."
-    read -p "[?] Do you want to pull/update latest code changes from GitHub repository? (y/N): " update_code
+    read -p "[?] Do you want to pull/update latest code changes from GitHub repository? (y/N): " update_code < /dev/tty
     if [[ "$update_code" =~ ^[Yy]$ ]]; then
         curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
         mkdir -p /tmp/network_dashboard_extract
@@ -103,7 +111,7 @@ fi
 # --- 5. DEDICATED TEST DEVICE PROMPT & CONFIG TRIGGERS ---
 echo ""
 echo "--------------------------------------------------------"
-read -p "[?] Are you using this device as a dedicated test device? (y/N): " is_dedicated
+read -p "[?] Are you using this device as a dedicated test device? (y/N): " is_dedicated < /dev/tty
 HOTSPOT_ACTIVE=false
 
 if [[ "$is_dedicated" =~ ^[Yy]$ ]]; then
@@ -132,7 +140,6 @@ if [[ "$is_dedicated" =~ ^[Yy]$ ]]; then
     echo ""
     echo "    [?] Wi-Fi Hotspot Configuration:"
     
-    # Automatically detect the wireless interface name across different Linux utilities
     WIFI_IFACE=""
     if command -v iw &> /dev/null; then
         WIFI_IFACE=$(iw dev | awk '$1=="Interface"{print $2}' | head -n 1)
@@ -144,9 +151,8 @@ if [[ "$is_dedicated" =~ ^[Yy]$ ]]; then
         WIFI_IFACE="wlan0"
     fi
 
-    # Check if a hotspot is currently configured
     if nmcli connection show "Hotspot" &>/dev/null; then
-        read -p "    [?] A Wi-Fi Hotspot is currently ENABLED. Do you want to DISABLE it? (y/N): " toggle_hotspot
+        read -p "    [?] A Wi-Fi Hotspot is currently ENABLED. Do you want to DISABLE it? (y/N): " toggle_hotspot < /dev/tty
         if [[ "$toggle_hotspot" =~ ^[Yy]$ ]]; then
             sudo nmcli connection delete Hotspot &>/dev/null
             echo "        [✓] Hotspot successfully disabled and removed."
@@ -154,10 +160,9 @@ if [[ "$is_dedicated" =~ ^[Yy]$ ]]; then
             HOTSPOT_ACTIVE=true
         fi
     else
-        read -p "    [?] Do you want to ENABLE a Wi-Fi Hotspot to access the dashboard? (y/N): " toggle_hotspot
+        read -p "    [?] Do you want to ENABLE a Wi-Fi Hotspot to access the dashboard? (y/N): " toggle_hotspot < /dev/tty
         if [[ "$toggle_hotspot" =~ ^[Yy]$ ]]; then
             
-            # Generate default SSID using the last 6 characters of the MAC address
             MAC_ADDR=$(cat /sys/class/net/$WIFI_IFACE/address 2>/dev/null | tr -d ':')
             if [ -n "$MAC_ADDR" ]; then
                 MAC_SUFFIX=$(echo "${MAC_ADDR: -6}" | tr 'a-z' 'A-Z')
@@ -166,13 +171,11 @@ if [[ "$is_dedicated" =~ ^[Yy]$ ]]; then
             fi
             DEFAULT_SSID="Network-Dashboard-$MAC_SUFFIX"
 
-            # 1. Ask for Custom SSID
-            read -p "        Enter Hotspot SSID [Default: $DEFAULT_SSID]: " HOTSPOT_SSID
+            read -p "        Enter Hotspot SSID [Default: $DEFAULT_SSID]: " HOTSPOT_SSID < /dev/tty
             HOTSPOT_SSID=${HOTSPOT_SSID:-$DEFAULT_SSID}
             
-            # 2. Ask for Custom Password (Enforce 8 character minimum for WPA2)
             while true; do
-                read -p "        Enter Hotspot Password (min 8 chars) [Default: dashboard123]: " HOTSPOT_PASS
+                read -p "        Enter Hotspot Password (min 8 chars) [Default: dashboard123]: " HOTSPOT_PASS < /dev/tty
                 HOTSPOT_PASS=${HOTSPOT_PASS:-dashboard123}
                 
                 if [ ${#HOTSPOT_PASS} -ge 8 ]; then
@@ -184,7 +187,6 @@ if [[ "$is_dedicated" =~ ^[Yy]$ ]]; then
             
             echo "        [*] Configuring Wi-Fi Hotspot on $WIFI_IFACE..."
             
-            # Create the AP using NetworkManager's 'shared' IPv4 method
             sudo nmcli connection add type wifi ifname "$WIFI_IFACE" con-name Hotspot autoconnect yes ssid "$HOTSPOT_SSID" &>/dev/null
             sudo nmcli connection modify Hotspot 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared
             sudo nmcli connection modify Hotspot wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOTSPOT_PASS"
@@ -203,7 +205,6 @@ else
 fi
 echo "--------------------------------------------------------"
 
-# Fix ownership and permissions so anyone can modify/delete the folder
 sudo chown -R "$USER:$USER" "$TARGET_DIR"
 sudo chmod -R 777 "$TARGET_DIR"
 
@@ -215,7 +216,7 @@ SERVICE_ACTIVE=false
 if systemctl is-active --quiet network-dashboard.service; then
     SERVICE_ACTIVE=true
     echo "[?] Background Boot Service is currently ENABLED."
-    read -p "[?] Do you want to DISABLE/REMOVE the background service? (y/N): " toggle_service
+    read -p "[?] Do you want to DISABLE/REMOVE the background service? (y/N): " toggle_service < /dev/tty
     if [[ "$toggle_service" =~ ^[Yy]$ ]]; then
         sudo systemctl stop network-dashboard.service &>/dev/null
         sudo systemctl disable network-dashboard.service &>/dev/null
@@ -226,7 +227,7 @@ if systemctl is-active --quiet network-dashboard.service; then
     fi
 else
     echo "[?] Background Boot Service is currently DISABLED."
-    read -p "[?] Do you want to ENABLE automatic start on boot and run in the background? (y/N): " toggle_service
+    read -p "[?] Do you want to ENABLE automatic start on boot and run in the background? (y/N): " toggle_service < /dev/tty
     if [[ "$toggle_service" =~ ^[Yy]$ ]]; then
         echo "    [*] Setting up systemd service..."
         sudo bash -c "cat > $SERVICE_FILE" <<EOL
@@ -256,14 +257,16 @@ echo "--------------------------------------------------------"
 
 # --- 7. DESKTOP SHORTCUT CREATION ---
 echo ""
-read -p "[?] Do you want to create a Desktop shortcut to launch the app? (y/N): " create_shortcut
+read -p "[?] Do you want to create a Desktop shortcut to launch the app? (y/N): " create_shortcut < /dev/tty
 if [[ "$create_shortcut" =~ ^[Yy]$ ]]; then
     DESKTOP_DIR="$HOME/Desktop"
     if [ -d "$DESKTOP_DIR" ]; then
         SHORTCUT_FILE="$DESKTOP_DIR/Network-Diagnostics.desktop"
         
-        # Point to the local logo image if it exists, otherwise use a generic fallback icon
-        ICON_PATH="$TARGET_DIR/static/Logo.png"
+        ICON_PATH="$TARGET_DIR/static/favicon.ico"
+        if [ ! -f "$ICON_PATH" ]; then
+            ICON_PATH="$TARGET_DIR/static/Logo.png"
+        fi
         if [ ! -f "$ICON_PATH" ]; then
             ICON_PATH="applications-internet"
         fi
@@ -279,7 +282,7 @@ Type=Application
 Categories=Network;System;
 EOL
         chmod +x "$SHORTCUT_FILE"
-        echo "[✓] Desktop shortcut created at $SHORTCUT_FILE using app logo."
+        echo "[✓] Desktop shortcut created at $SHORTCUT_FILE."
     else
         echo "[!] Desktop folder not found, skipping shortcut."
     fi
@@ -290,7 +293,7 @@ LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 if [ -z "$LOCAL_IP" ]; then
     LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk 'NR==1 {print $7}')
 fi
-PORT=$(cat "$TARGET_DIR/webport" 2>/dev/null || echo "80")
+PORT=$(cat "$TARGET_DIR/webport" 2>/dev/null || echo "81")
 
 echo ""
 echo "========================================================"
