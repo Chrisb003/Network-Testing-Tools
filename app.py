@@ -150,7 +150,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.15.0"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -5119,25 +5119,108 @@ def check_disk_space():
         print(f"[*] Could not check disk space: {e}")
     return True
 
+def is_headless_mode():
+    """Detects if the application is running in a headless or background daemon environment."""
+    # 1. Explicit standalone configuration file trigger
+    if os.path.exists(os.path.join(app.root_path, "standalone")):
+        return True
+        
+    # 2. If there is no interactive terminal attached (e.g., systemd or launchd daemon), it's headless
+    try:
+        if not sys.stdin.isatty():
+            return True
+    except Exception:
+        pass
+        
+    # 3. Linux-specific: No graphical display server available
+    if platform.system() == "Linux":
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            return True
+            
+    return False
+
+def create_tray_icon():
+    """Initializes and runs the cross-platform system tray icon."""
+    if is_headless_mode():
+        print("[*] Headless/Daemon mode detected. Skipping system tray icon.")
+        return
+
+    try:
+        import pystray
+        from PIL import Image
+    except ImportError:
+        print("[*] 'pystray' or 'Pillow' missing. Skipping system tray icon.")
+        return
+
+    # macOS prefers PNGs. Windows natively prefers ICOs.
+    if platform.system() == "Darwin":
+        icon_path = os.path.join(app.root_path, 'static', 'Logo.png')
+    else:
+        icon_path = os.path.join(app.root_path, 'static', 'favicon.ico')
+        
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(app.root_path, 'static', 'Logo.png')
+        if not os.path.exists(icon_path):
+            print("[*] Tray icon image not found in 'static' folder. Skipping.")
+            return
+
+    try:
+        image = Image.open(icon_path)
+        image.thumbnail((32, 32))
+    except Exception as e:
+        print(f"[!] Failed to load tray icon image: {e}")
+        return
+
+    def on_restart(icon, item):
+        print("[*] Tray Action: Restart requested.")
+        threading.Thread(target=restart_server).start()
+
+    def on_stop(icon, item):
+        print("[*] Tray Action: Shutdown requested.")
+        try:
+            with open(os.path.join(app.root_path, "shutdown_signal"), "w") as f:
+                f.write("shutdown")
+        except Exception: 
+            pass
+        icon.stop() 
+        os._exit(0)
+
+    try:
+        menu = pystray.Menu(
+            pystray.MenuItem("Restart Dashboard", on_restart),
+            pystray.MenuItem("Stop Dashboard", on_stop)
+        )
+        icon = pystray.Icon("NetworkDiagnostics", image, "Network Diagnostics", menu)
+        
+        # CRITICAL MACOS FIX: 
+        # On macOS, icon.run() requires a setup callback to properly attach to 
+        # the native application runloop on the main thread.
+        def setup_action(icon_instance):
+            icon_instance.visible = True
+
+        icon.run(setup=setup_action)
+        
+    except Exception as e:
+        print(f"[!] System tray icon failed to initialize (GUI may be inaccessible): {e}")
+
 if __name__ == '__main__':
     # --- 1. Catch boot loops before doing anything else ---
     manage_boot_counter()
 
     if platform.system() == "Darwin":
-            try:
-                import CoreLocation
-                loc_manager = CoreLocation.CLLocationManager.alloc().init()
-                loc_manager.requestAlwaysAuthorization()
-                loc_manager.startUpdatingLocation()
-                print("[*] CoreLocation authorization requested.")
-            except Exception as e:
-                print(f"[!] CoreLocation initialization failed: {e}")
+        try:
+            import CoreLocation
+            loc_manager = CoreLocation.CLLocationManager.alloc().init()
+            loc_manager.requestAlwaysAuthorization()
+            loc_manager.startUpdatingLocation()
+            print("[*] CoreLocation authorization requested.")
+        except Exception as e:
+            print(f"[!] CoreLocation initialization failed: {e}")
 
     # Disable Wi-Fi Power Management on Linux/Raspberry Pi for stable scanning
     if platform.system() == "Linux":
         try:
             if shutil.which("iw"):
-                # Dynamically get ALL wireless interface names
                 out = subprocess.check_output("iw dev | awk '$1==\"Interface\"{print $2}'", shell=True, text=True).strip()
                 if out:
                     for iface in out.split('\n'):
@@ -5162,7 +5245,7 @@ if __name__ == '__main__':
     
     current_port = get_current_port()
 
-    # --- NEW: Port Conflict Fallback ---
+    # --- Port Conflict Fallback ---
     available_port = get_available_port(current_port)
     
     if not available_port:
@@ -5172,64 +5255,74 @@ if __name__ == '__main__':
         print(f"[!] Please define a port in the 'webport' file.")
         print("!"*60 + "\n")
         
-        # Auto-create the webport file for the user with an alternative default
         port_file = os.path.join(app.root_path, "webport")
         try:
             with open(port_file, "w") as f:
                 f.write("8080")
             print(f"[*] Auto-created 'webport' file in {app.root_path} with suggested port 8080.")
         except: pass
-        
         sys.exit(1)
         
-        if available_port != current_port:
-            # Check if the port was changed because it was restricted or just in use
-            if current_port in RESTRICTED_PORTS:
-                conflict_msg = f"Port {current_port} is restricted by browsers. Automatically migrated to safe port {available_port}."
-            else:
-                conflict_msg = f"Port conflict on {current_port}. Automatically fell back to open port {available_port}."
-                
-            print(f"[*] {conflict_msg}")
-            add_system_alert(conflict_msg)
+    if available_port != current_port:
+        if current_port in RESTRICTED_PORTS:
+            conflict_msg = f"Port {current_port} is restricted by browsers. Automatically migrated to safe port {available_port}."
+        else:
+            conflict_msg = f"Port conflict on {current_port}. Automatically fell back to open port {available_port}."
             
-            try:
-                with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                    conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(available_port),))
-                    conn.commit()
-            except: pass
-            current_port = available_port
+        print(f"[*] {conflict_msg}")
+        add_system_alert(conflict_msg)
+        
+        try:
+            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(available_port),))
+                conn.commit()
+        except: pass
+        current_port = available_port
                 
-    # --- 2. Start a timer to clear the boot counter if the app stays alive for 5 seconds ---
+    # Start a timer to clear the boot counter if the app stays alive for 5 seconds
     threading.Timer(5.0, clear_boot_counter).start()
 
-    # Try to use the production-ready Waitress server
-    try:
-        from waitress import serve
-        
-        lan_ip = get_local_ip()
-        v_glob = get_global_version().replace('DEV', '').strip()
-        
-        print("\n" + "="*60)
-        print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
-        print(f"   (Local Access: http://127.0.0.1:{current_port})")
-        print("   (Production WSGI Server - No Warnings)")
-        print("   " + "-"*54)
-        print(f"   Versions: Global: {v_glob} | App: {APP_VERSION} | Setup: {get_setup_version()} | HTML: {get_html_version()}")
-        print("="*60 + "\n")
-        
-        worker_cfg = get_worker_config()
-        # We still bind to 0.0.0.0 so other devices on the network can access it
-        serve(app, host='0.0.0.0', port=current_port, threads=worker_cfg['server_threads'])
-        
-    except ImportError:
-        lan_ip = get_local_ip()
-        v_glob = get_global_version().replace('DEV', '').strip()
-        
-        print("\n" + "="*60)
-        print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
-        print("   (Development Server)")
-        print("   " + "-"*54)
-        print(f"   Versions: Global: {v_glob} | App: {APP_VERSION} | Setup: {get_setup_version()} | HTML: {get_html_version()}")
-        print("="*60 + "\n")
-        
-        app.run(debug=True, host='0.0.0.0', port=current_port)
+    # --- Web Server Function (to run in background thread) ---
+    def run_web_server():
+        try:
+            from waitress import serve
+            lan_ip = get_local_ip()
+            v_glob = get_global_version().replace('DEV', '').strip()
+            
+            print("\n" + "="*60)
+            print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
+            print(f"   (Local Access: http://127.0.0.1:{current_port})")
+            print("   (Production WSGI Server - No Warnings)")
+            print("   " + "-"*54)
+            print(f"   Versions: Global: {v_glob} | App: {APP_VERSION} | Setup: {get_setup_version()} | HTML: {get_html_version()}")
+            print("="*60 + "\n")
+            
+            worker_cfg = get_worker_config()
+            serve(app, host='0.0.0.0', port=current_port, threads=worker_cfg['server_threads'])
+            
+        except ImportError:
+            lan_ip = get_local_ip()
+            v_glob = get_global_version().replace('DEV', '').strip()
+            
+            print("\n" + "="*60)
+            print(f"   DASHBOARD ACTIVE: http://{lan_ip}:{current_port}")
+            print("   (Development Server)")
+            print("   " + "-"*54)
+            print(f"   Versions: Global: {v_glob} | App: {APP_VERSION} | Setup: {get_setup_version()} | HTML: {get_html_version()}")
+            print("="*60 + "\n")
+            
+            # Disable reloader because it conflicts with threading
+            app.run(debug=False, host='0.0.0.0', port=current_port, use_reloader=False)
+
+    # 1. Start the web server in a background daemon thread
+    server_thread = threading.Thread(target=run_web_server, daemon=True)
+    server_thread.start()
+
+    # 2. Start the System Tray icon on the main OS thread
+    # If successful, this blocks the main thread permanently while the icon exists.
+    create_tray_icon()
+    
+    # 3. Fallback failsafe
+    # If the tray icon is skipped (headless) or crashes, the main thread reaches here.
+    # We join the server thread so the application stays alive indefinitely!
+    server_thread.join()

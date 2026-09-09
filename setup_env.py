@@ -18,16 +18,17 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "0.14.0"
+SETUP_VERSION = "0.15.0"
 VENV_DIR_NAME = "venv"
 
-BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress"]
+BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pystray", "Pillow"]
 
 # macOS-specific requirement for CoreWLAN Wi-Fi scanning
 if platform.system() == "Darwin":
     BASE_REQUIREMENTS.extend([
         "pyobjc-framework-CoreWLAN",
-        "pyobjc-framework-CoreLocation"
+        "pyobjc-framework-CoreLocation",
+        "pyobjc-framework-Quartz"
     ])
 
 REQUIREMENTS = BASE_REQUIREMENTS
