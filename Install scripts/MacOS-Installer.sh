@@ -1,14 +1,12 @@
 #!/bin/sh
 
 # Ensure we run as a standard user for paths
-if [ "$EUID" -eq 0 ]; then
+if [ "$(id -u)" -eq 0 ]; then
     echo "[!] Please do NOT run this script with 'sudo'. Run it as your normal user."
     exit 1
 fi
 
-# --- 1. AUTO-DIRECTORY DETECTION & CONFIGURATION ---
-cd "$(dirname "$0")" || exit
-
+# --- 1. CONFIGURATION ---
 TARGET_DIR="$HOME/Network-Testing-Tools"
 REPO_OWNER="Chrisb003"
 REPO_NAME="Network-Testing-Tools"
@@ -160,7 +158,7 @@ case "$is_dedicated" in
 esac
 echo "--------------------------------------------------------"
 
-chown -R "$USER" "$TARGET_DIR" 2>/dev/null || sudo chown -R "$USER" "$TARGET_DIR"
+chown -R "$USER" "$TARGET_DIR" >/dev/null 2>&1 || sudo chown -R "$USER" "$TARGET_DIR"
 sudo chmod -R 777 "$TARGET_DIR"
 
 # Ensure APP bundle is created, required for macOS Login Items to work properly
@@ -302,4 +300,5 @@ fi
 echo "========================================================"
 
 # --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
-python3 "$TARGET_DIR/setup_env.py"
+cd "$TARGET_DIR" || exit
+python3 setup_env.py

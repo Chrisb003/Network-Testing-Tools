@@ -411,5 +411,6 @@ echo "========================================================"
 
 # --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
 if [ "$SERVICE_ACTIVE" = false ]; then
-    python3 "$TARGET_DIR/setup_env.py"
+    cd "$TARGET_DIR" || exit
+    python3 setup_env.py
 fi
