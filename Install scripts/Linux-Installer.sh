@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Ensure we run as a standard user for paths, but keep sudo available for apt commands
-if [ "$EUID" -eq 0 ]; then
+if [ "$(id -u)" -eq 0 ]; then
     echo "[!] Please do NOT run this script directly with 'sudo'. Run it as your normal user."
     echo "    The script will prompt for sudo credentials only when necessary."
     exit 1
@@ -13,6 +13,10 @@ REPO_OWNER="Chrisb003"
 REPO_NAME="Network-Testing-Tools"
 BRANCH="main"
 TOKEN="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"
+SERVICE_NAME="network-dashboard.service"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
+AUTOSTART_DIR="$HOME/.config/autostart"
+AUTOSTART_FILE="$AUTOSTART_DIR/Network-Diagnostics.desktop"
 
 # --- 2. EXISTING INSTALLATION CHECK & UNINSTALL OPTION ---
 if [ -d "$TARGET_DIR" ]; then
@@ -31,11 +35,11 @@ if [ -d "$TARGET_DIR" ]; then
             if [ "$confirm_wipe" = "yes" ]; then
                 
                 # Cleanup old systemd service if it existed
-                if [ -f "/etc/systemd/system/network-dashboard.service" ]; then
+                if [ -f "$SERVICE_FILE" ]; then
                     echo "[*] Stopping system service..."
-                    sudo systemctl stop network-dashboard.service >/dev/null 2>&1
-                    sudo systemctl disable network-dashboard.service >/dev/null 2>&1
-                    sudo rm -f /etc/systemd/system/network-dashboard.service
+                    sudo systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+                    sudo systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
+                    sudo rm -f "$SERVICE_FILE"
                     sudo systemctl daemon-reload
                 fi
                 
@@ -44,7 +48,7 @@ if [ -d "$TARGET_DIR" ]; then
                 
                 echo "[*] Removing shortcuts..."
                 rm -f "$HOME/Desktop/Network-Diagnostics.desktop"
-                rm -f "$HOME/.config/autostart/Network-Diagnostics.desktop"
+                rm -f "$AUTOSTART_FILE"
                 
                 echo "[✓] Application completely removed."
                 exit 0
@@ -228,46 +232,61 @@ echo "--------------------------------------------------------"
 sudo chown -R "$USER:$USER" "$TARGET_DIR"
 sudo chmod -R 777 "$TARGET_DIR"
 
-# --- 7. USER LOGIN AUTOSTART (VISIBLE TERMINAL) ---
+# --- 7. AUTOSTART CONFIGURATION (DESKTOP OR HEADLESS) ---
 echo ""
 echo "--------------------------------------------------------"
-AUTOSTART_DIR="$HOME/.config/autostart"
-AUTOSTART_FILE="$AUTOSTART_DIR/Network-Diagnostics.desktop"
+SERVICE_ACTIVE=false
 
-# Clean up legacy systemd service from older script versions
-if [ -f "/etc/systemd/system/network-dashboard.service" ]; then
-    echo "[*] Cleaning up legacy invisible systemd service..."
-    sudo systemctl stop network-dashboard.service >/dev/null 2>&1
-    sudo systemctl disable network-dashboard.service >/dev/null 2>&1
-    sudo rm -f "/etc/systemd/system/network-dashboard.service"
-    sudo systemctl daemon-reload
-fi
-
-if [ -f "$AUTOSTART_FILE" ]; then
-    echo "[?] User-Login Startup is currently ENABLED."
-    printf "[?] Do you want to DISABLE/REMOVE the startup shortcut? (y/N): "
+# Check if ANY autostart method is currently enabled
+if [ -f "$AUTOSTART_FILE" ] || systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    echo "[?] Autostart (Desktop or Background Service) is currently ENABLED."
+    printf "[?] Do you want to DISABLE/REMOVE the startup behavior? (y/N): "
     read toggle_service < /dev/tty
     case "$toggle_service" in
         [Yy]* )
+            # Remove Desktop autostart
             rm -f "$AUTOSTART_FILE"
-            echo "    [✓] Startup shortcut removed."
+            # Remove Systemd service
+            if [ -f "$SERVICE_FILE" ]; then
+                sudo systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+                sudo systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
+                sudo rm -f "$SERVICE_FILE"
+                sudo systemctl daemon-reload
+            fi
+            echo "    [✓] All startup configurations removed."
             ;;
     esac
 else
-    echo "[?] User-Login Startup is currently DISABLED."
-    printf "[?] Do you want to ENABLE automatic start on user login? (y/N): "
+    echo "[?] Autostart is currently DISABLED."
+    printf "[?] Do you want to ENABLE automatic start on boot/login? (y/N): "
     read toggle_service < /dev/tty
     case "$toggle_service" in
         [Yy]* )
-            echo "    [*] Setting up user login autostart..."
-            mkdir -p "$AUTOSTART_DIR"
+            echo "    How should the dashboard start?"
+            echo "      1) Visible Terminal Window (Requires a Graphical Desktop Environment)"
+            echo "      2) Invisible Background Service (Best for headless servers / Raspberry Pi Lite)"
+            printf "    Select option (1 or 2): "
+            read start_mode < /dev/tty
             
-            ICON_PATH="$TARGET_DIR/static/favicon.ico"
-            if [ ! -f "$ICON_PATH" ]; then
-                ICON_PATH="$TARGET_DIR/static/Logo.png"
-            fi
-            
-            cat <<EOL > "$AUTOSTART_FILE"
+            case "$start_mode" in
+                1)
+                    # Clean up systemd if present to prevent double-starts
+                    if [ -f "$SERVICE_FILE" ]; then
+                        sudo systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+                        sudo systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
+                        sudo rm -f "$SERVICE_FILE"
+                        sudo systemctl daemon-reload
+                    fi
+                    
+                    echo "    [*] Setting up user login autostart..."
+                    mkdir -p "$AUTOSTART_DIR"
+                    
+                    ICON_PATH="$TARGET_DIR/static/favicon.ico"
+                    if [ ! -f "$ICON_PATH" ]; then
+                        ICON_PATH="$TARGET_DIR/static/Logo.png"
+                    fi
+                    
+                    cat <<EOL > "$AUTOSTART_FILE"
 [Desktop Entry]
 Name=Network Diagnostics
 Comment=Open Network Diagnostics Dashboard
@@ -278,8 +297,40 @@ Terminal=true
 Type=Application
 Categories=Network;System;
 EOL
-            chmod +x "$AUTOSTART_FILE"
-            echo "    [✓] Startup on login enabled (visible terminal window)."
+                    chmod +x "$AUTOSTART_FILE"
+                    echo "    [✓] Startup on login enabled (visible terminal window)."
+                    ;;
+                2)
+                    # Clean up Desktop autostart if present to prevent double-starts
+                    rm -f "$AUTOSTART_FILE"
+                    
+                    echo "    [*] Setting up systemd background service..."
+                    sudo bash -c "cat > $SERVICE_FILE" <<EOL
+[Unit]
+Description=Network Diagnostics Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$TARGET_DIR
+ExecStart=/usr/bin/python3 $TARGET_DIR/setup_env.py
+Restart=always
+RestartSec=10
+User=$USER
+
+[Install]
+WantedBy=multi-user.target
+EOL
+                    sudo systemctl daemon-reload
+                    sudo systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+                    sudo systemctl start "$SERVICE_NAME" >/dev/null 2>&1
+                    echo "    [✓] Background boot service enabled and started."
+                    SERVICE_ACTIVE=true
+                    ;;
+                *)
+                    echo "    [!] Invalid option. Skipping autostart configuration."
+                    ;;
+            esac
             ;;
     esac
 fi
@@ -333,8 +384,11 @@ echo ""
 echo "========================================================"
 echo "   SETUP COMPLETE!"
 echo "========================================================"
-echo "   Starting dashboard via setup script..."
-echo ""
+
+if [ "$SERVICE_ACTIVE" = false ]; then
+    echo "   Starting dashboard via setup script..."
+    echo ""
+fi
 
 if [ "$HOTSPOT_ACTIVE" = true ]; then
     DISPLAY_SSID=$(sudo nmcli -g 802-11-wireless.ssid connection show Hotspot 2>/dev/null)
@@ -356,4 +410,6 @@ fi
 echo "========================================================"
 
 # --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
-python3 "$TARGET_DIR/setup_env.py"
+if [ "$SERVICE_ACTIVE" = false ]; then
+    python3 "$TARGET_DIR/setup_env.py"
+fi
