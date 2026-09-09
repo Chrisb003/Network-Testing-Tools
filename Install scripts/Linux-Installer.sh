@@ -44,7 +44,7 @@ if [ -d "$TARGET_DIR" ]; then
                 fi
                 
                 echo "[*] Deleting application directory..."
-                rm -rf "$TARGET_DIR"
+                sudo rm -rf "$TARGET_DIR"
                 
                 echo "[*] Removing shortcuts..."
                 rm -f "$HOME/Desktop/Network-Diagnostics.desktop"
