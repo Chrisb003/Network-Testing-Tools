@@ -145,6 +145,17 @@ if (-not $script:PythonCmd) {
     exit
 }
 
+# Locate pythonw.exe for silent background execution
+$script:PythonWCmd = (Get-Command pythonw -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps" } | Select-Object -ExpandProperty Source | Select-Object -First 1)
+if (-not $script:PythonWCmd) {
+    $derivedW = $script:PythonCmd -replace "(?i)python\.exe$", "pythonw.exe"
+    if (Test-Path $derivedW) { 
+        $script:PythonWCmd = $derivedW 
+    } else { 
+        $script:PythonWCmd = $script:PythonCmd 
+    }
+}
+
 # ---------------------------------------------------------
 # 6. CHECK FOR INTERNET CONNECTIVITY
 # ---------------------------------------------------------
@@ -323,17 +334,31 @@ if (Test-Path $startupLnk) {
     Write-Host "[?] Background User-Login Startup is currently DISABLED." -ForegroundColor Yellow
     $toggleStartup = Read-Host "[?] Do you want to ENABLE automatic start on user login? (y/N)"
     if ($toggleStartup -eq 'y' -or $toggleStartup -eq 'Y') {
+        
+        Write-Host "    How should the dashboard start on login?"
+        Write-Host "      1) Visible Terminal Window"
+        Write-Host "      2) Invisible Background Process (Silent)"
+        $startMode = Read-Host "    Select option (1 or 2)"
+
         Write-Host "    [*] Creating startup shortcut..." -ForegroundColor Cyan
         $ws = New-Object -ComObject WScript.Shell
         $sc = $ws.CreateShortcut($startupLnk)
-        $sc.TargetPath = $script:PythonCmd
+        
+        if ($startMode -eq '2') {
+            $sc.TargetPath = $script:PythonWCmd
+            $modeMsg = "Invisible Background Process"
+        } else {
+            $sc.TargetPath = $script:PythonCmd
+            $modeMsg = "Visible Terminal Window"
+        }
+        
         $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
         $sc.WorkingDirectory = $script:TargetDir
         if (Test-Path $icoPath) { 
             $sc.IconLocation = "$icoPath,0" 
         }
         $sc.Save()
-        Write-Host "    [✓] Startup shortcut created." -ForegroundColor Green
+        Write-Host "    [✓] Startup on login enabled ($modeMsg)." -ForegroundColor Green
     }
 }
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray

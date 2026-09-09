@@ -263,8 +263,8 @@ else
     case "$toggle_service" in
         [Yy]* )
             echo "    How should the dashboard start?"
-            echo "      1) Visible Terminal Window (Requires a Graphical Desktop Environment)"
-            echo "      2) Invisible Background Service (Best for headless servers / Raspberry Pi Lite)"
+            echo "      1) Visible Terminal Window (Standard User - Prompts for sudo)"
+            echo "      2) Invisible Background Service (Runs silently as ROOT - Best for headless)"
             printf "    Select option (1 or 2): "
             read start_mode < /dev/tty
             
@@ -305,6 +305,7 @@ EOL
                     rm -f "$AUTOSTART_FILE"
                     
                     echo "    [*] Setting up systemd background service..."
+                    # NOTE: User=root allows network sniffer and raw sockets to run seamlessly
                     sudo bash -c "cat > $SERVICE_FILE" <<EOL
 [Unit]
 Description=Network Diagnostics Dashboard
@@ -316,7 +317,7 @@ WorkingDirectory=$TARGET_DIR
 ExecStart=/usr/bin/python3 $TARGET_DIR/setup_env.py
 Restart=always
 RestartSec=10
-User=$USER
+User=root
 
 [Install]
 WantedBy=multi-user.target
@@ -324,7 +325,7 @@ EOL
                     sudo systemctl daemon-reload
                     sudo systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
                     sudo systemctl start "$SERVICE_NAME" >/dev/null 2>&1
-                    echo "    [✓] Background boot service enabled and started."
+                    echo "    [✓] Background boot service enabled and started as Root."
                     SERVICE_ACTIVE=true
                     ;;
                 *)

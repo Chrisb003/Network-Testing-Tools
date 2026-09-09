@@ -7,6 +7,8 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 # --- 1. CONFIGURATION ---
+cd "$(dirname "$0")" || exit
+
 TARGET_DIR="$HOME/Network-Testing-Tools"
 REPO_OWNER="Chrisb003"
 REPO_NAME="Network-Testing-Tools"
@@ -14,7 +16,8 @@ BRANCH="main"
 TOKEN="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"
 APP_DIR="$HOME/Applications"
 APP_PATH="$APP_DIR/Network Diagnostics.app"
-PLIST_PATH="$HOME/Library/LaunchAgents/com.network.diagnostics.plist"
+OLD_AGENT_PLIST="$HOME/Library/LaunchAgents/com.network.diagnostics.plist"
+DAEMON_PLIST="/Library/LaunchDaemons/com.network.diagnostics.plist"
 
 # --- 2. EXISTING INSTALLATION CHECK & UNINSTALL OPTION ---
 if [ -d "$TARGET_DIR" ]; then
@@ -33,13 +36,20 @@ if [ -d "$TARGET_DIR" ]; then
             if [ "$confirm_wipe" = "yes" ]; then
                 
                 # Cleanup old LaunchAgent if present
-                if [ -f "$PLIST_PATH" ]; then
-                    echo "[*] Stopping macOS background agent..."
-                    launchctl unload "$PLIST_PATH" >/dev/null 2>&1
-                    rm -f "$PLIST_PATH"
+                if [ -f "$OLD_AGENT_PLIST" ]; then
+                    echo "[*] Stopping legacy macOS background agent..."
+                    launchctl unload "$OLD_AGENT_PLIST" >/dev/null 2>&1
+                    rm -f "$OLD_AGENT_PLIST"
                 fi
                 
-                # Cleanup new Login Item if present
+                # Cleanup LaunchDaemon if present
+                if [ -f "$DAEMON_PLIST" ]; then
+                    echo "[*] Stopping macOS background daemon..."
+                    sudo launchctl unload "$DAEMON_PLIST" >/dev/null 2>&1
+                    sudo rm -f "$DAEMON_PLIST"
+                fi
+                
+                # Cleanup Login Item if present
                 osascript -e 'tell application "System Events" to delete login item "Network Diagnostics"' >/dev/null 2>&1
                 
                 echo "[*] Deleting application directory..."
@@ -163,38 +173,84 @@ sudo chmod -R 777 "$TARGET_DIR"
 
 # Ensure APP bundle is created, required for macOS Login Items to work properly
 FORCE_APP_CREATION=false
+SERVICE_ACTIVE=false
 
-# --- 7. MACOS USER LOGIN AUTOSTART ---
+# --- 7. MACOS AUTOSTART CONFIGURATION ---
 echo ""
 echo "--------------------------------------------------------"
 
-# Cleanup old invisible LaunchAgent if present from older script versions
-if [ -f "$PLIST_PATH" ]; then
-    echo "[*] Cleaning up legacy invisible background agent..."
-    launchctl unload "$PLIST_PATH" >/dev/null 2>&1
-    rm -f "$PLIST_PATH"
-fi
-
 LOGIN_ITEM_CHECK=$(osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null)
 
-if echo "$LOGIN_ITEM_CHECK" | grep -q "Network Diagnostics"; then
-    echo "[?] User-Login Startup is currently ENABLED."
-    printf "[?] Do you want to DISABLE/REMOVE the startup shortcut? (y/N): "
+if echo "$LOGIN_ITEM_CHECK" | grep -q "Network Diagnostics" || [ -f "$DAEMON_PLIST" ]; then
+    echo "[?] Autostart (Desktop or Background Service) is currently ENABLED."
+    printf "[?] Do you want to DISABLE/REMOVE the startup behavior? (y/N): "
     read toggle_service < /dev/tty
     case "$toggle_service" in
         [Yy]* )
             osascript -e 'tell application "System Events" to delete login item "Network Diagnostics"' >/dev/null 2>&1
-            echo "    [✓] Startup shortcut removed."
+            if [ -f "$DAEMON_PLIST" ]; then
+                sudo launchctl unload "$DAEMON_PLIST" >/dev/null 2>&1
+                sudo rm -f "$DAEMON_PLIST"
+            fi
+            echo "    [✓] All startup configurations removed."
             ;;
     esac
 else
-    echo "[?] User-Login Startup is currently DISABLED."
-    printf "[?] Do you want to ENABLE automatic start on user login? (y/N): "
+    echo "[?] Autostart is currently DISABLED."
+    printf "[?] Do you want to ENABLE automatic start on boot/login? (y/N): "
     read toggle_service < /dev/tty
     case "$toggle_service" in
         [Yy]* )
-            echo "    [*] Flagging system for macOS Login Item setup..."
-            FORCE_APP_CREATION=true
+            echo "    How should the dashboard start?"
+            echo "      1) Visible Terminal Window (Standard User - Prompts for sudo)"
+            echo "      2) Invisible Background Service (Runs silently as ROOT via LaunchDaemon)"
+            printf "    Select option (1 or 2): "
+            read start_mode < /dev/tty
+            
+            case "$start_mode" in
+                1)
+                    if [ -f "$DAEMON_PLIST" ]; then
+                        sudo launchctl unload "$DAEMON_PLIST" >/dev/null 2>&1
+                        sudo rm -f "$DAEMON_PLIST"
+                    fi
+                    echo "    [*] Flagging system for macOS Login Item setup..."
+                    FORCE_APP_CREATION=true
+                    ;;
+                2)
+                    osascript -e 'tell application "System Events" to delete login item "Network Diagnostics"' >/dev/null 2>&1
+                    echo "    [*] Setting up LaunchDaemon background service (runs as root)..."
+                    
+                    sudo bash -c "cat > \"$DAEMON_PLIST\"" <<EOL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.network.diagnostics</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>$TARGET_DIR/setup_env.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$TARGET_DIR</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOL
+                    sudo chown root:wheel "$DAEMON_PLIST"
+                    sudo chmod 644 "$DAEMON_PLIST"
+                    sudo launchctl load "$DAEMON_PLIST" >/dev/null 2>&1
+                    echo "    [✓] Background boot service enabled and started as Root."
+                    SERVICE_ACTIVE=true
+                    ;;
+                *)
+                    echo "    [!] Invalid option. Skipping autostart configuration."
+                    ;;
+            esac
             ;;
     esac
 fi
@@ -288,8 +344,11 @@ echo ""
 echo "========================================================"
 echo "   SETUP COMPLETE!"
 echo "========================================================"
-echo "   Starting dashboard via setup script..."
-echo ""
+
+if [ "$SERVICE_ACTIVE" = false ]; then
+    echo "   Starting dashboard via setup script..."
+    echo ""
+fi
 
 if [ -n "$LOCAL_IP" ]; then
     echo "   💻 ACCESS THE DASHBOARD:"
@@ -300,5 +359,7 @@ fi
 echo "========================================================"
 
 # --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
-cd "$TARGET_DIR" || exit
-python3 setup_env.py
+if [ "$SERVICE_ACTIVE" = false ]; then
+    cd "$TARGET_DIR" || exit
+    python3 setup_env.py
+fi
