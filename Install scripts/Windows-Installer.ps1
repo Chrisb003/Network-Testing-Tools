@@ -19,7 +19,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     # Check if running from memory (no file path) or from a local file
     if ([string]::IsNullOrEmpty($PSCommandPath)) {
         # Re-run the in-memory download command for the elevated session
-        $MemCommand = "& ([scriptblock]::Create((irm 'https://christest.xo.je/install-scripts/Windows-Installer.ps1'))) -OriginalProfile `'$OriginalProfile`' -OriginalDesktop `'$OriginalDesktop`' -OriginalAppData `'$OriginalAppData`'"
+        $MemCommand = "& ([scriptblock]::Create((irm 'https://test.chris94.com/install-scripts/Windows-Installer.ps1'))) -OriginalProfile `'$OriginalProfile`' -OriginalDesktop `'$OriginalDesktop`' -OriginalAppData `'$OriginalAppData`'"
         $Arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $MemCommand)
     } else {
         # Pass the original user's directories into the elevated Admin session using the local file
@@ -38,7 +38,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 # ---------------------------------------------------------
-# 2. CONFIGURATION & WELCOME PROMPT
+# 2. CONFIGURATION
 # ---------------------------------------------------------
 # Map to the original user's folders, NOT the Admin's folders
 $script:TargetDir = "$OriginalProfile\Network-Testing-Tools\"
@@ -50,22 +50,13 @@ $script:Token     = "github_pat_11ABTISDQ0kcYPEIGJRKAN_8S0OuvdLHiYBP87pPds50u1tM
 # Set to TEMP since in-memory scripts do not have a $PSScriptRoot
 Set-Location $env:TEMP
 
-Write-Host "========================================================" -ForegroundColor Cyan
-Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
-Write-Host "========================================================" -ForegroundColor Cyan
-Write-Host "This script installs, updates, or manages the Network" -ForegroundColor White
-Write-Host "Diagnostics Dashboard, Python dependencies, and tools." -ForegroundColor White
-Write-Host ""
-$proceed = Read-Host "[?] Do you want to proceed with the installation process? (y/N)"
-if ($proceed -ne 'y' -and $proceed -ne 'Y') {
-    Write-Host "[*] Installation cancelled by user." -ForegroundColor Yellow
-    exit
-}
-
 # ---------------------------------------------------------
 # 3. EXISTING INSTALLATION CHECK & UNINSTALL OPTION
 # ---------------------------------------------------------
 if (Test-Path "$script:TargetDir\app.py") {
+    Write-Host "========================================================" -ForegroundColor Cyan
+    Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
+    Write-Host "========================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "[*] Existing installation detected at $script:TargetDir." -ForegroundColor Cyan
     $removeApp = Read-Host "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N)"
@@ -91,7 +82,22 @@ if (Test-Path "$script:TargetDir\app.py") {
 }
 
 # ---------------------------------------------------------
-# 4. CHECK FOR PYTHON (AUTO-DOWNLOAD FROM PYTHON.ORG)
+# 4. WELCOME BANNER & INSTALL PROMPT
+# ---------------------------------------------------------
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "This script installs, updates, or manages the Network" -ForegroundColor White
+Write-Host "Diagnostics Dashboard, Python dependencies, and tools." -ForegroundColor White
+Write-Host ""
+$proceed = Read-Host "[?] Do you want to proceed with the installation process? (y/N)"
+if ($proceed -ne 'y' -and $proceed -ne 'Y') {
+    Write-Host "[*] Installation cancelled by user." -ForegroundColor Yellow
+    exit
+}
+
+# ---------------------------------------------------------
+# 5. CHECK FOR PYTHON (AUTO-DOWNLOAD FROM PYTHON.ORG)
 # ---------------------------------------------------------
 $pythonTest = Get-Command python -ErrorAction SilentlyContinue
 
@@ -122,6 +128,7 @@ if (-not $pythonTest) {
     
     Write-Host "[✓] Python installation complete. Refreshing environment..." -ForegroundColor Green
     
+    # Safely merge Machine and User PATH to prevent breaking built-in Windows commands like icacls
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
     [Environment]::SetEnvironmentVariable("Path", "$machinePath;$userPath", "Process")
@@ -129,6 +136,7 @@ if (-not $pythonTest) {
     Write-Host "[✓] Python is detected." -ForegroundColor Green
 }
 
+# Explicitly find the REAL python.exe to bypass PowerShell's cache of the Windows Store alias
 $script:PythonCmd = (Get-Command python -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps" } | Select-Object -ExpandProperty Source | Select-Object -First 1)
 
 if (-not $script:PythonCmd) {
@@ -138,7 +146,7 @@ if (-not $script:PythonCmd) {
 }
 
 # ---------------------------------------------------------
-# 5. CHECK FOR INTERNET CONNECTIVITY
+# 6. CHECK FOR INTERNET CONNECTIVITY
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "[*] Checking for internet connectivity..." -ForegroundColor Cyan
@@ -154,7 +162,7 @@ if (-not $ping) {
 }
 
 # ---------------------------------------------------------
-# 6. DOWNLOAD OR UPDATE CODE FROM GITHUB
+# 7. DOWNLOAD OR UPDATE CODE FROM GITHUB
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "[*] Managing application files..." -ForegroundColor Cyan
@@ -218,7 +226,7 @@ if (-not (Test-Path "$script:TargetDir\app.py")) {
 }
 
 # ---------------------------------------------------------
-# 7. DEDICATED TEST DEVICE PROMPT & CONFIG TRIGGERS
+# 8. DEDICATED TEST DEVICE PROMPT & CONFIG TRIGGERS
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
@@ -289,14 +297,14 @@ if ($isDedicated -eq 'y' -or $isDedicated -eq 'Y') {
 }
 
 # ---------------------------------------------------------
-# 8. FIX DIRECTORY PERMISSIONS FOR ALL USERS
+# 9. FIX DIRECTORY PERMISSIONS FOR ALL USERS
 # ---------------------------------------------------------
 Write-Host "    [*] Unlocking folder permissions for all users..." -ForegroundColor Cyan
 icacls "$script:TargetDir" /grant "Everyone:(F)" /T /C /Q | Out-Null
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 # ---------------------------------------------------------
-# 9. OPTIONAL USER-LOGIN STARTUP (STARTUP FOLDER)
+# 10. OPTIONAL USER-LOGIN STARTUP (STARTUP FOLDER)
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
@@ -318,8 +326,8 @@ if (Test-Path $startupLnk) {
         Write-Host "    [*] Creating startup shortcut..." -ForegroundColor Cyan
         $ws = New-Object -ComObject WScript.Shell
         $sc = $ws.CreateShortcut($startupLnk)
-        $sc.TargetPath = "cmd.exe"
-        $sc.Arguments = "/c `"`"$script:PythonCmd`" `"$script:TargetDir\setup_env.py`"`""
+        $sc.TargetPath = $script:PythonCmd
+        $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
         $sc.WorkingDirectory = $script:TargetDir
         if (Test-Path $icoPath) { 
             $sc.IconLocation = "$icoPath,0" 
@@ -331,11 +339,6 @@ if (Test-Path $startupLnk) {
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 # ---------------------------------------------------------
-# 10. ICON PATH DEFINITION
-# ---------------------------------------------------------
-$icoPath = Join-Path $script:TargetDir 'static\favicon.ico'
-
-# ---------------------------------------------------------
 # 11. DESKTOP SHORTCUT CREATION
 # ---------------------------------------------------------
 Write-Host ""
@@ -345,8 +348,8 @@ if ($createDesktop -eq 'y' -or $createDesktop -eq 'Y') {
     $lnkPath = Join-Path $OriginalDesktop 'Network Diagnostics.lnk'
     $ws = New-Object -ComObject WScript.Shell
     $sc = $ws.CreateShortcut($lnkPath)
-    $sc.TargetPath = "cmd.exe"
-    $sc.Arguments = "/k `"`"$script:PythonCmd`" `"$script:TargetDir\setup_env.py`"`""
+    $sc.TargetPath = $script:PythonCmd
+    $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
     $sc.WorkingDirectory = $script:TargetDir
     if (Test-Path $icoPath) { 
         $sc.IconLocation = "$icoPath,0" 
@@ -366,8 +369,8 @@ if ($createStartMenu -eq 'y' -or $createStartMenu -eq 'Y') {
     $lnkPath = Join-Path $startMenuPath 'Network Diagnostics.lnk'
     $ws = New-Object -ComObject WScript.Shell
     $sc = $ws.CreateShortcut($lnkPath)
-    $sc.TargetPath = "cmd.exe"
-    $sc.Arguments = "/k `"`"$script:PythonCmd`" `"$script:TargetDir\setup_env.py`"`""
+    $sc.TargetPath = $script:PythonCmd
+    $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
     $sc.WorkingDirectory = $script:TargetDir
     if (Test-Path $icoPath) { 
         $sc.IconLocation = "$icoPath,0" 
