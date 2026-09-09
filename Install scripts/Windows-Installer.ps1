@@ -85,10 +85,19 @@ if (Test-Path "$script:TargetDir\app.py") {
 # 4. CHECK FOR PYTHON (AUTO-DOWNLOAD FROM PYTHON.ORG)
 # ---------------------------------------------------------
 $pythonTest = Get-Command python -ErrorAction SilentlyContinue
+
+# Verify it isn't the fake Windows Store shortcut
+if ($pythonTest) {
+    $testOutput = python --version 2>&1 | Out-String
+    if ($testOutput -match "Python was not found") {
+        $pythonTest = $null # Force the script to treat Python as missing
+    }
+}
+
 if (-not $pythonTest) {
     Write-Host ""
     Write-Host "[!] Python was not found on this system." -ForegroundColor Red
-    Write-Host "[*] Downloading official Python 3.12 installer from python.org..." -ForegroundColor Cyan
+    Write-Host "[*] Downloading official Python 3.14.7 installer from python.org..." -ForegroundColor Cyan
     
     $pyVersion = "3.14.7"
     $pyUrl = "https://www.python.org/ftp/python/$pyVersion/python-$pyVersion-amd64.exe"
@@ -104,21 +113,21 @@ if (-not $pythonTest) {
     
     Write-Host "[✓] Python installation complete. Refreshing environment..." -ForegroundColor Green
     
-    # Refresh environment variables in the current session so 'python' command works immediately
-    foreach ($level in "Machine", "User") {
-        [Environment]::GetEnvironmentVariables($level).GetEnumerator() | ForEach-Object {
-            [Environment]::SetEnvironmentVariable($_.Key, $_.Value, "Process")
-        }
-    }
-    
-    # Verify it worked
-    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-        Write-Host "[X] Python installed but not detected in PATH. Please restart your computer and run this script again." -ForegroundColor Red
-        pause
-        exit
-    }
+    # FIX: Safely merge Machine and User PATH to prevent breaking built-in Windows commands like icacls
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
+    [Environment]::SetEnvironmentVariable("Path", "$machinePath;$userPath", "Process")
 } else {
     Write-Host "[✓] Python is detected." -ForegroundColor Green
+}
+
+# FIX: Explicitly find the REAL python.exe to bypass PowerShell's cache of the Windows Store alias
+$script:PythonCmd = (Get-Command python -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps" } | Select-Object -ExpandProperty Source | Select-Object -First 1)
+
+if (-not $script:PythonCmd) {
+    Write-Host "[X] Valid Python executable not found. Please restart your computer and run this script again." -ForegroundColor Red
+    pause
+    exit
 }
 
 # ---------------------------------------------------------
@@ -134,9 +143,8 @@ if (-not $ping) {
     Write-Host ""
 } else {
     Write-Host "[✓] Internet detected. Installing system certificates..." -ForegroundColor Green
-    pip install pip-system-certs | Out-Null
+    & $script:PythonCmd -m pip install pip-system-certs | Out-Null
 }
-
 # ---------------------------------------------------------
 # 6. DOWNLOAD OR UPDATE CODE FROM GITHUB
 # ---------------------------------------------------------
@@ -363,9 +371,39 @@ if ($createStartMenu -eq 'y' -or $createStartMenu -eq 'Y') {
 }
 
 # ---------------------------------------------------------
-# 13. RUN THE SETUP SCRIPT FROM TARGET DIRECTORY
+# 13. INSTALL NPCAP (MANUAL GUI REQUIRED)
+# ---------------------------------------------------------
+Write-Host ""
+Write-Host "--------------------------------------------------------" -ForegroundColor Gray
+Write-Host "[!] Npcap is required for network packet capture features." -ForegroundColor Yellow
+Write-Host "    (The free version requires you to click through the installer manually)." -ForegroundColor Gray
+$installNpcap = Read-Host "[?] Do you want to download and install Npcap now? (y/N)"
+
+if ($installNpcap -eq 'y' -or $installNpcap -eq 'Y') {
+    Write-Host "    [*] Downloading the latest Npcap installer..." -ForegroundColor Cyan
+    
+    # Download the latest stable Npcap version (1.88) directly from npcap.com
+    $npcapUrl = "https://npcap.com/dist/npcap-1.88.exe"
+    $npcapInstaller = "$env:TEMP\npcap_installer.exe"
+    
+    Invoke-WebRequest -Uri $npcapUrl -OutFile $npcapInstaller -UseBasicParsing
+    
+    Write-Host "    [*] Launching Npcap installer. Please complete the installation window that pops up." -ForegroundColor Yellow
+    
+    # -Wait pauses the PowerShell script until the user finishes the Npcap GUI installer
+    Start-Process -FilePath $npcapInstaller -Wait
+    
+    Remove-Item $npcapInstaller -Force -ErrorAction SilentlyContinue
+    Write-Host "    [✓] Npcap installation step completed." -ForegroundColor Green
+} else {
+    Write-Host "    [*] Skipping Npcap installation." -ForegroundColor Gray
+}
+Write-Host "--------------------------------------------------------" -ForegroundColor Gray
+
+# ---------------------------------------------------------
+# 14. RUN THE SETUP SCRIPT FROM TARGET DIRECTORY
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "[*] Launching Setup Script from $script:TargetDir..." -ForegroundColor Cyan
 Set-Location $script:TargetDir
-python setup_env.py
+& $script:PythonCmd setup_env.py
