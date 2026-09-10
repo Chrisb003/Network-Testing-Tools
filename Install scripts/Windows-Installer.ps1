@@ -84,6 +84,9 @@ if (Test-Path "$script:TargetDir\app.py") {
                 
                 # Copies ONLY database files
                 Get-ChildItem -Path $script:TargetDir -Include *.db, *.sqlite -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination $backupDir -Force
+                
+                # Ensure the original user has full permissions to edit or delete the backed-up files despite Admin execution
+                icacls "$backupDir" /grant "Everyone:(F)" /T /C /Q | Out-Null
                 Write-Host "[+] Data backed up safely to: $backupDir" -ForegroundColor Green
             }
             

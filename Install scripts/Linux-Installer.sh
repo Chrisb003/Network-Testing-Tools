@@ -55,8 +55,11 @@ if [ -d "$TARGET_DIR" ]; then
                         BACKUP_DIR="$HOME/Desktop/Network-Diagnostics-Backup"
                         echo "[*] Backing up database files to $BACKUP_DIR..."
                         mkdir -p "$BACKUP_DIR"
-                        # Find and copy ONLY database extensions
-                        find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" \) -exec cp {} "$BACKUP_DIR/" \;
+                        # Use sudo to copy in case the files are currently owned by root (systemd)
+                        sudo find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" \) -exec cp {} "$BACKUP_DIR/" \;
+                        # Ensure the user has full permissions to edit or delete the backed-up files
+                        sudo chown -R "$USER:$USER" "$BACKUP_DIR"
+                        sudo chmod -R 777 "$BACKUP_DIR"
                         echo "[+] Data backed up safely."
                         ;;
                 esac
