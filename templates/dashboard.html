@@ -962,15 +962,15 @@
                         <p class="text-muted small">These same scripts can be used to fully remove the application as well.</p>
 
                         <div class="help-item">
-                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python 3.12 directly from python.org if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and creates Desktop/Start Menu shortcuts with the custom app logo. Automatically unlocks folder permissions using <code>icacls</code>. To begin the installation quickly, open <strong>PowerShell</strong> and paste:
+                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python 3.12 directly from python.org if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and asks to install Npcap (required for deep network discovery). Creates Desktop/Start Menu shortcuts with the custom app logo and automatically unlocks folder permissions using <code>icacls</code>. To begin the installation quickly, open <strong>PowerShell</strong> and paste:
                             <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">&amp; ([scriptblock]::Create((irm "https://test.chris94.com/install-scripts/Windows-Installer.ps1")))</div>
                         </div>
                         <div class="help-item">
-                            <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, network-manager, and GUI tray dependencies like GTK3 and AppIndicator), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). It also handles optional systemd background services, desktop shortcuts with custom logo integration, and launches the environment supervisor. To begin the installation quickly, open your <strong>Terminal</strong> and paste:
+                            <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, network-manager, and GUI tray dependencies like GTK3 and AppIndicator), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). It prompts the user to choose between a visible desktop startup or an invisible systemd background service, and handles desktop shortcuts with custom logo integration. To begin the installation quickly, open your <strong>Terminal</strong> and paste:
                             <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://test.chris94.com/install-scripts/Linux-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
-                            <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3 and Xcode tools if missing), downloads or updates project files from GitHub into the user's home folder, and offers dedicated test device options to write configuration triggers. It also manages background <code>launchd</code> boot agents, builds a native macOS <code>.app</code> bundle in the Applications folder with a high-resolution custom icon converted from the project logo, and ensures PyObjC frameworks like Quartz are available for the menu bar icon. To begin the installation quickly, open the <strong>Terminal</strong> app and paste:
+                            <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3 and Xcode tools if missing), downloads or updates project files from GitHub into the user's home folder, and offers dedicated test device options to write configuration triggers. It prompts the user to choose between a visible Terminal boot or a background <code>launchd</code> daemon, builds a native macOS <code>.app</code> bundle in the Applications folder with a high-resolution custom icon converted from the project logo, and ensures PyObjC frameworks like Quartz are available for the menu bar icon. To begin the installation quickly, open the <strong>Terminal</strong> app and paste:
                             <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://test.chris94.com/install-scripts/MacOS-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
@@ -1031,7 +1031,7 @@
                         <p class="text-muted small">Manage devices connected to your Local Area Network via ARP mapping and ICMP sweeps.</p>
                         
                         <div class="help-item">
-                            <strong>Scan (New Scan):</strong> Performs a deep sweep of the active subnet to discover connected devices, checking for common open services (like HTTP, SSH) and resolving manufacturer names. This scan attempts to match against previous networks in your database automatically.
+                            <strong>Scan (New Scan):</strong> Performs a deep sweep of the active subnet to discover connected devices, checking for common open services (like HTTP, SSH) and resolving manufacturer names. This scan attempts to match against previous networks in your database automatically. <em>Note: Mobile phones in deep sleep or basic IoT gear may not broadcast a hostname and will appear as 'Unknown'.</em>
                         </div>
                         <div class="help-item">
                             <strong>Continue Scan:</strong> Resumes scanning the currently loaded network. To save time, this mode skips deep-port-checks on devices that were previously detected as offline.
@@ -1101,6 +1101,12 @@
                         <h5 class="text-primary border-bottom pb-2 mb-3">Settings & Maintenance</h5>
                         
                         <div class="help-item">
+                            <strong>Access Control (User Account):</strong> Secure your dashboard by enabling "Require Login" in the Settings tab (under App Preferences). You will be prompted to create a username and password. If you are ever locked out, you can bypass this by creating a blank <code>passwordreset</code> file in the application folder to safely clear your credentials on the next restart.
+                        </div>
+                        <div class="help-item">
+                            <strong>Database Export & Import:</strong> Download a full <code>.db</code> backup to your local machine, or upload an existing database to merge its historical networks, devices, and scans into your current setup without deleting your existing data.
+                        </div>
+                        <div class="help-item">
                             <strong>Create Local Backup:</strong> Generates an instant snapshot of your `.db` file in the backend `backups` folder. The system will automatically prune older backups based on predefined quotas to save disk space.
                         </div>
                         <div class="help-item">
@@ -1110,7 +1116,10 @@
                             <strong>System Updates:</strong> Ensure your 'Update Channel' is set to Stable. Clicking "Check for Updates" compares your core application files against the GitHub repository. It will list the changes and handle the download, installation, and server restart automatically.
                         </div>
                         <div class="help-item">
-                            <strong>App Preferences (Logging):</strong> "Full Diagnostic Logging" writes every backend action to a file for troubleshooting. "Disable All Logs" prevents the backend from writing to disk entirely (useful for Raspberry Pi SD Cards).
+                            <strong>Network Connection Types:</strong> Add or remove custom connection names (e.g., '5G Home Internet') that appear in the Speed Test dropdown.
+                        </div>
+                        <div class="help-item">
+                            <strong>App Preferences (Logging & Startup):</strong> Toggle whether the application automatically opens a web browser tab when the server starts. "Full Diagnostic Logging" writes every backend action to a file for troubleshooting. "Disable All Logs" prevents the backend from writing to disk entirely (useful for Raspberry Pi SD Cards).
                         </div>
                         <div class="help-item">
                             <strong>Concurrency & Workers:</strong> Adjusts the ThreadPool executors. Increasing Scan Workers makes Network Scans faster, but requires more CPU power. If the dashboard freezes or crashes frequently during scans, reduce these numbers.
@@ -1127,6 +1136,12 @@
                         
                         <div class="help-item">
                             <strong><code>webport</code></strong>: Write a number (e.g., <code>8080</code>) inside this file. On the next startup, the dashboard will switch to this port and delete the file.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>autostart</code></strong>: Contains a <code>1</code> or <code>0</code>. Controls whether the dashboard automatically pops open a web browser when the server starts.
+                        </div>
+                        <div class="help-item">
+                            <strong><code>workers</code></strong>: An auto-generated JSON file controlling thread limits. You can safely delete this to reset concurrency to hardware defaults if you get locked out.
                         </div>
                         <div class="help-item">
                             <strong><code>standalone</code></strong>: Create this blank file to enable <em>Dedicated Server Mode</em>. This unlocks the dangerous "OS Reboot" and "OS Shutdown" buttons in the Settings tab, and forces the application into headless mode (hiding the desktop system tray icon).
