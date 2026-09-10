@@ -46,9 +46,15 @@ $script:RepoOwner = "Chrisb003"
 $script:RepoName  = "Network-Testing-Tools"
 $script:Branch    = "main"
 $script:Token     = "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"
+$script:Version   = "1.0.2"
 
 # Set to TEMP since in-memory scripts do not have a $PSScriptRoot
 Set-Location $env:TEMP
+
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
+Write-Host "   Installer Version: $script:Version" -ForegroundColor Yellow
+Write-Host "========================================================" -ForegroundColor Cyan
 
 # ---------------------------------------------------------
 # 3. EXISTING INSTALLATION CHECK & UNINSTALL OPTION
@@ -57,9 +63,9 @@ if (Test-Path "$script:TargetDir\app.py") {
     Write-Host ""
     Write-Host "[*] Existing installation detected at $script:TargetDir." -ForegroundColor Cyan
     $removeApp = Read-Host "[?] Do you want to REMOVE the existing installation? (y/N)"
-    if ($removeApp -eq 'y' -or $removeApp -eq 'Y') {
+    if ($removeApp -match '^[Yy]') {
         
-        $keepDb = Read-Host "[?] Do you want to KEEP your database and configuration files? (y/N)"
+        $keepDb = Read-Host "[?] Do you want to KEEP your database files? (y/N)"
         $confirmWipe = Read-Host "[?] Are you ABSOLUTELY sure you want to uninstall? Type 'yes' to confirm"
         
         if ($confirmWipe -eq 'yes') {
@@ -70,14 +76,14 @@ if (Test-Path "$script:TargetDir\app.py") {
             Write-Host "[*] Removing Start Menu shortcut if present..." -ForegroundColor Gray
             Remove-Item "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
             
-            # --- BACKUP LOGIC ---
-            if ($keepDb -eq 'y' -or $keepDb -eq 'Y') {
-                Write-Host "[*] Backing up database and config files..." -ForegroundColor Cyan
+            # --- BACKUP LOGIC (DATABASE ONLY) ---
+            if ($keepDb -match '^[Yy]') {
+                Write-Host "[*] Backing up database files..." -ForegroundColor Cyan
                 $backupDir = Join-Path $OriginalDesktop "Network-Diagnostics-Backup"
                 if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir | Out-Null }
                 
-                # Copies any database files or dedicated test configurations
-                Get-ChildItem -Path $script:TargetDir -Include *.db, *.sqlite, webport, standalone, disablecleanup -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination $backupDir -Force
+                # Copies ONLY database files
+                Get-ChildItem -Path $script:TargetDir -Include *.db, *.sqlite -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination $backupDir -Force
                 Write-Host "[+] Data backed up safely to: $backupDir" -ForegroundColor Green
             }
             
@@ -97,60 +103,65 @@ if (Test-Path "$script:TargetDir\app.py") {
 # ---------------------------------------------------------
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
+Write-Host "   Installer Version: $script:Version" -ForegroundColor Yellow
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "This script installs, updates, or manages the Network" -ForegroundColor White
 Write-Host "Diagnostics Dashboard, Python dependencies, and tools." -ForegroundColor White
 Write-Host ""
-$proceed = Read-Host "[?] Do you want to proceed with the installation process? (y/N)"
-if ($proceed -ne 'y' -and $proceed -ne 'Y') {
-    Write-Host "[*] Installation cancelled by user." -ForegroundColor Yellow
-    exit
+$proceed = Read-Host "[?] Do you want to proceed with the installation of system prerequisites? (y/N)"
+
+$SkipPrereqs = $false
+if ($proceed -notmatch '^[Yy]') {
+    Write-Host "[*] Skipping system prerequisites. Moving to application updates and configuration..." -ForegroundColor Yellow
+    $SkipPrereqs = $true
 }
 
 # ---------------------------------------------------------
 # 5. CHECK FOR PYTHON (AUTO-DOWNLOAD FROM PYTHON.ORG)
 # ---------------------------------------------------------
-$pythonTest = Get-Command python -ErrorAction SilentlyContinue
+if (-not $SkipPrereqs) {
+    $pythonTest = Get-Command python -ErrorAction SilentlyContinue
 
-# Verify it isn't the fake Windows Store shortcut
-if ($pythonTest) {
-    $testOutput = python --version 2>&1 | Out-String
-    if ($testOutput -match "Python was not found") {
-        $pythonTest = $null # Force the script to treat Python as missing
+    # Verify it isn't the fake Windows Store shortcut
+    if ($pythonTest) {
+        $testOutput = python --version 2>&1 | Out-String
+        if ($testOutput -match "Python was not found") {
+            $pythonTest = $null # Force the script to treat Python as missing
+        }
     }
-}
 
-if (-not $pythonTest) {
-    Write-Host ""
-    Write-Host "[!] Python was not found on this system." -ForegroundColor Red
-    Write-Host "[*] Downloading official Python 3.14.7 installer from python.org..." -ForegroundColor Cyan
-    
-    $pyVersion = "3.14.7"
-    $pyUrl = "https://www.python.org/ftp/python/$pyVersion/python-$pyVersion-amd64.exe"
-    $installerPath = "$env:TEMP\python_installer.exe"
-    
-    Invoke-WebRequest -Uri $pyUrl -OutFile $installerPath
-    
-    Write-Host "[*] Installing Python silently (this may take a minute). Please wait..." -ForegroundColor Yellow
-    $installArgs = "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0"
-    Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait
-    
-    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-    
-    Write-Host "[✓] Python installation complete. Refreshing environment..." -ForegroundColor Green
-    
-    # Safely merge Machine and User PATH to prevent breaking built-in Windows commands like icacls
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
-    [Environment]::SetEnvironmentVariable("Path", "$machinePath;$userPath", "Process")
-} else {
-    Write-Host "[✓] Python is detected." -ForegroundColor Green
+    if (-not $pythonTest) {
+        Write-Host ""
+        Write-Host "[!] Python was not found on this system." -ForegroundColor Red
+        Write-Host "[*] Downloading official Python 3.14.7 installer from python.org..." -ForegroundColor Cyan
+        
+        $pyVersion = "3.14.7"
+        $pyUrl = "https://www.python.org/ftp/python/$pyVersion/python-$pyVersion-amd64.exe"
+        $installerPath = "$env:TEMP\python_installer.exe"
+        
+        Invoke-WebRequest -Uri $pyUrl -OutFile $installerPath
+        
+        Write-Host "[*] Installing Python silently (this may take a minute). Please wait..." -ForegroundColor Yellow
+        $installArgs = "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0"
+        Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait
+        
+        Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "[✓] Python installation complete. Refreshing environment..." -ForegroundColor Green
+        
+        # Safely merge Machine and User PATH to prevent breaking built-in Windows commands like icacls
+        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
+        [Environment]::SetEnvironmentVariable("Path", "$machinePath;$userPath", "Process")
+    } else {
+        Write-Host "[✓] Python is detected." -ForegroundColor Green
+    }
 }
 
 # Explicitly find the REAL python.exe to bypass PowerShell's cache of the Windows Store alias
 $script:PythonCmd = (Get-Command python -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps" } | Select-Object -ExpandProperty Source | Select-Object -First 1)
 
-if (-not $script:PythonCmd) {
+if (-not $script:PythonCmd -and -not $SkipPrereqs) {
     Write-Host "[X] Valid Python executable not found. Please restart your computer and run this script again." -ForegroundColor Red
     pause
     exit
@@ -158,7 +169,7 @@ if (-not $script:PythonCmd) {
 
 # Locate pythonw.exe for silent background execution
 $script:PythonWCmd = (Get-Command pythonw -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps" } | Select-Object -ExpandProperty Source | Select-Object -First 1)
-if (-not $script:PythonWCmd) {
+if (-not $script:PythonWCmd -and $script:PythonCmd) {
     $derivedW = $script:PythonCmd -replace "(?i)python\.exe$", "pythonw.exe"
     if (Test-Path $derivedW) { 
         $script:PythonWCmd = $derivedW 
@@ -170,17 +181,20 @@ if (-not $script:PythonWCmd) {
 # ---------------------------------------------------------
 # 6. CHECK FOR INTERNET CONNECTIVITY
 # ---------------------------------------------------------
-Write-Host ""
-Write-Host "[*] Checking for internet connectivity..." -ForegroundColor Cyan
-$ping = Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet -ErrorAction SilentlyContinue
+if (-not $SkipPrereqs) {
+    Write-Host ""
+    Write-Host "[*] Checking for internet connectivity..." -ForegroundColor Cyan
+    $ping = Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet -ErrorAction SilentlyContinue
 
-if (-not $ping) {
-    Write-Host ""
-    Write-Host "[!] No Internet: Requirements skipped." -ForegroundColor Yellow
-    Write-Host ""
-} else {
-    Write-Host "[✓] Internet detected. Installing system certificates..." -ForegroundColor Green
-    & $script:PythonCmd -m pip install pip-system-certs | Out-Null
+    if (-not $ping) {
+        Write-Host ""
+        Write-Host "[!] No Internet: Pip Requirements skipped." -ForegroundColor Yellow
+    } else {
+        if ($script:PythonCmd) {
+            Write-Host "[✓] Internet detected. Installing system certificates..." -ForegroundColor Green
+            & $script:PythonCmd -m pip install pip-system-certs | Out-Null
+        }
+    }
 }
 
 # ---------------------------------------------------------
@@ -215,7 +229,7 @@ if (-not (Test-Path "$script:TargetDir\app.py")) {
 } else {
     Write-Host "[✓] Code directory already exists. Skipping full re-download to preserve configs/database." -ForegroundColor Green
     $updateCode = Read-Host "[?] Do you want to pull/update latest code changes from GitHub repository? (y/N)"
-    if ($updateCode -eq 'y' -or $updateCode -eq 'Y') {
+    if ($updateCode -match '^[Yy]') {
         Write-Host "[*] Updating code from GitHub..." -ForegroundColor Cyan
         $headers = @{
             'Authorization' = "token $script:Token"
@@ -248,12 +262,33 @@ if (-not (Test-Path "$script:TargetDir\app.py")) {
 }
 
 # ---------------------------------------------------------
-# 8. DEDICATED TEST DEVICE PROMPT & CONFIG TRIGGERS
+# 8. APP CONFIGURATION & DEDICATED DEVICE
 # ---------------------------------------------------------
 Write-Host ""
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
+
+# 8a. Web Port Prompt
+$currentPort = "81"
+if (Test-Path "$script:TargetDir\webport") {
+    $currentPort = (Get-Content "$script:TargetDir\webport" -Raw).Trim()
+}
+
+$userPort = Read-Host "[?] Enter the port for the Web Dashboard [Default: $currentPort]"
+if ([string]::IsNullOrWhiteSpace($userPort)) {
+    $userPort = $currentPort
+}
+if ($userPort -notmatch '^\d+$') {
+    Write-Host "    [!] Invalid port format. Reverting to $currentPort." -ForegroundColor Yellow
+    $userPort = $currentPort
+}
+
+Set-Content -Path "$script:TargetDir\webport" -Value $userPort
+Write-Host "    [✓] Web port configured to $userPort." -ForegroundColor Green
+Write-Host ""
+
+# 8b. Dedicated Device Prompt
 $isDedicated = Read-Host "[?] Are you using this device as a dedicated test device? (y/N)"
-if ($isDedicated -eq 'y' -or $isDedicated -eq 'Y') {
+if ($isDedicated -match '^[Yy]') {
     Write-Host "    [*] Configuring for dedicated test device mode..." -ForegroundColor Cyan
     
     if (-not (Test-Path "$script:TargetDir\standalone")) {
@@ -264,55 +299,55 @@ if ($isDedicated -eq 'y' -or $isDedicated -eq 'Y') {
         New-Item -ItemType File -Path "$script:TargetDir\disablecleanup" | Out-Null
         Write-Host "        [+] Created 'disablecleanup' file." -ForegroundColor Green
     }
-    if (-not (Test-Path "$script:TargetDir\webport")) {
-        Set-Content -Path "$script:TargetDir\webport" -Value "80"
-        Write-Host "        [+] Created 'webport' file set to 80." -ForegroundColor Green
-    }
     
     Write-Host ""
     Write-Host "    [?] Windows Mobile Hotspot Configuration:" -ForegroundColor Cyan
-    $toggleHotspot = Read-Host "    [?] Do you want to configure or toggle the Windows Wi-Fi Mobile Hotspot? (y/N)"
-    if ($toggleHotspot -eq 'y' -or $toggleHotspot -eq 'Y') {
-        Write-Host "        [*] Configuring Windows Mobile Hotspot via PowerShell..." -ForegroundColor Cyan
-        try {
-            Add-Type -AssemblyName System.Runtime.WindowsRuntime
-            $asTask = ([System.Runtime.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 })[0]
-            $connectionProfile = [Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]::GetInternetConnectionProfile()
-            $tetheringManager = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]::CreateForConnectionProfile($connectionProfile)
-            
-            if ($tetheringManager.TetheringOperationalState -eq 1) {
-                Write-Host "        [✓] Mobile Hotspot is currently ENABLED." -ForegroundColor Green
-                $ans = Read-Host "        Do you want to disable it? (y/N)"
-                if ($ans -eq 'y' -or $ans -eq 'Y') {
-                    $task = $tetheringManager.StopTetheringAsync()
-                    $asTask.MakeGenericMethod([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]).Invoke($null, @($task)).GetAwaiter().GetResult() | Out-Null
-                    Write-Host "        [✓] Mobile Hotspot disabled." -ForegroundColor Green
-                }
+    try {
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $asTask = ([System.Runtime.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 })[0]
+        $connectionProfile = [Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]::GetInternetConnectionProfile()
+        $tetheringManager = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows.Networking.NetworkOperators,ContentType=WindowsRuntime]::CreateForConnectionProfile($connectionProfile)
+        
+        $doHotspotSetup = $false
+        
+        if ($tetheringManager.TetheringOperationalState -eq 1) {
+            $ans = Read-Host "        [?] Hotspot is ACTIVE. (D)isable, (R)econfigure, or (K)eep? [D/R/K]"
+            if ($ans -match '^[Dd]') {
+                $task = $tetheringManager.StopTetheringAsync()
+                $asTask.MakeGenericMethod([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]).Invoke($null, @($task)).GetAwaiter().GetResult() | Out-Null
+                Write-Host "        [✓] Mobile Hotspot disabled." -ForegroundColor Green
+            } elseif ($ans -match '^[Rr]') {
+                $task = $tetheringManager.StopTetheringAsync()
+                $asTask.MakeGenericMethod([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]).Invoke($null, @($task)).GetAwaiter().GetResult() | Out-Null
+                $doHotspotSetup = $true
             } else {
-                Write-Host "        [?] Mobile Hotspot is currently DISABLED." -ForegroundColor Yellow
-                $ans = Read-Host "        Do you want to enable/configure it? (y/N)"
-                if ($ans -eq 'y' -or $ans -eq 'Y') {
-                    $ssid = Read-Host "        Enter Hotspot SSID [Default: Network-Dashboard]"
-                    $pass = Read-Host "        Enter Hotspot Password (min 8 chars) [Default: dashboard123]"
-                    if (-not $ssid) { $ssid = "Network-Dashboard" }
-                    if (-not $pass) { $pass = "dashboard123" }
-                    
-                    $config = $tetheringManager.GetCurrentConfiguration()
-                    $config.Ssid = $ssid
-                    $config.Passphrase = $pass
-                    
-                    $configTask = $tetheringManager.ConfigureAsync($config)
-                    $asTask.MakeGenericMethod([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]).Invoke($null, @($configTask)).GetAwaiter().GetResult() | Out-Null
-                    
-                    $startTask = $tetheringManager.StartTetheringAsync()
-                    $asTask.MakeGenericMethod([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]).Invoke($null, @($startTask)).GetAwaiter().GetResult() | Out-Null
-                    Write-Host "        [✓] Mobile Hotspot successfully enabled!" -ForegroundColor Green
-                }
+                Write-Host "        [*] Keeping existing Hotspot configuration active." -ForegroundColor Gray
             }
-        } catch {
-            Write-Host "        [!] Mobile Hotspot is not supported by this device's Wi-Fi adapter or requires modern Windows 10/11." -ForegroundColor Red
-            Write-Host "        Tip: You can also manage Mobile Hotspot directly in Windows Settings (Network & internet -> Mobile hotspot)." -ForegroundColor Yellow
+        } else {
+            $ans = Read-Host "        [?] Hotspot is DISABLED. Do you want to enable/configure it? (y/N)"
+            if ($ans -match '^[Yy]') {
+                $doHotspotSetup = $true
+            }
         }
+
+        if ($doHotspotSetup) {
+            $ssid = Read-Host "        Enter Hotspot SSID [Default: Network-Dashboard]"
+            $pass = Read-Host "        Enter Hotspot Password (min 8 chars) [Default: dashboard123]"
+            
+            $config = $tetheringManager.GetCurrentConfiguration()
+            $config.Ssid = if ([string]::IsNullOrWhiteSpace($ssid)) { "Network-Dashboard" } else { $ssid }
+            $config.Passphrase = if ([string]::IsNullOrWhiteSpace($pass)) { "dashboard123" } else { $pass }
+            
+            $configTask = $tetheringManager.ConfigureAsync($config)
+            $asTask.MakeGenericMethod([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]).Invoke($null, @($configTask)).GetAwaiter().GetResult() | Out-Null
+            
+            $startTask = $tetheringManager.StartTetheringAsync()
+            $asTask.MakeGenericMethod([Windows.Networking.NetworkOperators.NetworkOperatorTetheringOperationResult]).Invoke($null, @($startTask)).GetAwaiter().GetResult() | Out-Null
+            Write-Host "        [✓] Mobile Hotspot successfully configured and enabled!" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "        [!] Mobile Hotspot is not supported by this device's Wi-Fi adapter or requires modern Windows 10/11." -ForegroundColor Red
+        Write-Host "        Tip: You can also manage Mobile Hotspot directly in Windows Settings (Network & internet -> Mobile hotspot)." -ForegroundColor Yellow
     }
 } else {
     Write-Host "    [*] Skipping dedicated test device configurations." -ForegroundColor Gray
@@ -337,14 +372,14 @@ $startupLnk = "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Startup\Ne
 if (Test-Path $startupLnk) {
     Write-Host "[?] Background User-Login Startup is currently ENABLED." -ForegroundColor Yellow
     $toggleStartup = Read-Host "[?] Do you want to DISABLE/REMOVE the startup shortcut? (y/N)"
-    if ($toggleStartup -eq 'y' -or $toggleStartup -eq 'Y') {
+    if ($toggleStartup -match '^[Yy]') {
         Remove-Item $startupLnk -Force -ErrorAction SilentlyContinue
         Write-Host "    [✓] Startup shortcut removed." -ForegroundColor Green
     }
 } else {
     Write-Host "[?] Background User-Login Startup is currently DISABLED." -ForegroundColor Yellow
     $toggleStartup = Read-Host "[?] Do you want to ENABLE automatic start on user login? (y/N)"
-    if ($toggleStartup -eq 'y' -or $toggleStartup -eq 'Y') {
+    if ($toggleStartup -match '^[Yy]') {
         
         Write-Host "    How should the dashboard start on login?"
         Write-Host "      1) Visible Terminal Window"
@@ -378,41 +413,52 @@ Write-Host "--------------------------------------------------------" -Foregroun
 # 11. DESKTOP SHORTCUT CREATION
 # ---------------------------------------------------------
 Write-Host ""
-$createDesktop = Read-Host "[?] Do you want to create a Desktop shortcut? (y/N)"
-if ($createDesktop -eq 'y' -or $createDesktop -eq 'Y') {
-    Write-Host "    [*] Generating Desktop shortcut..." -ForegroundColor Cyan
-    $lnkPath = Join-Path $OriginalDesktop 'Network Diagnostics.lnk'
-    $ws = New-Object -ComObject WScript.Shell
-    $sc = $ws.CreateShortcut($lnkPath)
-    $sc.TargetPath = $script:PythonCmd
-    $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
-    $sc.WorkingDirectory = $script:TargetDir
-    if (Test-Path $icoPath) { 
-        $sc.IconLocation = "$icoPath,0" 
+$deskLnk = Join-Path $OriginalDesktop 'Network Diagnostics.lnk'
+
+if (Test-Path $deskLnk) {
+    Write-Host "[✓] Desktop shortcut already exists." -ForegroundColor Green
+} else {
+    $createDesktop = Read-Host "[?] Do you want to create a Desktop shortcut? (y/N)"
+    if ($createDesktop -match '^[Yy]') {
+        Write-Host "    [*] Generating Desktop shortcut..." -ForegroundColor Cyan
+        $ws = New-Object -ComObject WScript.Shell
+        $sc = $ws.CreateShortcut($deskLnk)
+        $sc.TargetPath = $script:PythonCmd
+        $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
+        $sc.WorkingDirectory = $script:TargetDir
+        if (Test-Path $icoPath) { 
+            $sc.IconLocation = "$icoPath,0" 
+        }
+        $sc.Save()
+        Write-Host "[✓] Desktop shortcut created successfully." -ForegroundColor Green
     }
-    $sc.Save()
-    Write-Host "[✓] Desktop shortcut created successfully." -ForegroundColor Green
 }
 
 # ---------------------------------------------------------
 # 12. START MENU SHORTCUT CREATION
 # ---------------------------------------------------------
 Write-Host ""
-$createStartMenu = Read-Host "[?] Do you want to create a Start Menu shortcut? (y/N)"
-if ($createStartMenu -eq 'y' -or $createStartMenu -eq 'Y') {
-    Write-Host "    [*] Generating Start Menu shortcut..." -ForegroundColor Cyan
-    $startMenuPath = Join-Path $OriginalAppData 'Microsoft\Windows\Start Menu\Programs'
-    $lnkPath = Join-Path $startMenuPath 'Network Diagnostics.lnk'
-    $ws = New-Object -ComObject WScript.Shell
-    $sc = $ws.CreateShortcut($lnkPath)
-    $sc.TargetPath = $script:PythonCmd
-    $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
-    $sc.WorkingDirectory = $script:TargetDir
-    if (Test-Path $icoPath) { 
-        $sc.IconLocation = "$icoPath,0" 
+$startMenuPath = Join-Path $OriginalAppData 'Microsoft\Windows\Start Menu\Programs'
+$startLnk = Join-Path $startMenuPath 'Network Diagnostics.lnk'
+
+if (Test-Path $startLnk) {
+    Write-Host "[✓] Start Menu shortcut already exists." -ForegroundColor Green
+} else {
+    $createStartMenu = Read-Host "[?] Do you want to create a Start Menu shortcut? (y/N)"
+    if ($createStartMenu -match '^[Yy]') {
+        Write-Host "    [*] Generating Start Menu shortcut..." -ForegroundColor Cyan
+        if (-not (Test-Path $startMenuPath)) { New-Item -ItemType Directory -Path $startMenuPath | Out-Null }
+        $ws = New-Object -ComObject WScript.Shell
+        $sc = $ws.CreateShortcut($startLnk)
+        $sc.TargetPath = $script:PythonCmd
+        $sc.Arguments = "`"$script:TargetDir\setup_env.py`""
+        $sc.WorkingDirectory = $script:TargetDir
+        if (Test-Path $icoPath) { 
+            $sc.IconLocation = "$icoPath,0" 
+        }
+        $sc.Save()
+        Write-Host "[✓] Start Menu shortcut created successfully." -ForegroundColor Green
     }
-    $sc.Save()
-    Write-Host "[✓] Start Menu shortcut created successfully." -ForegroundColor Green
 }
 
 # ---------------------------------------------------------
@@ -421,39 +467,53 @@ if ($createStartMenu -eq 'y' -or $createStartMenu -eq 'Y') {
 Write-Host ""
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
-$npcapInstalled = Test-Path "$env:SystemRoot\System32\Npcap"
+if (-not $SkipPrereqs) {
+    $npcapInstalled = Test-Path "$env:SystemRoot\System32\Npcap"
 
-if ($npcapInstalled) {
-    Write-Host "[✓] Npcap is already detected on this system. Skipping installation." -ForegroundColor Green
-} else {
-    Write-Host "[!] Npcap is required for network packet capture features." -ForegroundColor Yellow
-    Write-Host "    (The free version requires you to click through the installer manually)." -ForegroundColor Gray
-    $installNpcap = Read-Host "[?] Do you want to download and install Npcap now? (y/N)"
-
-    if ($installNpcap -eq 'y' -or $installNpcap -eq 'Y') {
-        Write-Host "    [*] Downloading the latest Npcap installer..." -ForegroundColor Cyan
-        
-        $npcapUrl = "https://npcap.com/dist/npcap-1.88.exe"
-        $npcapInstaller = "$env:TEMP\npcap_installer.exe"
-        
-        Invoke-WebRequest -Uri $npcapUrl -OutFile $npcapInstaller -UseBasicParsing
-        
-        Write-Host "    [*] Launching Npcap installer. Please complete the installation window that pops up." -ForegroundColor Yellow
-        
-        Start-Process -FilePath $npcapInstaller -Wait
-        
-        Remove-Item $npcapInstaller -Force -ErrorAction SilentlyContinue
-        Write-Host "    [✓] Npcap installation step completed." -ForegroundColor Green
+    if ($npcapInstalled) {
+        Write-Host "[✓] Npcap is already detected on this system. Skipping installation." -ForegroundColor Green
     } else {
-        Write-Host "    [*] Skipping Npcap installation." -ForegroundColor Gray
+        Write-Host "[!] Npcap is required for network packet capture features." -ForegroundColor Yellow
+        Write-Host "    (The free version requires you to click through the installer manually)." -ForegroundColor Gray
+        $installNpcap = Read-Host "[?] Do you want to download and install Npcap now? (y/N)"
+
+        if ($installNpcap -match '^[Yy]') {
+            Write-Host "    [*] Downloading the latest Npcap installer..." -ForegroundColor Cyan
+            
+            $npcapUrl = "https://npcap.com/dist/npcap-1.88.exe"
+            $npcapInstaller = "$env:TEMP\npcap_installer.exe"
+            
+            Invoke-WebRequest -Uri $npcapUrl -OutFile $npcapInstaller -UseBasicParsing
+            
+            Write-Host "    [*] Launching Npcap installer. Please complete the installation window that pops up." -ForegroundColor Yellow
+            
+            Start-Process -FilePath $npcapInstaller -Wait
+            
+            Remove-Item $npcapInstaller -Force -ErrorAction SilentlyContinue
+            Write-Host "    [✓] Npcap installation step completed." -ForegroundColor Green
+        } else {
+            Write-Host "    [*] Skipping Npcap installation." -ForegroundColor Gray
+        }
     }
+} else {
+    Write-Host "[*] Skipping Npcap checks due to prerequisite bypass." -ForegroundColor Gray
 }
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 # ---------------------------------------------------------
-# FINAL: RUN THE SETUP SCRIPT FROM TARGET DIRECTORY
+# 14. FINAL SUMMARY & LAUNCH
 # ---------------------------------------------------------
 Write-Host ""
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "   SETUP COMPLETE!" -ForegroundColor Cyan
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host ""
+
+if (-not $script:PythonCmd) {
+    Write-Host "[!] Python command missing. Could not launch the dashboard automatically." -ForegroundColor Red
+    exit
+}
+
 Write-Host "[*] Checking for running instances..." -ForegroundColor Cyan
 
 # Query Windows processes to see if Python is currently running setup_env.py

@@ -17,11 +17,13 @@ SERVICE_NAME="network-dashboard.service"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
 AUTOSTART_DIR="$HOME/.config/autostart"
 AUTOSTART_FILE="$AUTOSTART_DIR/Network-Diagnostics.desktop"
+SCRIPT_VERSION="1.0.2"
 
 # --- 2. EXISTING INSTALLATION CHECK & UNINSTALL OPTION ---
 if [ -d "$TARGET_DIR" ]; then
     echo "========================================================"
     echo "   NETWORK DIAGNOSTICS - LINUX INSTALLER & MANAGER"
+    echo "   Installer Version: $SCRIPT_VERSION"
     echo "========================================================"
     echo ""
     echo "[*] Existing installation detected at $TARGET_DIR."
@@ -30,7 +32,7 @@ if [ -d "$TARGET_DIR" ]; then
     
     case "$remove_app" in
         [Yy]* )
-            printf "[?] Do you want to KEEP your database and configuration files? (y/N): "
+            printf "[?] Do you want to KEEP your database files? (y/N): "
             read keep_db < /dev/tty
             
             printf "[?] Are you ABSOLUTELY sure you want to uninstall? Type 'yes' to confirm: "
@@ -47,14 +49,14 @@ if [ -d "$TARGET_DIR" ]; then
                     sudo systemctl daemon-reload
                 fi
                 
-                # --- BACKUP LOGIC ---
+                # --- BACKUP LOGIC (DATABASE ONLY) ---
                 case "$keep_db" in
                     [Yy]* )
                         BACKUP_DIR="$HOME/Desktop/Network-Diagnostics-Backup"
-                        echo "[*] Backing up database and config files to $BACKUP_DIR..."
+                        echo "[*] Backing up database files to $BACKUP_DIR..."
                         mkdir -p "$BACKUP_DIR"
-                        # Find and copy common DB extensions and config files
-                        find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" -o -name "webport" -o -name "standalone" -o -name "disablecleanup" \) -exec cp {} "$BACKUP_DIR/" \;
+                        # Find and copy ONLY database extensions
+                        find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" \) -exec cp {} "$BACKUP_DIR/" \;
                         echo "[+] Data backed up safely."
                         ;;
                 esac
@@ -64,6 +66,7 @@ if [ -d "$TARGET_DIR" ]; then
                 
                 echo "[*] Removing shortcuts..."
                 rm -f "$HOME/Desktop/Network-Diagnostics.desktop"
+                rm -f "$HOME/.local/share/applications/Network-Diagnostics.desktop"
                 rm -f "$AUTOSTART_FILE"
                 
                 echo "[✓] Application completely removed."
@@ -74,36 +77,45 @@ if [ -d "$TARGET_DIR" ]; then
             ;;
     esac
 fi
+
 # --- 3. WELCOME BANNER & INSTALL PROMPT ---
 echo "========================================================"
 echo "   NETWORK DIAGNOSTICS - LINUX INSTALLER & MANAGER"
+echo "   Installer Version: $SCRIPT_VERSION"
 echo "========================================================"
 echo "This script installs, updates, or manages the Network"
 echo "Diagnostics Dashboard, Python dependencies, and tools."
 echo ""
-printf "[?] Do you want to proceed with the installation process? (y/N): "
+printf "[?] Do you want to proceed with the installation of system prerequisites? (y/N): "
 read proceed < /dev/tty
+
+SKIP_PREREQS=false
 case "$proceed" in
     [Yy]* ) ;;
-    * ) echo "[*] Installation cancelled by user."; exit 0 ;;
+    * ) 
+        echo "[*] Skipping system prerequisites. Moving to application updates and configuration..."
+        SKIP_PREREQS=true 
+        ;;
 esac
 
 # --- 4. PREREQUISITES (Multi-Distro Support) ---
-echo ""
-echo "[*] Step 1: Installing system prerequisites (sudo password may be required)..."
+if [ "$SKIP_PREREQS" = false ]; then
+    echo ""
+    echo "[*] Step 1: Installing system prerequisites (sudo password may be required)..."
 
-if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential git net-tools libpcap-dev unzip curl network-manager python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-1 python3-xlib
-elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y python3 python3-pip python3-devel gcc git net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
-elif command -v pacman >/dev/null 2>&1; then
-    sudo pacman -Syu --noconfirm python python-pip base-devel git net-tools libpcap unzip curl networkmanager python-gobject gtk3 libappindicator-gtk3 python-xlib
-elif command -v zypper >/dev/null 2>&1; then
-    sudo zypper refresh
-    sudo zypper install -y python3 python3-pip python3-devel gcc git net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
-else
-    echo "[!] Warning: Unknown package manager. Please ensure Python 3, venv, pip, git, libpcap, and curl are installed manually."
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update
+        sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential git net-tools libpcap-dev unzip curl network-manager python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-1 python3-xlib
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y python3 python3-pip python3-devel gcc git net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -Syu --noconfirm python python-pip base-devel git net-tools libpcap unzip curl networkmanager python-gobject gtk3 libappindicator-gtk3 python-xlib
+    elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper refresh
+        sudo zypper install -y python3 python3-pip python3-devel gcc git net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
+    else
+        echo "[!] Warning: Unknown package manager. Please ensure Python 3, venv, pip, git, libpcap, and curl are installed manually."
+    fi
 fi
 
 # --- 5. DOWNLOAD OR UPDATE CODE ---
@@ -143,9 +155,32 @@ else
     esac
 fi
 
-# --- 6. DEDICATED TEST DEVICE PROMPT & CONFIG TRIGGERS ---
+# --- 6. APP CONFIGURATION & DEDICATED DEVICE ---
 echo ""
 echo "--------------------------------------------------------"
+
+# 6a. Web Port Prompt
+CURRENT_PORT="81"
+if [ -f "$TARGET_DIR/webport" ]; then
+    CURRENT_PORT=$(cat "$TARGET_DIR/webport" 2>/dev/null)
+fi
+
+printf "[?] Enter the port for the Web Dashboard [Default: %s]: " "$CURRENT_PORT"
+read user_port < /dev/tty
+user_port=${user_port:-$CURRENT_PORT}
+
+# Validate that the user entered numbers only
+if ! echo "$user_port" | grep -Eq '^[0-9]+$'; then
+    echo "    [!] Invalid port format. Reverting to $CURRENT_PORT."
+    user_port=$CURRENT_PORT
+fi
+
+mkdir -p "$TARGET_DIR"
+echo "$user_port" > "$TARGET_DIR/webport"
+echo "    [✓] Web port configured to $user_port."
+echo ""
+
+# 6b. Dedicated Device Prompt
 printf "[?] Are you using this device as a dedicated test device? (y/N): "
 read is_dedicated < /dev/tty
 HOTSPOT_ACTIVE=false
@@ -153,7 +188,6 @@ HOTSPOT_ACTIVE=false
 case "$is_dedicated" in
     [Yy]* )
         echo "    [*] Configuring for dedicated test device mode..."
-        mkdir -p "$TARGET_DIR"
 
         if [ ! -f "$TARGET_DIR/standalone" ]; then
             touch "$TARGET_DIR/standalone"
@@ -163,11 +197,6 @@ case "$is_dedicated" in
         if [ ! -f "$TARGET_DIR/disablecleanup" ]; then
             touch "$TARGET_DIR/disablecleanup"
             echo "        [+] Created 'disablecleanup' file."
-        fi
-
-        if [ ! -f "$TARGET_DIR/webport" ]; then
-            echo "80" > "$TARGET_DIR/webport"
-            echo "        [+] Created 'webport' file set to 80."
         fi
 
         # --- OPTIONAL WI-FI HOTSPOT SETUP ---
@@ -185,64 +214,83 @@ case "$is_dedicated" in
             WIFI_IFACE="wlan0"
         fi
 
+        DO_HOTSPOT_SETUP=false
+
         if nmcli connection show "Hotspot" >/dev/null 2>&1; then
-            printf "    [?] A Wi-Fi Hotspot is currently ENABLED. Do you want to DISABLE it? (y/N): "
+            printf "    [?] A Wi-Fi Hotspot profile exists. (D)isable/remove, (R)econfigure, or (K)eep? [D/R/K]: "
             read toggle_hotspot < /dev/tty
             case "$toggle_hotspot" in
-                [Yy]* )
+                [Dd]* )
                     sudo nmcli connection delete Hotspot >/dev/null 2>&1
                     echo "        [✓] Hotspot successfully disabled and removed."
                     ;;
-                * ) HOTSPOT_ACTIVE=true ;;
+                [Rr]* )
+                    sudo nmcli connection delete Hotspot >/dev/null 2>&1
+                    DO_HOTSPOT_SETUP=true
+                    ;;
+                [Kk]* | * )
+                    echo "        [*] Keeping existing Hotspot configuration."
+                    # Explicitly bring the connection up just in case it was off
+                    sudo nmcli connection up Hotspot >/dev/null 2>&1
+                    sleep 3
+                    if nmcli connection show --active | grep -q "Hotspot"; then
+                        echo "        [✓] Hotspot is active and broadcasting."
+                        HOTSPOT_ACTIVE=true 
+                    else
+                        echo "        [X] Failed to bring up the existing Hotspot."
+                    fi
+                    ;;
             esac
         else
             printf "    [?] Do you want to ENABLE a Wi-Fi Hotspot to access the dashboard? (y/N): "
             read toggle_hotspot < /dev/tty
             case "$toggle_hotspot" in
                 [Yy]* )
-                    MAC_ADDR=$(cat /sys/class/net/$WIFI_IFACE/address 2>/dev/null | tr -d ':')
-                    if [ -n "$MAC_ADDR" ]; then
-                        MAC_SUFFIX=$(echo "$MAC_ADDR" | awk '{print substr($0,length($0)-5,6)}' | tr 'a-z' 'A-Z')
-                    else
-                        MAC_SUFFIX=$RANDOM
-                    fi
-                    DEFAULT_SSID="Network-Dashboard-$MAC_SUFFIX"
-
-                    printf "        Enter Hotspot SSID [Default: %s]: " "$DEFAULT_SSID"
-                    read HOTSPOT_SSID < /dev/tty
-                    HOTSPOT_SSID=${HOTSPOT_SSID:-$DEFAULT_SSID}
-                    
-                    while true; do
-                        printf "        Enter Hotspot Password (min 8 chars) [Default: dashboard123]: "
-                        read HOTSPOT_PASS < /dev/tty
-                        HOTSPOT_PASS=${HOTSPOT_PASS:-dashboard123}
-                        
-                        if [ ${#HOTSPOT_PASS} -ge 8 ]; then
-                            break
-                        else
-                            echo "        [!] Invalid password. WPA2 requires a minimum of 8 characters."
-                        fi
-                    done
-                    
-                    echo "        [*] Configuring Wi-Fi Hotspot on $WIFI_IFACE..."
-                    sudo nmcli connection add type wifi ifname "$WIFI_IFACE" con-name Hotspot autoconnect yes ssid "$HOTSPOT_SSID" >/dev/null 2>&1
-                    sudo nmcli connection modify Hotspot 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared
-                    sudo nmcli connection modify Hotspot wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOTSPOT_PASS"
-                    # Bring up the hotspot, but don't strictly trust the immediate exit code
-                    sudo nmcli connection up Hotspot >/dev/null 2>&1
-                    
-                    # Give the Pi's network stack a few seconds to stabilize
-                    sleep 4
-                    
-                    # Explicitly check if the Hotspot is in the active connections list
-                    if nmcli connection show --active | grep -q "Hotspot"; then
-                        echo "        [✓] Hotspot successfully activated!"
-                        HOTSPOT_ACTIVE=true
-                    else
-                        echo "        [X] Failed to bring up Hotspot. Check your Wi-Fi adapter capabilities."
-                    fi
+                    DO_HOTSPOT_SETUP=true
                     ;;
             esac
+        fi
+
+        if [ "$DO_HOTSPOT_SETUP" = true ]; then
+            MAC_ADDR=$(cat /sys/class/net/$WIFI_IFACE/address 2>/dev/null | tr -d ':')
+            if [ -n "$MAC_ADDR" ]; then
+                MAC_SUFFIX=$(echo "$MAC_ADDR" | awk '{print substr($0,length($0)-5,6)}' | tr 'a-z' 'A-Z')
+            else
+                MAC_SUFFIX=$RANDOM
+            fi
+            DEFAULT_SSID="Network-Dashboard-$MAC_SUFFIX"
+
+            printf "        Enter Hotspot SSID [Default: %s]: " "$DEFAULT_SSID"
+            read HOTSPOT_SSID < /dev/tty
+            HOTSPOT_SSID=${HOTSPOT_SSID:-$DEFAULT_SSID}
+            
+            while true; do
+                printf "        Enter Hotspot Password (min 8 chars) [Default: dashboard123]: "
+                read HOTSPOT_PASS < /dev/tty
+                HOTSPOT_PASS=${HOTSPOT_PASS:-dashboard123}
+                
+                if [ ${#HOTSPOT_PASS} -ge 8 ]; then
+                    break
+                else
+                    echo "        [!] Invalid password. WPA2 requires a minimum of 8 characters."
+                fi
+            done
+            
+            echo "        [*] Configuring Wi-Fi Hotspot on $WIFI_IFACE..."
+            sudo nmcli connection add type wifi ifname "$WIFI_IFACE" con-name Hotspot autoconnect yes ssid "$HOTSPOT_SSID" >/dev/null 2>&1
+            sudo nmcli connection modify Hotspot 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared
+            sudo nmcli connection modify Hotspot wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOTSPOT_PASS"
+            
+            # Bring up the hotspot and explicitly check after a brief network stabilization delay
+            sudo nmcli connection up Hotspot >/dev/null 2>&1
+            sleep 4
+            
+            if nmcli connection show --active | grep -q "Hotspot"; then
+                echo "        [✓] Hotspot successfully activated!"
+                HOTSPOT_ACTIVE=true
+            else
+                echo "        [X] Failed to bring up Hotspot. Check your Wi-Fi adapter capabilities."
+            fi
         fi
         ;;
     * ) echo "    [*] Skipping dedicated test device configurations and hotspot setup." ;;
@@ -359,14 +407,14 @@ echo "--------------------------------------------------------"
 
 # --- 8. DESKTOP SHORTCUT CREATION ---
 echo ""
-printf "[?] Do you want to create a Desktop shortcut to launch the app? (y/N): "
-read create_shortcut < /dev/tty
-case "$create_shortcut" in
-    [Yy]* )
-        DESKTOP_DIR="$HOME/Desktop"
-        if [ -d "$DESKTOP_DIR" ]; then
-            SHORTCUT_FILE="$DESKTOP_DIR/Network-Diagnostics.desktop"
-            
+DESKTOP_DIR="$HOME/Desktop"
+SHORTCUT_FILE="$DESKTOP_DIR/Network-Diagnostics.desktop"
+
+if [ -d "$DESKTOP_DIR" ] && [ ! -f "$SHORTCUT_FILE" ]; then
+    printf "[?] Do you want to create a Desktop shortcut to launch the app? (y/N): "
+    read create_shortcut < /dev/tty
+    case "$create_shortcut" in
+        [Yy]* )
             ICON_PATH="$TARGET_DIR/static/favicon.ico"
             if [ ! -f "$ICON_PATH" ]; then
                 ICON_PATH="$TARGET_DIR/static/Logo.png"
@@ -388,13 +436,52 @@ Categories=Network;System;
 EOL
             chmod +x "$SHORTCUT_FILE"
             echo "[✓] Desktop shortcut created at $SHORTCUT_FILE."
-        else
-            echo "[!] Desktop folder not found, skipping shortcut."
-        fi
-        ;;
-esac
+            ;;
+    esac
+elif [ -f "$SHORTCUT_FILE" ]; then
+    echo "[✓] Desktop shortcut already exists."
+fi
 
-# --- 9. FINAL SUMMARY & IP INFO ---
+# --- 9. START MENU SHORTCUT CREATION ---
+echo ""
+STARTMENU_DIR="$HOME/.local/share/applications"
+STARTMENU_FILE="$STARTMENU_DIR/Network-Diagnostics.desktop"
+
+if [ ! -f "$STARTMENU_FILE" ]; then
+    printf "[?] Do you want to create a Start Menu shortcut? (y/N): "
+    read create_start_shortcut < /dev/tty
+    case "$create_start_shortcut" in
+        [Yy]* )
+            mkdir -p "$STARTMENU_DIR"
+            
+            ICON_PATH="$TARGET_DIR/static/favicon.ico"
+            if [ ! -f "$ICON_PATH" ]; then
+                ICON_PATH="$TARGET_DIR/static/Logo.png"
+            fi
+            if [ ! -f "$ICON_PATH" ]; then
+                ICON_PATH="applications-internet"
+            fi
+
+            cat <<EOL > "$STARTMENU_FILE"
+[Desktop Entry]
+Name=Network Diagnostics
+Comment=Open Network Diagnostics Dashboard
+Exec=python3 "$TARGET_DIR/setup_env.py"
+Path=$TARGET_DIR
+Icon=$ICON_PATH
+Terminal=true
+Type=Application
+Categories=Network;System;
+EOL
+            chmod +x "$STARTMENU_FILE"
+            echo "[✓] Start Menu shortcut created at $STARTMENU_FILE."
+            ;;
+    esac
+elif [ -f "$STARTMENU_FILE" ]; then
+    echo "[✓] Start Menu shortcut already exists."
+fi
+
+# --- 10. FINAL SUMMARY & IP INFO ---
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 if [ -z "$LOCAL_IP" ]; then
     LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk 'NR==1 {print $7}')
@@ -430,7 +517,7 @@ if [ -n "$LOCAL_IP" ]; then
 fi
 echo "========================================================"
 
-# --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
+# --- 11. HANDOFF TO SETUP PYTHON SCRIPT ---
 if [ "$SERVICE_ACTIVE" = false ]; then
     echo "   [*] Checking for running instances..."
     # Check if setup_env.py is currently in the process list

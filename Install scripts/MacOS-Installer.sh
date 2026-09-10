@@ -3,6 +3,7 @@
 # Ensure we run as a standard user for paths
 if [ "$(id -u)" -eq 0 ]; then
     echo "[!] Please do NOT run this script with 'sudo'. Run it as your normal user."
+    echo "    The script will prompt for sudo credentials only when necessary."
     exit 1
 fi
 
@@ -16,13 +17,14 @@ BRANCH="main"
 TOKEN="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"
 APP_DIR="$HOME/Applications"
 APP_PATH="$APP_DIR/Network Diagnostics.app"
-OLD_AGENT_PLIST="$HOME/Library/LaunchAgents/com.network.diagnostics.plist"
 DAEMON_PLIST="/Library/LaunchDaemons/com.network.diagnostics.plist"
+SCRIPT_VERSION="1.0.2"
 
 # --- 2. EXISTING INSTALLATION CHECK & UNINSTALL OPTION ---
 if [ -d "$TARGET_DIR" ]; then
     echo "========================================================"
-    echo "   NETWORK DIAGNOSTICS - LINUX INSTALLER & MANAGER"
+    echo "   NETWORK DIAGNOSTICS - MACOS INSTALLER & MANAGER"
+    echo "   Installer Version: $SCRIPT_VERSION"
     echo "========================================================"
     echo ""
     echo "[*] Existing installation detected at $TARGET_DIR."
@@ -31,7 +33,7 @@ if [ -d "$TARGET_DIR" ]; then
     
     case "$remove_app" in
         [Yy]* )
-            printf "[?] Do you want to KEEP your database and configuration files? (y/N): "
+            printf "[?] Do you want to KEEP your database files? (y/N): "
             read keep_db < /dev/tty
             
             printf "[?] Are you ABSOLUTELY sure you want to uninstall? Type 'yes' to confirm: "
@@ -39,23 +41,24 @@ if [ -d "$TARGET_DIR" ]; then
             
             if [ "$confirm_wipe" = "yes" ]; then
                 
-                # Cleanup old systemd service if it existed
-                if [ -f "$SERVICE_FILE" ]; then
+                # Cleanup background LaunchDaemon if it existed
+                if [ -f "$DAEMON_PLIST" ]; then
                     echo "[*] Stopping system service..."
-                    sudo systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
-                    sudo systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
-                    sudo rm -f "$SERVICE_FILE"
-                    sudo systemctl daemon-reload
+                    sudo launchctl unload "$DAEMON_PLIST" >/dev/null 2>&1
+                    sudo rm -f "$DAEMON_PLIST"
                 fi
                 
-                # --- BACKUP LOGIC ---
+                # Cleanup Login Item if it existed
+                osascript -e 'tell application "System Events" to delete login item "Network Diagnostics"' >/dev/null 2>&1
+                
+                # --- BACKUP LOGIC (DATABASE ONLY) ---
                 case "$keep_db" in
                     [Yy]* )
                         BACKUP_DIR="$HOME/Desktop/Network-Diagnostics-Backup"
-                        echo "[*] Backing up database and config files to $BACKUP_DIR..."
+                        echo "[*] Backing up database files to $BACKUP_DIR..."
                         mkdir -p "$BACKUP_DIR"
-                        # Find and copy common DB extensions and config files
-                        find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" -o -name "webport" -o -name "standalone" -o -name "disablecleanup" \) -exec cp {} "$BACKUP_DIR/" \;
+                        # Find and copy ONLY database extensions
+                        find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" \) -exec cp {} "$BACKUP_DIR/" \;
                         echo "[+] Data backed up safely."
                         ;;
                 esac
@@ -63,9 +66,8 @@ if [ -d "$TARGET_DIR" ]; then
                 echo "[*] Deleting application directory..."
                 sudo rm -rf "$TARGET_DIR"
                 
-                echo "[*] Removing shortcuts..."
-                rm -f "$HOME/Desktop/Network-Diagnostics.desktop"
-                rm -f "$AUTOSTART_FILE"
+                echo "[*] Removing application bundle..."
+                rm -rf "$APP_PATH"
                 
                 echo "[✓] Application completely removed."
                 exit 0
@@ -79,41 +81,51 @@ fi
 # --- 3. WELCOME BANNER & INSTALL PROMPT ---
 echo "========================================================"
 echo "   NETWORK DIAGNOSTICS - MACOS INSTALLER & MANAGER"
+echo "   Installer Version: $SCRIPT_VERSION"
 echo "========================================================"
 echo "This script installs, updates, or manages the Network"
 echo "Diagnostics Dashboard, Python dependencies, and tools."
 echo ""
-printf "[?] Do you want to proceed with the installation process? (y/N): "
+printf "[?] Do you want to proceed with the installation of system prerequisites? (y/N): "
 read proceed < /dev/tty
+
+SKIP_PREREQS=false
 case "$proceed" in
     [Yy]* ) ;;
-    * ) echo "[*] Installation cancelled by user."; exit 0 ;;
+    * ) 
+        echo "[*] Skipping system prerequisites. Moving to application updates and configuration..."
+        SKIP_PREREQS=true 
+        ;;
 esac
 
 # --- 4. MACOS PREREQUISITES (Python 3 & Git Check) ---
-echo ""
-echo "[*] Step 1: Checking macOS system prerequisites..."
+if [ "$SKIP_PREREQS" = false ]; then
+    echo ""
+    echo "[*] Step 1: Checking macOS system prerequisites..."
 
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "[!] Python 3 not found. Downloading and installing official Python.org package for macOS..."
-    PY_VERSION="3.14.7"
-    PKG_NAME="python-${PY_VERSION}-macos11.pkg"
-    PKG_URL="https://www.python.org/ftp/python/${PY_VERSION}/${PKG_NAME}"
-    
-    echo "[*] Downloading Python ${PY_VERSION}..."
-    curl -O "$PKG_URL"
-    
-    echo "[*] Installing Python package (administrator password required)..."
-    sudo installer -pkg "$PKG_NAME" -target /
-    rm -f "$PKG_NAME"
-    echo "[✓] Python installation completed."
-else
-    echo "[✓] Python 3 is already installed."
-fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "[!] Python 3 not found. Downloading and installing official Python.org package for macOS..."
+        PY_VERSION="3.14.7"
+        PKG_NAME="python-${PY_VERSION}-macos11.pkg"
+        PKG_URL="https://www.python.org/ftp/python/${PY_VERSION}/${PKG_NAME}"
+        
+        echo "[*] Downloading Python ${PY_VERSION}..."
+        curl -O "$PKG_URL"
+        
+        echo "[*] Installing Python package (administrator password required)..."
+        sudo installer -pkg "$PKG_NAME" -target /
+        rm -f "$PKG_NAME"
+        echo "[✓] Python installation completed."
+    else
+        echo "[✓] Python 3 is already installed."
+    fi
 
-if ! command -v git >/dev/null 2>&1; then
-    echo "[*] Git not found. Installing via Xcode Command Line Tools..."
-    xcode-select --install
+    if ! command -v git >/dev/null 2>&1; then
+        echo "[*] Git not found. Installing via Xcode Command Line Tools..."
+        xcode-select --install
+    else
+        echo "[✓] Git is already installed."
+    fi
 fi
 
 # --- 5. DOWNLOAD OR UPDATE CODE ---
@@ -142,7 +154,7 @@ else
             
             # Move code files over without overwriting database/logs/configs
             if command -v rsync >/dev/null 2>&1; then
-                rsync -av --ignore-existing --exclude="standalone" --exclude="disablecleanup" "$EXTRACTED_FOLDER/" "$TARGET_DIR/" >/dev/null 2>&1
+                rsync -av --ignore-existing --exclude="webport" --exclude="standalone" --exclude="disablecleanup" "$EXTRACTED_FOLDER/" "$TARGET_DIR/" >/dev/null 2>&1
             else
                 cp -rn "$EXTRACTED_FOLDER/"* "$TARGET_DIR/" >/dev/null 2>&1
             fi
@@ -153,15 +165,37 @@ else
     esac
 fi
 
-# --- 6. DEDICATED TEST DEVICE PROMPT & CONFIG TRIGGERS ---
+# --- 6. APP CONFIGURATION & DEDICATED DEVICE ---
 echo ""
 echo "--------------------------------------------------------"
+
+# 6a. Web Port Prompt
+CURRENT_PORT="81"
+if [ -f "$TARGET_DIR/webport" ]; then
+    CURRENT_PORT=$(cat "$TARGET_DIR/webport" 2>/dev/null)
+fi
+
+printf "[?] Enter the port for the Web Dashboard [Default: %s]: " "$CURRENT_PORT"
+read user_port < /dev/tty
+user_port=${user_port:-$CURRENT_PORT}
+
+# Validate that the user entered numbers only
+if ! echo "$user_port" | grep -Eq '^[0-9]+$'; then
+    echo "    [!] Invalid port format. Reverting to $CURRENT_PORT."
+    user_port=$CURRENT_PORT
+fi
+
+mkdir -p "$TARGET_DIR"
+echo "$user_port" > "$TARGET_DIR/webport"
+echo "    [✓] Web port configured to $user_port."
+echo ""
+
+# 6b. Dedicated Device Prompt
 printf "[?] Are you using this device as a dedicated test device? (y/N): "
 read is_dedicated < /dev/tty
 case "$is_dedicated" in
     [Yy]* )
         echo "    [*] Configuring for dedicated test device mode..."
-        mkdir -p "$TARGET_DIR"
 
         if [ ! -f "$TARGET_DIR/standalone" ]; then
             touch "$TARGET_DIR/standalone"
@@ -180,9 +214,9 @@ echo "--------------------------------------------------------"
 chown -R "$USER" "$TARGET_DIR" >/dev/null 2>&1 || sudo chown -R "$USER" "$TARGET_DIR"
 sudo chmod -R 777 "$TARGET_DIR"
 
-# Ensure APP bundle is created, required for macOS Login Items to work properly
 FORCE_APP_CREATION=false
 SERVICE_ACTIVE=false
+WANTS_LOGIN_ITEM=false
 
 # --- 7. MACOS AUTOSTART CONFIGURATION ---
 echo ""
@@ -223,6 +257,7 @@ else
                         sudo rm -f "$DAEMON_PLIST"
                     fi
                     echo "    [*] Flagging system for macOS Login Item setup..."
+                    WANTS_LOGIN_ITEM=true
                     FORCE_APP_CREATION=true
                     ;;
                 2)
@@ -267,31 +302,34 @@ echo "--------------------------------------------------------"
 
 # --- 8. APPLICATIONS FOLDER SHORTCUT (.APP BUNDLE) CREATION ---
 echo ""
-if [ "$FORCE_APP_CREATION" = true ]; then
-    echo "[*] Application bundle required for Login Startup mechanism."
-    create_app_shortcut="y"
+if [ -d "$APP_PATH" ]; then
+    echo "[✓] Application shortcut already exists in your Applications folder."
 else
-    printf "[?] Do you want to create an application shortcut in your Applications folder? (y/N): "
-    read create_app_shortcut < /dev/tty
-fi
+    if [ "$FORCE_APP_CREATION" = true ]; then
+        echo "[*] Application bundle required for Login Startup mechanism."
+        create_app_shortcut="y"
+    else
+        printf "[?] Do you want to create an application shortcut in your Applications folder? (y/N): "
+        read create_app_shortcut < /dev/tty
+    fi
 
-case "$create_app_shortcut" in
-    [Yy]* )
-        mkdir -p "$APP_DIR"
-        echo "    [*] Building macOS Application Bundle with visible terminal window..."
-        rm -rf "$APP_PATH"
-        mkdir -p "$APP_PATH/Contents/MacOS"
-        mkdir -p "$APP_PATH/Contents/Resources"
-        
-        # Create executable launcher wrapper inside the bundle that natively commands Terminal to open
-        cat << EOF > "$APP_PATH/Contents/MacOS/launcher"
+    case "$create_app_shortcut" in
+        [Yy]* )
+            mkdir -p "$APP_DIR"
+            echo "    [*] Building macOS Application Bundle with visible terminal window..."
+            rm -rf "$APP_PATH"
+            mkdir -p "$APP_PATH/Contents/MacOS"
+            mkdir -p "$APP_PATH/Contents/Resources"
+            
+            # Create executable launcher wrapper inside the bundle that natively commands Terminal to open
+            cat << EOF > "$APP_PATH/Contents/MacOS/launcher"
 #!/bin/bash
 osascript -e 'tell application "Terminal" to do script "cd \\"$TARGET_DIR\\" && /usr/bin/env python3 \\"setup_env.py\\""'
 EOF
-        chmod +x "$APP_PATH/Contents/MacOS/launcher"
-        
-        # Create Info.plist metadata file
-        cat << 'EOF' > "$APP_PATH/Contents/Info.plist"
+            chmod +x "$APP_PATH/Contents/MacOS/launcher"
+            
+            # Create Info.plist metadata file
+            cat << 'EOF' > "$APP_PATH/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -310,37 +348,38 @@ EOF
 </plist>
 EOF
 
-        # Convert favicon.ico or Logo.png into Apple's .icns format
-        if [ -f "$TARGET_DIR/static/favicon.ico" ]; then
-            sips -s format icns "$TARGET_DIR/static/favicon.ico" --out "$APP_PATH/Contents/Resources/AppIcon.icns" >/dev/null 2>&1
-        fi
-        
-        if [ ! -f "$APP_PATH/Contents/Resources/AppIcon.icns" ] && [ -f "$TARGET_DIR/static/Logo.png" ]; then
-            ICONSET_DIR="/tmp/icon.iconset"
-            mkdir -p "$ICONSET_DIR"
-            sips -z 16 16     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null 2>&1
-            sips -z 32 32     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_16x16@2x.png" >/dev/null 2>&1
-            sips -z 32 32     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_32x32.png" >/dev/null 2>&1
-            sips -z 64 64     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_32x32@2x.png" >/dev/null 2>&1
-            sips -z 128 128   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_128x128.png" >/dev/null 2>&1
-            sips -z 256 256   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null 2>&1
-            sips -z 256 256   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_256x256.png" >/dev/null 2>&1
-            sips -z 512 512   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null 2>&1
-            sips -z 512 512   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null 2>&1
-            sips -z 1024 1024 "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null 2>&1
-            iconutil -c icns "$ICONSET_DIR" -o "$APP_PATH/Contents/Resources/AppIcon.icns" >/dev/null 2>&1
-            rm -rf "$ICONSET_DIR"
-        fi
-        
-        echo "[✓] Applications bundle created successfully at $APP_PATH."
-        
-        # Finally, assign the Login Item if requested earlier
-        if [ "$FORCE_APP_CREATION" = true ]; then
-            osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"$APP_PATH\", hidden:false}" >/dev/null 2>&1
-            echo "    [✓] Startup on login securely assigned to Application Bundle."
-        fi
-        ;;
-esac
+            # Convert favicon.ico or Logo.png into Apple's .icns format
+            if [ -f "$TARGET_DIR/static/favicon.ico" ]; then
+                sips -s format icns "$TARGET_DIR/static/favicon.ico" --out "$APP_PATH/Contents/Resources/AppIcon.icns" >/dev/null 2>&1
+            fi
+            
+            if [ ! -f "$APP_PATH/Contents/Resources/AppIcon.icns" ] && [ -f "$TARGET_DIR/static/Logo.png" ]; then
+                ICONSET_DIR="/tmp/icon.iconset"
+                mkdir -p "$ICONSET_DIR"
+                sips -z 16 16     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null 2>&1
+                sips -z 32 32     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_16x16@2x.png" >/dev/null 2>&1
+                sips -z 32 32     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_32x32.png" >/dev/null 2>&1
+                sips -z 64 64     "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_32x32@2x.png" >/dev/null 2>&1
+                sips -z 128 128   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_128x128.png" >/dev/null 2>&1
+                sips -z 256 256   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null 2>&1
+                sips -z 256 256   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_256x256.png" >/dev/null 2>&1
+                sips -z 512 512   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null 2>&1
+                sips -z 512 512   "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null 2>&1
+                sips -z 1024 1024 "$TARGET_DIR/static/Logo.png" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null 2>&1
+                iconutil -c icns "$ICONSET_DIR" -o "$APP_PATH/Contents/Resources/AppIcon.icns" >/dev/null 2>&1
+                rm -rf "$ICONSET_DIR"
+            fi
+            
+            echo "[✓] Applications bundle created successfully at $APP_PATH."
+            ;;
+    esac
+fi
+
+# Finally, assign the Login Item if requested earlier, ensuring it applies even if the bundle already existed
+if [ "$WANTS_LOGIN_ITEM" = true ] && [ -d "$APP_PATH" ]; then
+    osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"$APP_PATH\", hidden:false}" >/dev/null 2>&1
+    echo "    [✓] Startup on login securely assigned to Application Bundle."
+fi
 
 # --- 9. FINAL SUMMARY & IP INFO ---
 LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
@@ -367,7 +406,7 @@ if [ -n "$LOCAL_IP" ]; then
 fi
 echo "========================================================"
 
-# --- FINAL: HANDOFF TO SETUP PYTHON SCRIPT ---
+# --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
 if [ "$SERVICE_ACTIVE" = false ]; then
     echo "   [*] Checking for running instances..."
     
