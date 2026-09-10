@@ -22,41 +22,50 @@ DAEMON_PLIST="/Library/LaunchDaemons/com.network.diagnostics.plist"
 # --- 2. EXISTING INSTALLATION CHECK & UNINSTALL OPTION ---
 if [ -d "$TARGET_DIR" ]; then
     echo "========================================================"
-    echo "   NETWORK DIAGNOSTICS - MACOS INSTALLER & MANAGER"
+    echo "   NETWORK DIAGNOSTICS - LINUX INSTALLER & MANAGER"
     echo "========================================================"
     echo ""
     echo "[*] Existing installation detected at $TARGET_DIR."
-    printf "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N): "
+    printf "[?] Do you want to REMOVE the existing installation? (y/N): "
     read remove_app < /dev/tty
     
     case "$remove_app" in
         [Yy]* )
-            printf "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion: "
+            printf "[?] Do you want to KEEP your database and configuration files? (y/N): "
+            read keep_db < /dev/tty
+            
+            printf "[?] Are you ABSOLUTELY sure you want to uninstall? Type 'yes' to confirm: "
             read confirm_wipe < /dev/tty
+            
             if [ "$confirm_wipe" = "yes" ]; then
                 
-                # Cleanup old LaunchAgent if present
-                if [ -f "$OLD_AGENT_PLIST" ]; then
-                    echo "[*] Stopping legacy macOS background agent..."
-                    launchctl unload "$OLD_AGENT_PLIST" >/dev/null 2>&1
-                    rm -f "$OLD_AGENT_PLIST"
+                # Cleanup old systemd service if it existed
+                if [ -f "$SERVICE_FILE" ]; then
+                    echo "[*] Stopping system service..."
+                    sudo systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+                    sudo systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
+                    sudo rm -f "$SERVICE_FILE"
+                    sudo systemctl daemon-reload
                 fi
                 
-                # Cleanup LaunchDaemon if present
-                if [ -f "$DAEMON_PLIST" ]; then
-                    echo "[*] Stopping macOS background daemon..."
-                    sudo launchctl unload "$DAEMON_PLIST" >/dev/null 2>&1
-                    sudo rm -f "$DAEMON_PLIST"
-                fi
-                
-                # Cleanup Login Item if present
-                osascript -e 'tell application "System Events" to delete login item "Network Diagnostics"' >/dev/null 2>&1
+                # --- BACKUP LOGIC ---
+                case "$keep_db" in
+                    [Yy]* )
+                        BACKUP_DIR="$HOME/Desktop/Network-Diagnostics-Backup"
+                        echo "[*] Backing up database and config files to $BACKUP_DIR..."
+                        mkdir -p "$BACKUP_DIR"
+                        # Find and copy common DB extensions and config files
+                        find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" -o -name "webport" -o -name "standalone" -o -name "disablecleanup" \) -exec cp {} "$BACKUP_DIR/" \;
+                        echo "[+] Data backed up safely."
+                        ;;
+                esac
                 
                 echo "[*] Deleting application directory..."
                 sudo rm -rf "$TARGET_DIR"
                 
-                echo "[*] Removing applications folder bundle if present..."
-                rm -rf "$APP_PATH"
+                echo "[*] Removing shortcuts..."
+                rm -f "$HOME/Desktop/Network-Diagnostics.desktop"
+                rm -f "$AUTOSTART_FILE"
                 
                 echo "[✓] Application completely removed."
                 exit 0
@@ -358,8 +367,15 @@ if [ -n "$LOCAL_IP" ]; then
 fi
 echo "========================================================"
 
-# --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
+# --- FINAL: HANDOFF TO SETUP PYTHON SCRIPT ---
 if [ "$SERVICE_ACTIVE" = false ]; then
-    cd "$TARGET_DIR" || exit
-    python3 setup_env.py
+    echo "   [*] Checking for running instances..."
+    
+    # pgrep -f works natively on macOS to check the command line arguments
+    if pgrep -f "setup_env.py" > /dev/null; then
+        echo "   [✓] Network Diagnostics is already running. Skipping launch."
+    else
+        cd "$TARGET_DIR" || exit
+        python3 setup_env.py
+    fi
 fi

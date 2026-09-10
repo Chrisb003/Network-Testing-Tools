@@ -54,14 +54,14 @@ Set-Location $env:TEMP
 # 3. EXISTING INSTALLATION CHECK & UNINSTALL OPTION
 # ---------------------------------------------------------
 if (Test-Path "$script:TargetDir\app.py") {
-    Write-Host "========================================================" -ForegroundColor Cyan
-    Write-Host "   NETWORK DIAGNOSTICS - WINDOWS INSTALLER & MANAGER" -ForegroundColor Cyan
-    Write-Host "========================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "[*] Existing installation detected at $script:TargetDir." -ForegroundColor Cyan
-    $removeApp = Read-Host "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N)"
+    $removeApp = Read-Host "[?] Do you want to REMOVE the existing installation? (y/N)"
     if ($removeApp -eq 'y' -or $removeApp -eq 'Y') {
-        $confirmWipe = Read-Host "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion"
+        
+        $keepDb = Read-Host "[?] Do you want to KEEP your database and configuration files? (y/N)"
+        $confirmWipe = Read-Host "[?] Are you ABSOLUTELY sure you want to uninstall? Type 'yes' to confirm"
+        
         if ($confirmWipe -eq 'yes') {
             Write-Host "[*] Removing Startup shortcut if present..." -ForegroundColor Gray
             Remove-Item "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Startup\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
@@ -69,6 +69,17 @@ if (Test-Path "$script:TargetDir\app.py") {
             Remove-Item "$OriginalDesktop\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
             Write-Host "[*] Removing Start Menu shortcut if present..." -ForegroundColor Gray
             Remove-Item "$OriginalAppData\Microsoft\Windows\Start Menu\Programs\Network Diagnostics.lnk" -ErrorAction SilentlyContinue
+            
+            # --- BACKUP LOGIC ---
+            if ($keepDb -eq 'y' -or $keepDb -eq 'Y') {
+                Write-Host "[*] Backing up database and config files..." -ForegroundColor Cyan
+                $backupDir = Join-Path $OriginalDesktop "Network-Diagnostics-Backup"
+                if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir | Out-Null }
+                
+                # Copies any database files or dedicated test configurations
+                Get-ChildItem -Path $script:TargetDir -Include *.db, *.sqlite, webport, standalone, disablecleanup -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination $backupDir -Force
+                Write-Host "[+] Data backed up safely to: $backupDir" -ForegroundColor Green
+            }
             
             Write-Host "[*] Deleting application directory..." -ForegroundColor Gray
             Remove-Item "$script:TargetDir" -Recurse -Force -ErrorAction SilentlyContinue
@@ -440,9 +451,18 @@ if ($npcapInstalled) {
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 # ---------------------------------------------------------
-# 14. RUN THE SETUP SCRIPT FROM TARGET DIRECTORY
+# FINAL: RUN THE SETUP SCRIPT FROM TARGET DIRECTORY
 # ---------------------------------------------------------
 Write-Host ""
-Write-Host "[*] Launching Setup Script from $script:TargetDir..." -ForegroundColor Cyan
-Set-Location $script:TargetDir
-& $script:PythonCmd setup_env.py
+Write-Host "[*] Checking for running instances..." -ForegroundColor Cyan
+
+# Query Windows processes to see if Python is currently running setup_env.py
+$isRunning = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "setup_env.py" }
+
+if ($isRunning) {
+    Write-Host "[✓] Network Diagnostics is already running. Skipping launch." -ForegroundColor Green
+} else {
+    Write-Host "[*] Launching Setup Script from $script:TargetDir..." -ForegroundColor Cyan
+    Set-Location $script:TargetDir
+    & $script:PythonCmd setup_env.py
+}

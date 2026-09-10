@@ -25,13 +25,17 @@ if [ -d "$TARGET_DIR" ]; then
     echo "========================================================"
     echo ""
     echo "[*] Existing installation detected at $TARGET_DIR."
-    printf "[?] Do you want to REMOVE the existing installation completely (including database and logs)? (y/N): "
+    printf "[?] Do you want to REMOVE the existing installation? (y/N): "
     read remove_app < /dev/tty
     
     case "$remove_app" in
         [Yy]* )
-            printf "[?] Are you ABSOLUTELY sure? Type 'yes' to confirm total deletion: "
+            printf "[?] Do you want to KEEP your database and configuration files? (y/N): "
+            read keep_db < /dev/tty
+            
+            printf "[?] Are you ABSOLUTELY sure you want to uninstall? Type 'yes' to confirm: "
             read confirm_wipe < /dev/tty
+            
             if [ "$confirm_wipe" = "yes" ]; then
                 
                 # Cleanup old systemd service if it existed
@@ -42,6 +46,18 @@ if [ -d "$TARGET_DIR" ]; then
                     sudo rm -f "$SERVICE_FILE"
                     sudo systemctl daemon-reload
                 fi
+                
+                # --- BACKUP LOGIC ---
+                case "$keep_db" in
+                    [Yy]* )
+                        BACKUP_DIR="$HOME/Desktop/Network-Diagnostics-Backup"
+                        echo "[*] Backing up database and config files to $BACKUP_DIR..."
+                        mkdir -p "$BACKUP_DIR"
+                        # Find and copy common DB extensions and config files
+                        find "$TARGET_DIR" -type f \( -name "*.db" -o -name "*.sqlite" -o -name "webport" -o -name "standalone" -o -name "disablecleanup" \) -exec cp {} "$BACKUP_DIR/" \;
+                        echo "[+] Data backed up safely."
+                        ;;
+                esac
                 
                 echo "[*] Deleting application directory..."
                 sudo rm -rf "$TARGET_DIR"
@@ -58,7 +74,6 @@ if [ -d "$TARGET_DIR" ]; then
             ;;
     esac
 fi
-
 # --- 3. WELCOME BANNER & INSTALL PROMPT ---
 echo "========================================================"
 echo "   NETWORK DIAGNOSTICS - LINUX INSTALLER & MANAGER"
@@ -417,6 +432,12 @@ echo "========================================================"
 
 # --- 10. HANDOFF TO SETUP PYTHON SCRIPT ---
 if [ "$SERVICE_ACTIVE" = false ]; then
-    cd "$TARGET_DIR" || exit
-    python3 setup_env.py
+    echo "   [*] Checking for running instances..."
+    # Check if setup_env.py is currently in the process list
+    if pgrep -f "setup_env.py" > /dev/null; then
+        echo "   [✓] Network Diagnostics is already running. Skipping launch."
+    else
+        cd "$TARGET_DIR" || exit
+        python3 setup_env.py
+    fi
 fi
