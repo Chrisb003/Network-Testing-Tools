@@ -150,7 +150,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.15.0"
+APP_VERSION = "0.15.1"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -1040,50 +1040,220 @@ def get_mac_vendor(mac, fetch_online=False):
     
     return ""
 
-def resolve_hostname(ip, mac=None):
-    """Resolves hostname using DNS, ARP cache, NetBIOS, and appends MAC Vendor in brackets."""
-    hostname = "Unknown Device"
-    
-    try:
-        default_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(1) 
-        name = socket.gethostbyaddr(ip)[0]
-        socket.setdefaulttimeout(default_timeout)
-        if name and not name.startswith(ip) and name != "?": 
-            hostname = name
-    except:
-        socket.setdefaulttimeout(default_timeout if 'default_timeout' in locals() else None)
-    
-    if hostname == "Unknown Device":
-        try:
-            arp_out = subprocess.check_output(["arp", "-a"], text=True)
-            for line in arp_out.split('\n'):
-                if ip in line:
-                    match = re.search(r'^(\S+)\s+\(', line)
-                    if match:
-                        name = match.group(1)
-                        if name != "?" and name != ip: 
-                            hostname = name
-                            break
-        except: pass
+# ==========================================
+# ADVANCED HOSTNAME RESOLUTION ENGINE
+# ==========================================
 
-    if hostname == "Unknown Device" and platform.system() == "Windows":
+def _build_dns_ptr_query(ip):
+    """Builds a raw DNS PTR query payload for an IPv4 address."""
+    octets = ip.split('.')
+    reversed_ip = '.'.join(reversed(octets)) + '.in-addr.arpa'
+    txid = b'\x13\x37'
+    flags = b'\x01\x00'  # Standard query with recursion desired
+    counts = b'\x00\x01\x00\x00\x00\x00\x00\x00'
+    qname = b''.join(bytes([len(part)]) + part.encode('ascii') for part in reversed_ip.split('.')) + b'\x00'
+    qtype_qclass = b'\x00\x0c\x00\x01'  # PTR (12), IN (1)
+    return txid + flags + counts + qname + qtype_qclass
+
+def _parse_dns_ptr_response(data):
+    """Extracts the domain/hostname from a DNS/mDNS PTR response packet."""
+    try:
+        if len(data) < 12: return None
+        ancount = int.from_bytes(data[6:8], 'big')
+        if ancount == 0: return None
+        
+        idx = 12
+        # Skip Question section
+        while idx < len(data) and data[idx] != 0:
+            if (data[idx] & 0xC0) == 0xC0:
+                idx += 2
+                break
+            idx += 1 + data[idx]
+        if idx < len(data) and data[idx] == 0:
+            idx += 1
+        idx += 4  # Skip QTYPE and QCLASS
+
+        # Parse Answer section
+        for _ in range(ancount):
+            if idx >= len(data): break
+            if (data[idx] & 0xC0) == 0xC0:
+                idx += 2
+            else:
+                while idx < len(data) and data[idx] != 0:
+                    idx += 1 + data[idx]
+                if idx < len(data) and data[idx] == 0:
+                    idx += 1
+            
+            if idx + 10 > len(data): break
+            atype = int.from_bytes(data[idx:idx+2], 'big')
+            rdlength = int.from_bytes(data[idx+8:idx+10], 'big')
+            idx += 10
+            rdata_end = idx + rdlength
+            
+            if atype == 12:  # PTR Record
+                name_parts = []
+                curr = idx
+                visited = set()
+                while curr < len(data) and data[curr] != 0:
+                    if curr in visited: break
+                    visited.add(curr)
+                    if (data[curr] & 0xC0) == 0xC0:
+                        pointer = int.from_bytes(data[curr:curr+2], 'big') & 0x3FFF
+                        curr = pointer
+                        continue
+                    length = data[curr]
+                    curr += 1
+                    name_parts.append(data[curr:curr+length].decode('utf-8', errors='ignore'))
+                    curr += length
+                if name_parts:
+                    return '.'.join(name_parts).strip('.')
+            idx = rdata_end
+    except Exception:
+        pass
+    return None
+
+def _query_router_dns(ip, gateway_ip, timeout=0.3):
+    """Directly queries the local router/DHCP server for local DNS registration."""
+    if not gateway_ip or gateway_ip in ("-", "Unknown") or ip == gateway_ip:
+        return None
+    try:
+        query = _build_dns_ptr_query(ip)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(timeout)
+            s.sendto(query, (gateway_ip, 53))
+            data, _ = s.recvfrom(1024)
+            name = _parse_dns_ptr_response(data)
+            if name:
+                for suffix in [".lan", ".home", ".localdomain", ".domain"]:
+                    if name.lower().endswith(suffix):
+                        name = name[:-len(suffix)]
+                return name
+    except Exception:
+        pass
+    return None
+
+def _query_mdns(ip, timeout=0.35):
+    """Queries target device directly via Unicast mDNS (UDP 5353)."""
+    try:
+        query = _build_dns_ptr_query(ip)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(timeout)
+            s.sendto(query, (ip, 5353))
+            data, _ = s.recvfrom(1024)
+            name = _parse_dns_ptr_response(data)
+            if name:
+                if name.lower().endswith(".local"):
+                    name = name[:-6]
+                return name
+    except Exception:
+        pass
+    return None
+
+def _query_netbios_socket(ip, timeout=0.3):
+    """Cross-platform NetBIOS Node Status query over UDP 137."""
+    nb_query = b"\x82\x28\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x20CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x00\x00\x21\x00\x01"
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(timeout)
+            s.sendto(nb_query, (ip, 137))
+            data, _ = s.recvfrom(1024)
+            if len(data) > 56:
+                num_names = data[56]
+                offset = 57
+                for _ in range(num_names):
+                    if offset + 18 <= len(data):
+                        raw_name = data[offset:offset+15].decode('ascii', errors='ignore').strip()
+                        rtype = data[offset+15]
+                        flags = int.from_bytes(data[offset+16:offset+18], 'big')
+                        is_group = bool(flags & 0x8000)
+                        if not is_group and rtype in (0x00, 0x20) and raw_name and not raw_name.startswith("IS~"):
+                            return raw_name
+                        offset += 18
+    except Exception:
+        pass
+    return None
+
+def _query_http_title(ip, timeout=0.35):
+    """Scrapes the HTML <title> tag for printers, routers, switches, and webcams."""
+    for port in (80, 8080):
         try:
-            out = subprocess.check_output(["nbtstat", "-A", ip], text=True, timeout=2)
+            url = f"http://{ip}:{port}/"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                chunk = resp.read(2048).decode('utf-8', errors='ignore')
+                match = re.search(r'<title>(.*?)</title>', chunk, re.IGNORECASE | re.DOTALL)
+                if match:
+                    title = " ".join(match.group(1).split()).strip()
+                    # Filter generic, unhelpful webpage titles
+                    if title and title.lower() not in ("login", "welcome", "home", "index", "404 not found", "error"):
+                        return title[:40]
+        except Exception:
+            continue
+    return None
+
+def resolve_hostname(ip, mac=None, gateway_ip=None):
+    """
+    Multi-tier hostname resolution engine:
+    1. Direct Gateway/Router DHCP DNS query (UDP 53)
+    2. Unicast mDNS query (UDP 5353) - Apple, Android, Windows, Linux, IoT
+    3. Cross-platform NetBIOS socket query (UDP 137) - Windows & Samba
+    4. Native Windows nbtstat (Bypasses some local Python socket restrictions)
+    5. Operating System DNS resolver (fallback)
+    6. Web UI Title scraper (ports 80/8080)
+    """
+    hostname = None
+
+    # Step 1: Direct Router DNS query
+    if gateway_ip:
+        hostname = _query_router_dns(ip, gateway_ip)
+
+    # Step 2: mDNS (.local)
+    if not hostname:
+        hostname = _query_mdns(ip)
+
+    # Step 3: NetBIOS Node Status (pure Python UDP)
+    if not hostname:
+        hostname = _query_netbios_socket(ip)
+
+    # Step 4: Native Windows NetBIOS fallback
+    if not hostname and platform.system() == "Windows":
+        try:
+            out = subprocess.check_output(["nbtstat", "-A", ip], text=True, timeout=1.0)
             for line in out.split('\n'):
                 if "<20>" in line and "UNIQUE" in line:
                     hostname = line.split("<20>")[0].strip()
                     break
-        except: pass
+        except Exception:
+            pass
 
-    if mac:
-        vendor = get_mac_vendor(mac, fetch_online=False)
-        if vendor:
-            hostname = f"{hostname} ({vendor})"
+    # Step 5: System Resolver (standard gethostbyaddr fallback)
+    if not hostname:
+        try:
+            name, _, _ = socket.gethostbyaddr(ip)
+            if name and name != ip and name != "?":
+                hostname = name
+        except Exception:
+            pass
+
+    # Step 6: Web Title Scraping
+    if not hostname:
+        hostname = _query_http_title(ip)
+
+    # Clean up and apply Vendor fallback if unresolved
+    if not hostname or hostname in ("Unknown", "Unknown Device", "?"):
+        hostname = "Unknown Device"
+        if mac:
+            vendor = get_mac_vendor(mac, fetch_online=False)
+            if vendor:
+                hostname = f"Unknown ({vendor})"
+    else:
+        # Strip trailing local domains
+        if hostname.endswith(".local"):
+            hostname = hostname[:-6]
 
     return hostname
 
-def process_device_info(received):
+def process_device_info(received, gateway_ip=None):
     """Worker function for threaded scanning."""
     ip = getattr(received, 'psrc', getattr(received, 'ip', None))
     mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
@@ -1091,7 +1261,7 @@ def process_device_info(received):
     return {
         "ip": ip,
         "mac": mac,
-        "hostname": resolve_hostname(ip, mac),
+        "hostname": resolve_hostname(ip, mac, gateway_ip),
         "vendor": get_mac_vendor(mac, fetch_online=False),
         "services": check_open_ports(ip)['services']
     }
@@ -2136,6 +2306,10 @@ def scan_network():
     if target_iface: conf.iface = target_iface
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # --- NEW: Fetch Gateway IP early to pass to the resolver ---
+    ext_info = get_extended_iface_info()
+    gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
+
     # --- 1. PERFORM SCAN FIRST ---
     ans = []
     try:
@@ -2151,7 +2325,8 @@ def scan_network():
 
     scanned_results = []
     with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-        futures = [executor.submit(process_device_info, received) for _, received in ans]
+        # Pass the gateway_ip into the worker thread
+        futures = [executor.submit(process_device_info, received, gateway_ip) for _, received in ans]
         for future in futures: scanned_results.append(future.result())
 
     # --- 2. OS-AGNOSTIC PING SWEEP FALLBACK ---
@@ -2192,13 +2367,12 @@ def scan_network():
 
             if arp_devices:
                 with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-                    futures = [executor.submit(process_device_info, dev) for dev in arp_devices]
+                    # Pass the gateway_ip into the ping sweep fallback workers
+                    futures = [executor.submit(process_device_info, dev, gateway_ip) for dev in arp_devices]
                     for future in futures: scanned_results.append(future.result())
         except: pass
 
     # --- 3. EXTRACT GATEWAY MAC FROM RESULTS ---
-    ext_info = get_extended_iface_info()
-    gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
     gateway_mac = None
 
     found_ips = [d["ip"] for d in scanned_results]
@@ -2504,11 +2678,11 @@ def scan_network_stream():
                 mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
                 skip_services = False
                 
-                # OPTIMIZATION: Bypass the deep port scan if this is a 'Continue' and the device was previously offline
                 if is_continue and mac in existing_states and existing_states[mac]['online'] == 0:
                     skip_services = True
                 
-                tasks.append((d, skip_services))
+                # Pass gateway_ip to the task tuple
+                tasks.append((d, skip_services, gateway_ip))
 
             with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
                 future_to_dev = {executor.submit(process_device_quick, t): t[0] for t in tasks}
@@ -4662,13 +4836,13 @@ def update_ssid_comment():
 
 def process_device_quick(args):
     """Processes device network info with smart caching for continued scans."""
-    received, skip_services = args
+    received, skip_services, gateway_ip = args
     ip = getattr(received, 'psrc', getattr(received, 'ip', None))
     mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
     return {
         "ip": ip,
         "mac": mac,
-        "hostname": resolve_hostname(ip, mac=None),  # Skip vendor appending in hostname
+        "hostname": resolve_hostname(ip, mac, gateway_ip),
         "services": "None" if skip_services else check_open_ports(ip)['services']
     }
 

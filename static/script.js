@@ -145,11 +145,22 @@ let updateModal, adapterModal, editSpeedTestModal, mergeModal, networkModal, wif
         const savedTouchMode = localStorage.getItem('touchMode') === 'true';
         if (savedTouchMode) document.body.classList.add('touch-mode');
         updateTouchIcon(savedTouchMode);
+        
         // Run the new verification check
         if (typeof verifyUpdateStatus === "function") verifyUpdateStatus();
         const channelSelect = document.getElementById('update-channel-select');
         if (channelSelect && window.APP_CONFIG.updateChannel) {
             channelSelect.value = window.APP_CONFIG.updateChannel;
+        }
+
+        // --- NEW: Restore Last Active Page on Refresh ---
+        const lastPage = localStorage.getItem('lastActivePage');
+        if (lastPage) {
+            // Find the navigation link element associated with this page ID
+            const targetLink = document.querySelector(`[onclick*="showPage('${lastPage}'"]`);
+            if (targetLink) {
+                showPage(lastPage, targetLink);
+            }
         }
     });
 
@@ -406,6 +417,8 @@ function deleteConnectionType(id) {
 }
 
 function showPage(id, link) {
+    // --- NEW: Save the active page to the browser's memory ---
+    localStorage.setItem('lastActivePage', id);
     // Hide all pages
     document.querySelectorAll('.page-section').forEach(p => p.classList.add('hidden'));
     
@@ -426,7 +439,18 @@ function showPage(id, link) {
         if (toggle) toggle.classList.add('active');
     }
     
-    // Refresh data based on page
+    // --- NEW: Fix iPad sticky hover and stuck menus ---
+    // 1. Drop focus from the clicked item to clear iOS hover states
+    if (document.activeElement) {
+        document.activeElement.blur();
+    }
+    // 2. Manually close any Bootstrap dropdowns that might be stuck open
+    document.querySelectorAll('.dropdown-toggle.show').forEach(toggle => {
+        const bsDropdown = bootstrap.Dropdown.getInstance(toggle);
+        if (bsDropdown) bsDropdown.hide();
+    });
+    
+// Refresh data based on page
     if(id === 'history') fetchHistory();
     if(id === 'networks') loadNetworks();
     if(id === 'dns-tool') fetchToolLogs('dns');
@@ -434,6 +458,17 @@ function showPage(id, link) {
     if(id === 'wifi-history') loadWifiHistory();
     if(id === 'device-history-page') loadDeviceHistory();
     if(id === 'wifi-networks-history') loadWifiNetworksHistory();
+    
+    // --- NEW: Reset the Help page search when opened ---
+    if(id === 'help') {
+        const searchBox = document.getElementById('help-search');
+        if (searchBox) searchBox.value = "";
+        resetHelpSearch();
+        
+        // Optional: Force it back to the 'General' tab
+        const generalTab = document.querySelector('[data-target="help-general"]');
+        if (generalTab) switchHelpTab(generalTab);
+    }
 }
 
     // --- Core UI Helpers ---
@@ -3923,6 +3958,12 @@ function upgradeTooltips() {
         // 'hover focus' allows mouse hover on PC, and long-press on Touch Screens
         new bootstrap.Tooltip(el, { 
             trigger: 'hover focus' 
+        });
+
+        // --- NEW: Force tooltip to hide on click (fixes iPad stuck tooltips) ---
+        el.addEventListener('click', function() {
+            const instance = bootstrap.Tooltip.getInstance(this);
+            if (instance) instance.hide();
         });
     });
 }

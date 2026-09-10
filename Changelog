@@ -1,3 +1,5 @@
+0.15.1 - Fixed issue with touch controls if accessing from the ipad. Now remembers the page you are on if you refresh the page. Fix for network scan showing unknown hostnames.
+
 0.15.0 - Added tray icon which can stop and restart the app. Install scripts for Windows, Mac OS and Linux that should fully handle the download and install of requirements and code.
 
 0.14.0 - Fixed various server restart mechanism. Unified the UI experience by making all popups etc look and work the same. Fixed comments not being availible with certain bits. Fixed csv export and comments are now exported. Tables can now be sorted via any of the columns

@@ -91,15 +91,17 @@ body.touch-mode .form-check-label {
    DROPDOWN MENU HOVER / TOUCH LOGIC
    ========================================= */
 
-/* 1. Desktop (Normal Mode): Show on hover */
-body:not(.touch-mode) .custom-hover-dropdown:hover .dropdown-menu {
-    display: block;
-    top: 100%;
-}
+/* 1. Desktop (Normal Mode): Show on hover ONLY if the device actually has a physical mouse */
+@media (hover: hover) and (pointer: fine) {
+    body:not(.touch-mode) .custom-hover-dropdown:hover .dropdown-menu {
+        display: block;
+        top: 100%;
+    }
 
-/* 2. Desktop (Normal Mode): Disable click on the header text so it doesn't stay stuck open */
-body:not(.touch-mode) .custom-hover-dropdown > .dropdown-toggle {
-    pointer-events: none;
+    /* 2. Desktop (Normal Mode): Disable click on the header text so it doesn't stay stuck open */
+    body:not(.touch-mode) .custom-hover-dropdown > .dropdown-toggle {
+        pointer-events: none;
+    }
 }
 
 /* 3. Touch Mode: Re-enable the click so Bootstrap's native JS takes over */
