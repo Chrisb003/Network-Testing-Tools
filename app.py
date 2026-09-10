@@ -150,7 +150,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.15.1"
+APP_VERSION = "0.15.2"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -4147,7 +4147,7 @@ def update_software():
                     # Ignore heavy/unnecessary directories
                     if "venv" in dirs: dirs.remove("venv")
                     if "logs" in dirs: dirs.remove("logs")
-                    if "backups" in dirs: dirs.remove("backups") # Skip the new backup folder
+                    if "backups" in dirs: dirs.remove("backups") 
                     if "__pycache__" in dirs: dirs.remove("__pycache__")
                     if ".git" in dirs: dirs.remove(".git")
                     
@@ -4192,17 +4192,25 @@ def update_software():
 
                         try:
                             if os.path.exists(dest_file):
-                                try: os.replace(src_file, dest_file)
+                                try: 
+                                    os.replace(src_file, dest_file)
                                 except OSError:
+                                    # --- CRITICAL FIX: Handle Linux Cross-Device Links & Windows Locks ---
                                     if platform.system() == "Windows":
                                         backup = dest_file + f".old_{int(time.time())}"
                                         if os.path.exists(backup): os.remove(backup)
                                         os.rename(dest_file, backup)
                                         shutil.move(src_file, dest_file)
-                            else: shutil.move(src_file, dest_file)
+                                    else:
+                                        # Delete the old file first, then safely move the new one from RAM to SD
+                                        os.remove(dest_file)
+                                        shutil.move(src_file, dest_file)
+                            else: 
+                                shutil.move(src_file, dest_file)
                             
                             fix_permissions(dest_file)
-                        except Exception as e: print(f"[!] Update copy failed for {file}: {e}")
+                        except Exception as e: 
+                            print(f"[!] Update copy failed for {file}: {e}")
 
         print("[✓] Update applied. Permissions set to Read/Write/Execute for all.")
         threading.Thread(target=restart_server).start()

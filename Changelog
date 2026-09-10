@@ -1,3 +1,5 @@
+0.15.2 - Fix for update mechanism on linux
+
 0.15.1 - Fixed issue with touch controls if accessing from the ipad. Now remembers the page you are on if you refresh the page. Fix for network scan showing unknown hostnames.
 
 0.15.0 - Added tray icon which can stop and restart the app. Install scripts for Windows, Mac OS and Linux that should fully handle the download and install of requirements and code.
