@@ -213,9 +213,14 @@ case "$is_dedicated" in
                     sudo nmcli connection add type wifi ifname "$WIFI_IFACE" con-name Hotspot autoconnect yes ssid "$HOTSPOT_SSID" >/dev/null 2>&1
                     sudo nmcli connection modify Hotspot 802-11-wireless.mode ap 802-11-wireless.band bg ipv4.method shared
                     sudo nmcli connection modify Hotspot wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOTSPOT_PASS"
+                    # Bring up the hotspot, but don't strictly trust the immediate exit code
                     sudo nmcli connection up Hotspot >/dev/null 2>&1
                     
-                    if [ $? -eq 0 ]; then
+                    # Give the Pi's network stack a few seconds to stabilize
+                    sleep 4
+                    
+                    # Explicitly check if the Hotspot is in the active connections list
+                    if nmcli connection show --active | grep -q "Hotspot"; then
                         echo "        [✓] Hotspot successfully activated!"
                         HOTSPOT_ACTIVE=true
                     else
