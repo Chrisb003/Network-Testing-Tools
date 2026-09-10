@@ -962,19 +962,25 @@
                         <p class="text-muted small">These same scripts can be used to fully remove the application as well.</p>
 
                         <div class="help-item">
-                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests administrator privileges, checks for Python (downloads and installs it from the python website if missing), downloads or updates project files from GitHub into the user's profile directory, and prompts for dedicated test device features (such as generating <code>standalone</code>, <code>disablecleanup</code>, and <code>webport</code> configuration files, or setting up a Windows Wi-Fi Mobile Hotspot). It also configures user-login startup, individual desktop/start menu shortcuts using the custom app logo, and hands off execution to the setup script.
+                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python 3.12 directly from python.org if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and creates Desktop/Start Menu shortcuts with the custom app logo. Automatically unlocks folder permissions using <code>icacls</code>. To begin the installation quickly, open <strong>PowerShell</strong> and paste:
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">&amp; ([scriptblock]::Create((irm "https://test.chris94.com/install-scripts/Windows-Installer.ps1")))</div>
                         </div>
                         <div class="help-item">
-                            <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, and network-manager), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). It also handles optional systemd background services, desktop shortcuts with custom logo integration, and launches the environment supervisor.
+                            <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, network-manager, and GUI tray dependencies like GTK3 and AppIndicator), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). It also handles optional systemd background services, desktop shortcuts with custom logo integration, and launches the environment supervisor. To begin the installation quickly, open your <strong>Terminal</strong> and paste:
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://test.chris94.com/install-scripts/Linux-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
-                            <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3 and Xcode tools if missing), downloads or updates project files from GitHub into the user's home folder, and offers dedicated test device options to write configuration triggers. It also manages background <code>launchd</code> boot agents, builds a native macOS <code>.app</code> bundle in the Applications folder with a high-resolution custom icon converted from the project logo, and executes the setup script.
+                            <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3 and Xcode tools if missing), downloads or updates project files from GitHub into the user's home folder, and offers dedicated test device options to write configuration triggers. It also manages background <code>launchd</code> boot agents, builds a native macOS <code>.app</code> bundle in the Applications folder with a high-resolution custom icon converted from the project logo, and ensures PyObjC frameworks like Quartz are available for the menu bar icon. To begin the installation quickly, open the <strong>Terminal</strong> app and paste:
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://test.chris94.com/install-scripts/MacOS-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
-                            <strong><code>setup_env.py</code>:</strong> The core supervisor script. Manages virtual environments, installs Python requirements, downloads/updates the Speedtest CLI, enforces file permissions across the OS, and monitors the main application for crashes.
+                            <strong><code>setup_env.py</code>:</strong> The core supervisor script. Manages virtual environments, installs Python requirements (including system tray packages like <code>pystray</code> and <code>Pillow</code>), downloads/updates the Speedtest CLI, enforces file permissions across the OS, and monitors the main application for crashes.
                         </div>
 
                         <h5 class="text-primary border-bottom pb-2 mb-3 mt-4">Dashboard Basics</h5>
+                        <div class="help-item">
+                            <strong>System Tray Icon:</strong> When launched on a desktop environment, the app adds an icon to your system tray (or macOS menu bar). You can right-click this icon to instantly restart or shut down the dashboard. <em>Note: If running as a background daemon, without a display, or in Dedicated Server Mode, this icon hides automatically.</em>
+                        </div>
                         <div class="help-item">
                             <strong>Live Status Dot:</strong> Indicates that the dashboard is actively communicating with the backend server.
                         </div>
@@ -1123,7 +1129,7 @@
                             <strong><code>webport</code></strong>: Write a number (e.g., <code>8080</code>) inside this file. On the next startup, the dashboard will switch to this port and delete the file.
                         </div>
                         <div class="help-item">
-                            <strong><code>standalone</code></strong>: Create this blank file to enable <em>Dedicated Server Mode</em>. This unlocks the dangerous "OS Reboot" and "OS Shutdown" buttons in the Settings tab.
+                            <strong><code>standalone</code></strong>: Create this blank file to enable <em>Dedicated Server Mode</em>. This unlocks the dangerous "OS Reboot" and "OS Shutdown" buttons in the Settings tab, and forces the application into headless mode (hiding the desktop system tray icon).
                         </div>
                         <div class="help-item">
                             <strong><code>disablecleanup</code></strong>: Create this blank file to completely disable the folder isolation safety checks. The setup script will always install/run in the current directory, regardless of other foreign files present.
@@ -1147,6 +1153,7 @@
         </div>
     </div>
 </div>
+
 <!-- ==============================================
      MODALS 
      ============================================== -->
