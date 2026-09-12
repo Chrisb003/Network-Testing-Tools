@@ -150,7 +150,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.15.2"
+APP_VERSION = "0.15.3"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -3511,7 +3511,8 @@ def run_speedtest():
     Executes an Ookla Speedtest.
     - Windows: Uses --ip with the local IP.
     - macOS/Linux: Uses --interface with the hardware name (e.g., en0).
-    Provides specific UI error messages if a pinned adapter fails.
+    Provides a pure-Python fallback (limited to ~1Gbps) if the official CLI fails, 
+    and notifies the user via the System Alerts UI.
     """
     d = request.json
     target_iface_name = None
@@ -3525,7 +3526,7 @@ def run_speedtest():
             if row:
                 pinned_mac = row[0]
             
-            # --- NEW: Fetch hidden interfaces ---
+            # Fetch hidden interfaces
             hidden_rows = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_visible = 0").fetchall()
             hidden_macs = [r[0] for r in hidden_rows]
             
@@ -3537,7 +3538,7 @@ def run_speedtest():
                     if a.family == psutil.AF_LINK: temp_mac = a.address
                     if a.family == socket.AF_INET: temp_ip = a.address
                 
-                # --- NEW: Skip this loop iteration completely if hidden ---
+                # Skip this loop iteration completely if hidden
                 if temp_mac in hidden_macs:
                     continue
                 
@@ -3552,21 +3553,16 @@ def run_speedtest():
     except Exception as e:
         print(f"[*] Speedtest adapter lookup failed: {e}")
 
-    # --- NEW: Block the speedtest if no visible interface is found ---
+    # Block the speedtest if no visible interface is found
     if not target_iface_name and not pinned_mac:
         return jsonify({"error": "No usable or visible network adapter found."})
 
-    # --- ENHANCED HELPER TO PARSE OOKLA OUTPUT AND PRINT ERRORS ---
+    # --- ENHANCED HELPER TO PARSE OOKLA OUTPUT ---
     def parse_ookla(raw_text):
         try:
             return json.loads(raw_text)
         except json.JSONDecodeError as parse_err:
-            # Print the FULL raw output to the terminal immediately upon error
             print(f"\n[!] OOKLA JSON PARSE WARNING: {parse_err}")
-            print(f"[!] FULL RAW OUTPUT RECEIVED:\n{'-'*50}\n{raw_text}\n{'-'*50}\n")
-            
-            # Ookla CLI sometimes outputs multiple JSON objects (e.g., logs then results)
-            # or mixes warnings with the JSON. We extract the LAST valid JSON line.
             for line in reversed(raw_text.strip().split('\n')):
                 line = line.strip()
                 if line.startswith('{') and line.endswith('}'):
@@ -3576,8 +3572,41 @@ def run_speedtest():
                         return recovered_json
                     except:
                         pass
-            
             raise ValueError("Could not extract valid JSON. See terminal for raw output.")
+
+    # --- PURE PYTHON FALLBACK MECHANISM ---
+    def execute_fallback_speedtest():
+        print("[*] Initiating Python fallback speedtest (Note: Speeds may be limited to ~1Gbps)...")
+        try:
+            import speedtest
+        except ImportError:
+            print("[*] Installing Python speedtest-cli module...")
+            # Silently install the missing module into the virtual environment on the fly
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "speedtest-cli"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import speedtest
+            
+        try:
+            # Bind to specific IP if pinned
+            if device_ip and device_ip != "-" and device_ip != "127.0.0.1":
+                st = speedtest.Speedtest(source_address=device_ip)
+            else:
+                st = speedtest.Speedtest()
+                
+            st.get_best_server()
+            st.download()
+            st.upload(pre_allocate=False)
+            res = st.results.dict()
+            
+            down = f"{(res['download']) / 1_000_000:.2f} Mbps"
+            up = f"{(res['upload']) / 1_000_000:.2f} Mbps"
+            ping = f"{res['ping']:.2f} ms"
+            isp = res.get('client', {}).get('isp', 'Unknown')
+            wan = res.get('client', {}).get('ip', '-')
+            
+            return down, up, ping, isp, wan
+        except Exception as e:
+            print(f"[!] Fallback speedtest failed: {e}")
+            raise e
 
     try:
         # 2. Path to the CLI Binary
@@ -3594,77 +3623,85 @@ def run_speedtest():
             if device_ip and device_ip != "-":
                 cmd.extend(["--ip", device_ip])
         else:
-            # macOS/Linux require the Interface Name (e.g., 'en0'), not the IP
             if target_iface_name:
                 cmd.extend(["--interface", target_iface_name])
         
         # 5. Execute with Fallback Logic
         try:
-            # Capture stderr so we can read the actual Ookla error
             raw_out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
             res = parse_ookla(raw_out)
         except subprocess.CalledProcessError as e:
-            # If an adapter is specifically pinned, do NOT fallback to a global route
             if pinned_mac:
-                raise e
+                raise e # Pin enforced: Jump straight to the Python fallback
                 
             print(f"[*] Speedtest strict bind failed (Exit {e.returncode}). Retrying globally...")
-            # Fallback: Try without --ip or --interface if no pin is set
             raw_out = subprocess.check_output(base_cmd, stderr=subprocess.STDOUT, text=True)
             res = parse_ookla(raw_out)
-            # Reset device_ip since we used the global default route
             device_ip = get_local_ip()
             
         # 6. Check for internal Ookla JSON errors
         if "error" in res:
-            print(f"\n[!] SPEEDTEST INTERNAL ERROR: {res.get('error')}\n")
-            if pinned_mac:
-                return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
-            return jsonify({"error": "Speedtest Failed try again later"})
+            raise Exception(f"Ookla Internal Error: {res.get('error')}")
         
-        # 7. Format and Save Results
+        # 7. Format Results
         down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
         isp = res.get('isp', 'Unknown')
         wan = res.get('interface', {}).get('externalIp', '-')
-        
-        name = d.get('network_name') or "Unnamed Network"
-        conn_type = d.get('connection_type') or "Ethernet"
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        with sqlite3.connect(DB_NAME, timeout=10) as conn:
-            conn.execute("""
-                INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, device_ip, isp) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (ts, name, conn_type, down, up, ping, wan, device_ip, isp))
-            conn.commit()
-            
-        print(f"[*] Speedtest Results: Down {down} | Up {up} | Ping {ping}")
-        return jsonify({"download": down, "upload": up, "ping": ping})
-
-    except subprocess.CalledProcessError as e:
-        # Print the actual error output directly to the terminal for debugging
-        print(f"\n[!] SPEEDTEST CLI FAILED (Exit Code: {e.returncode})")
-        print(f"[!] Raw Error Output:\n{e.output}\n")
-        
-        # If pinned, strictly show the pinned error message
-        if pinned_mac:
-            return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
-        
-        # Determine if the error is related to no internet / configuration for unpinned tests
-        err_text = str(e.output).lower()
-        if e.returncode == 2 or "configuration" in err_text or "network unreachable" in err_text or "cannot retrieve" in err_text:
-            return jsonify({"error": "Can not Connect to speed test server, check internet connection or retry later."})
-        else:
-            return jsonify({"error": "Speedtest Failed try again later"})
-            
     except Exception as e:
-        # Catch-all for other Python errors (e.g. JSON parsing failure, missing binary)
-        print(f"\n[!] SPEEDTEST EXCEPTION: {str(e)}\n")
-        if pinned_mac:
-            return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
-        return jsonify({"error": "Speedtest Failed try again later"})
+        print(f"\n[!] OFFICIAL OOKLA CLI FAILED: {str(e)}")
+        print("[*] Attempting to fall back to alternative speed test...")
+        
+        # --- DETERMINE EXACT CAUSE FOR USER NOTIFICATION ---
+        err_str = str(e).lower()
+        fallback_reason = "Official Speedtest CLI encountered an unexpected error."
+        
+        if isinstance(e, FileNotFoundError) or "no such file" in err_str or "not found" in err_str:
+            fallback_reason = "Speedtest CLI binary is missing or incompatible."
+        elif isinstance(e, PermissionError) or "permission denied" in err_str:
+            fallback_reason = "The Operating System blocked the Official Speedtest CLI (Permission Denied)."
+        elif "ookla internal error" in err_str:
+            fallback_reason = "Ookla servers rejected the connection."
+        elif hasattr(e, 'returncode'):
+            out_str = str(getattr(e, 'output', '')).lower()
+            if "configuration" in out_str or "cannot retrieve" in out_str:
+                fallback_reason = "Ookla failed to retrieve server configuration."
+            elif "network unreachable" in out_str:
+                fallback_reason = "Ookla reported the network is unreachable."
+            else:
+                fallback_reason = f"Speedtest CLI crashed (Exit Code {e.returncode})."
+        
+        try:
+            # 8. Trigger Alternative Python Speedtest
+            down, up, ping, isp, wan = execute_fallback_speedtest()
+            
+            # Trigger the UI Alert Warning safely using the built-in system
+            warning_msg = f"Speedtest Fallback Active: {fallback_reason} Using secondary tester. Note: Maximum detected speeds may be limited to ~1Gbps."
+            add_system_alert(warning_msg)
+            print(f"[*] {warning_msg}")
+            
+        except Exception as fallback_err:
+            print(f"\n[!] FALLBACK SPEEDTEST ALSO FAILED: {fallback_err}\n")
+            if pinned_mac:
+                return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
+            return jsonify({"error": "Speedtest Failed. Check internet connection or retry later."})
+            
+    # 9. Save Results to DB
+    name = d.get('network_name') or "Unnamed Network"
+    conn_type = d.get('connection_type') or "Ethernet"
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with sqlite3.connect(DB_NAME, timeout=10) as conn:
+        conn.execute("""
+            INSERT INTO history (timestamp, network_name, connection_type, download, upload, ping, wan_ip, device_ip, isp) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (ts, name, conn_type, down, up, ping, wan, device_ip, isp))
+        conn.commit()
+        
+    print(f"[*] Speedtest Results: Down {down} | Up {up} | Ping {ping}")
+    return jsonify({"download": down, "upload": up, "ping": ping})
 
 @app.route('/api/get_last_name')
 def get_last_name():

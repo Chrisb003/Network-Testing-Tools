@@ -1,4 +1,4 @@
-0.15.4 - removal of git requirement within the setup scripts.
+0.15.4 - removal of git requirement within the setup scripts. Fallback option for speedtest mechanism
 
 0.15.3 - Removed speedtest cli homebrew install on mac os. Now just downloads from speedtest site.
 
