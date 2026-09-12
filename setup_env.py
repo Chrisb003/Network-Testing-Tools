@@ -261,8 +261,17 @@ def ensure_linux_prerequisites():
 
 def install_git():
     """Checks for Git and installs it if missing."""
-    if shutil.which("git"):
-        return True
+    # macOS includes a fake "stub" for git, so we must explicitly check xcode-select
+    if platform.system() == "Darwin":
+        try:
+            subprocess.run(["xcode-select", "-p"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            if shutil.which("git"): 
+                return True
+        except subprocess.CalledProcessError:
+            pass # Xcode CLT is missing, proceed to install
+    else:
+        if shutil.which("git"):
+            return True
 
     system = platform.system()
     print(f"[*] Git not detected. Attempting automated installation for {system}...")
@@ -275,8 +284,13 @@ def install_git():
                 print("[!] Chocolatey installation failed. Please install Git manually.")
                 return False
         elif system == "Darwin": # macOS
-            if install_homebrew():
-                subprocess.run(["brew", "install", "git"], check=True)
+            print("[*] Requesting Apple Command Line Tools installation...")
+            subprocess.run(["xcode-select", "--install"], check=False)
+            print("\n[!] An Apple software installation window has just opened.")
+            print("    Please click through and complete the installation.")
+            input("    Press [Enter] ONLY after it has completely finished... ")
+            print("[✓] Apple Command Line Tools (Git) verified.")
+            return True
         elif system == "Linux":
             if shutil.which("apt-get"):
                 subprocess.run(["sudo", "apt-get", "install", "-y", "git"], check=True)
@@ -291,24 +305,6 @@ def install_git():
         return True
     except Exception as e:
         print(f"[X] Failed to install Git: {e}")
-        return False
-
-def install_homebrew():
-    """Installs Homebrew on macOS if not already present."""
-    if shutil.which("brew"): return True
-    
-    print("[*] Homebrew not found. Installing...")
-    try:
-        install_cmd = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-        subprocess.run(install_cmd, shell=True, check=True)
-        
-        if platform.machine() == "arm64": 
-            os.environ["PATH"] += ":/opt/homebrew/bin"
-        else: 
-            os.environ["PATH"] += ":/usr/local/bin"
-        return True
-    except Exception as e:
-        print(f"[X] Homebrew installation failed: {e}")
         return False
 
 def fetch_latest_from_github(base_dir):
