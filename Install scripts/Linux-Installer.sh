@@ -108,16 +108,16 @@ if [ "$SKIP_PREREQS" = false ]; then
 
     if command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update
-        sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential git net-tools libpcap-dev unzip curl network-manager python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-1 python3-xlib
+        sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential net-tools libpcap-dev unzip curl network-manager python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-1 python3-xlib
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y python3 python3-pip python3-devel gcc git net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
+        sudo dnf install -y python3 python3-pip python3-devel gcc net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
     elif command -v pacman >/dev/null 2>&1; then
-        sudo pacman -Syu --noconfirm python python-pip base-devel git net-tools libpcap unzip curl networkmanager python-gobject gtk3 libappindicator-gtk3 python-xlib
+        sudo pacman -Syu --noconfirm python python-pip base-devel net-tools libpcap unzip curl networkmanager python-gobject gtk3 libappindicator-gtk3 python-xlib
     elif command -v zypper >/dev/null 2>&1; then
         sudo zypper refresh
-        sudo zypper install -y python3 python3-pip python3-devel gcc git net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
+        sudo zypper install -y python3 python3-pip python3-devel gcc net-tools libpcap-devel unzip curl NetworkManager python3-gobject gtk3 libappindicator-gtk3 python3-xlib
     else
-        echo "[!] Warning: Unknown package manager. Please ensure Python 3, venv, pip, git, libpcap, and curl are installed manually."
+        echo "[!] Warning: Unknown package manager. Please ensure Python 3, venv, pip, libpcap, and curl are installed manually."
     fi
 fi
 

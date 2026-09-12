@@ -259,54 +259,6 @@ def ensure_linux_prerequisites():
         except subprocess.CalledProcessError as e:
             print(f"[!] Warning: Failed to install Linux prerequisites automatically: {e}")
 
-def install_git():
-    """Checks for Git and installs it if missing."""
-    # macOS includes a fake "stub" for git, so we must explicitly check xcode-select
-    if platform.system() == "Darwin":
-        try:
-            subprocess.run(["xcode-select", "-p"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            if shutil.which("git"): 
-                return True
-        except subprocess.CalledProcessError:
-            pass # Xcode CLT is missing, proceed to install
-    else:
-        if shutil.which("git"):
-            return True
-
-    system = platform.system()
-    print(f"[*] Git not detected. Attempting automated installation for {system}...")
-
-    try:
-        if system == "Windows":
-            if install_chocolatey():
-                subprocess.run(["choco", "install", "git", "-y"], check=True)
-            else:
-                print("[!] Chocolatey installation failed. Please install Git manually.")
-                return False
-        elif system == "Darwin": # macOS
-            print("[*] Requesting Apple Command Line Tools installation...")
-            subprocess.run(["xcode-select", "--install"], check=False)
-            print("\n[!] An Apple software installation window has just opened.")
-            print("    Please click through and complete the installation.")
-            input("    Press [Enter] ONLY after it has completely finished... ")
-            print("[✓] Apple Command Line Tools (Git) verified.")
-            return True
-        elif system == "Linux":
-            if shutil.which("apt-get"):
-                subprocess.run(["sudo", "apt-get", "install", "-y", "git"], check=True)
-            elif shutil.which("dnf"):
-                subprocess.run(["sudo", "dnf", "install", "-y", "git"], check=True)
-            elif shutil.which("pacman"):
-                subprocess.run(["sudo", "pacman", "-S", "--noconfirm", "git"], check=True)
-            elif shutil.which("zypper"):
-                subprocess.run(["sudo", "zypper", "install", "-y", "git"], check=True)
-        
-        print("[✓] Git successfully installed.")
-        return True
-    except Exception as e:
-        print(f"[X] Failed to install Git: {e}")
-        return False
-
 def fetch_latest_from_github(base_dir):
     """Downloads and extracts the private project and sets full permissions."""
     print(f"[*] '{APP_FILENAME}' not found. Initializing private download from GitHub...")

@@ -101,27 +101,30 @@ case "$proceed" in
         ;;
 esac
 
-# --- 4. MACOS PREREQUISITES (Python 3 & Git Check) ---
+# --- 4. MACOS PREREQUISITES (Python 3 Check) ---
 if [ "$SKIP_PREREQS" = false ]; then
     echo ""
     echo "[*] Step 1: Checking macOS system prerequisites..."
 
-    # macOS includes "stub" files that lie about being installed. 
-    # We must explicitly check if the developer tools are actually configured.
-    if ! xcode-select -p >/dev/null 2>&1; then
-        echo "[*] Apple Developer Tools not found. Requesting install..."
-        xcode-select --install
-        echo "[!] An Apple software installation window has just opened."
-        echo "    Please click through and complete the installation."
-        printf "    Press [Enter] ONLY after it has completely finished... "
-        read -r wait_for_xcode < /dev/tty
-    else
-        echo "[✓] Apple Developer Tools are installed."
+    PYTHON_VALID=false
+    
+    # Check if python3 exists, but safely avoid Apple's fake stub trap
+    if command -v python3 >/dev/null 2>&1; then
+        PY_PATH=$(command -v python3)
+        
+        # If it points to the Apple stub AND developer tools are missing, executing it will trigger a popup
+        if [ "$PY_PATH" = "/usr/bin/python3" ] && ! xcode-select -p >/dev/null 2>&1; then
+            echo "[*] Apple Python stub detected. Bypassing to avoid Xcode popup..."
+        else
+            # It is safe to execute and verify
+            if python3 --version >/dev/null 2>&1; then
+                PYTHON_VALID=true
+            fi
+        fi
     fi
 
-    # Execute python3 to ensure it is real and not a broken stub
-    if ! python3 --version >/dev/null 2>&1; then
-        echo "[!] Python 3 not properly installed. Downloading official Python.org package..."
+    if [ "$PYTHON_VALID" = false ]; then
+        echo "[!] Valid Python 3 not found. Downloading official Python.org package..."
         PY_VERSION="3.14.7"
         PKG_NAME="python-${PY_VERSION}-macos11.pkg"
         PKG_URL="https://www.python.org/ftp/python/${PY_VERSION}/${PKG_NAME}"
