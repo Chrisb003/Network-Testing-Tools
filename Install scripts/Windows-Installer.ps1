@@ -396,9 +396,15 @@ if (Test-Path $startupLnk) {
         if ($startMode -eq '2') {
             $sc.TargetPath = $script:PythonWCmd
             $modeMsg = "Invisible Background Process"
+            
+            # --- NEW: Disable browser autostart for headless mode ---
+            Set-Content -Path "$script:TargetDir\autostart" -Value "0"
         } else {
             $sc.TargetPath = $script:PythonCmd
             $modeMsg = "Visible Terminal Window"
+            
+            # --- NEW: Ensure browser autostart is enabled for visible mode ---
+            Set-Content -Path "$script:TargetDir\autostart" -Value "1"
         }
         
         $sc.Arguments = "`"$script:TargetDir\setup_env.py`""

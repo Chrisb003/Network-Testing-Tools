@@ -18,7 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "0.15.0"
+SETUP_VERSION = "0.15.1"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pystray", "Pillow"]
@@ -413,7 +413,8 @@ def install_requirements(python_path):
 def install_speedtest_cli(bin_dir):
     """
     Installs Speedtest CLI and sets full Read/Write/Execute permissions.
-    Includes dynamic architecture detection for Linux (x86 vs ARM).
+    Includes dynamic architecture detection for Linux and macOS (x86 vs ARM).
+    Bypasses Homebrew completely for native macOS installation.
     """
     system = platform.system()
     machine = platform.machine().lower()
@@ -438,7 +439,6 @@ def install_speedtest_cli(bin_dir):
 
         # 2. LINUX INSTALLATION (With Multi-Arch Support)
         elif system == "Linux":
-            # Dynamic URL Selection based on Architecture
             if "aarch64" in machine or "arm64" in machine:
                 print("[*] Architecture detected: ARM 64-bit")
                 url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz"
@@ -456,14 +456,22 @@ def install_speedtest_cli(bin_dir):
                 tar.extract("speedtest", path=bin_dir)
             os.remove(tgz_path)
 
-        # 3. MACOS INSTALLATION
+        # 3. MACOS NATIVE INSTALLATION (No Homebrew Required)
         elif system == "Darwin":
-            if not shutil.which("speedtest"):
-                if install_homebrew():
-                    subprocess.run(["brew", "tap", "teamookla/speedtest"], check=True)
-                    subprocess.run(["brew", "install", "speedtest"], check=True)
-                else:
-                    raise Exception("Homebrew not found.")
+            if "arm64" in machine or "aarch64" in machine:
+                print("[*] Architecture detected: Apple Silicon (M1/M2/M3/M4)")
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-macosx-universal.tgz"
+            else:
+                print("[*] Architecture detected: Intel x86_64")
+                url = "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-macosx-universal.tgz"
+            
+            print("[*] Downloading native macOS Speedtest CLI tarball...")
+            tgz_path = bin_dir / "st.tgz"
+            urllib.request.urlretrieve(url, tgz_path)
+            
+            with tarfile.open(tgz_path, "r:gz") as tar:
+                tar.extract("speedtest", path=bin_dir)
+            os.remove(tgz_path)
 
         # --- THE MISSING PERMISSION FIX ---
         if target_path.exists():

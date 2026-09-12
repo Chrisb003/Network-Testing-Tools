@@ -369,6 +369,10 @@ Type=Application
 Categories=Network;System;
 EOL
                     chmod +x "$AUTOSTART_FILE"
+                    
+                    # --- NEW: Ensure browser autostart is enabled for visible mode ---
+                    echo "1" > "$TARGET_DIR/autostart"
+                    
                     echo "    [✓] Startup on login enabled (visible terminal window)."
                     ;;
                 2)
@@ -396,6 +400,10 @@ EOL
                     sudo systemctl daemon-reload
                     sudo systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
                     sudo systemctl start "$SERVICE_NAME" >/dev/null 2>&1
+                    
+                    # --- NEW: Disable browser autostart for headless mode ---
+                    echo "0" > "$TARGET_DIR/autostart"
+                    
                     echo "    [✓] Background boot service enabled and started as Root."
                     SERVICE_ACTIVE=true
                     ;;

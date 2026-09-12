@@ -106,8 +106,22 @@ if [ "$SKIP_PREREQS" = false ]; then
     echo ""
     echo "[*] Step 1: Checking macOS system prerequisites..."
 
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "[!] Python 3 not found. Downloading and installing official Python.org package for macOS..."
+    # macOS includes "stub" files that lie about being installed. 
+    # We must explicitly check if the developer tools are actually configured.
+    if ! xcode-select -p >/dev/null 2>&1; then
+        echo "[*] Apple Developer Tools not found. Requesting install..."
+        xcode-select --install
+        echo "[!] An Apple software installation window has just opened."
+        echo "    Please click through and complete the installation."
+        printf "    Press [Enter] ONLY after it has completely finished... "
+        read -r wait_for_xcode < /dev/tty
+    else
+        echo "[✓] Apple Developer Tools are installed."
+    fi
+
+    # Execute python3 to ensure it is real and not a broken stub
+    if ! python3 --version >/dev/null 2>&1; then
+        echo "[!] Python 3 not properly installed. Downloading official Python.org package..."
         PY_VERSION="3.14.7"
         PKG_NAME="python-${PY_VERSION}-macos11.pkg"
         PKG_URL="https://www.python.org/ftp/python/${PY_VERSION}/${PKG_NAME}"
@@ -120,14 +134,7 @@ if [ "$SKIP_PREREQS" = false ]; then
         rm -f "$PKG_NAME"
         echo "[✓] Python installation completed."
     else
-        echo "[✓] Python 3 is already installed."
-    fi
-
-    if ! command -v git >/dev/null 2>&1; then
-        echo "[*] Git not found. Installing via Xcode Command Line Tools..."
-        xcode-select --install
-    else
-        echo "[✓] Git is already installed."
+        echo "[✓] Python 3 is verified and working."
     fi
 fi
 
@@ -284,13 +291,20 @@ else
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 </dict>
 </plist>
 EOL
                     sudo chown root:wheel "$DAEMON_PLIST"
                     sudo chmod 644 "$DAEMON_PLIST"
                     sudo launchctl load "$DAEMON_PLIST" >/dev/null 2>&1
+                    
+                    # --- NEW: Disable browser autostart for headless mode ---
+                    echo "0" > "$TARGET_DIR/autostart"
+                    
                     echo "    [✓] Background boot service enabled and started as Root."
                     SERVICE_ACTIVE=true
                     ;;

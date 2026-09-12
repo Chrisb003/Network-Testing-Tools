@@ -5307,14 +5307,7 @@ def is_headless_mode():
     if os.path.exists(os.path.join(app.root_path, "standalone")):
         return True
         
-    # 2. If there is no interactive terminal attached (e.g., systemd or launchd daemon), it's headless
-    try:
-        if not sys.stdin.isatty():
-            return True
-    except Exception:
-        pass
-        
-    # 3. Linux-specific: No graphical display server available
+    # 2. Linux-specific: No graphical display server available
     if platform.system() == "Linux":
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
             return True
