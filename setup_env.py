@@ -241,16 +241,16 @@ def ensure_linux_prerequisites():
                 print("[*] Updating package lists (APT)...")
                 subprocess.run(["sudo", "apt-get", "update"], check=True)
                 print("[*] Installing Python build tools and venv...")
-                subprocess.run(["sudo", "apt-get", "install", "-y", "python3-venv", "python3-pip", "python3-dev", "build-essential", "git", "net-tools"], check=True)
+                subprocess.run(["sudo", "apt-get", "install", "-y", "python3-venv", "python3-pip", "python3-dev", "build-essential", "net-tools"], check=True)
             elif shutil.which("dnf"):
                 print("[*] Installing Python build tools and venv (DNF)...")
-                subprocess.run(["sudo", "dnf", "install", "-y", "python3", "python3-pip", "python3-devel", "gcc", "git", "net-tools"], check=True)
+                subprocess.run(["sudo", "dnf", "install", "-y", "python3", "python3-pip", "python3-devel", "gcc", "net-tools"], check=True)
             elif shutil.which("pacman"):
                 print("[*] Installing Python build tools and venv (Pacman)...")
-                subprocess.run(["sudo", "pacman", "-Syu", "--noconfirm", "python", "python-pip", "base-devel", "git", "net-tools"], check=True)
+                subprocess.run(["sudo", "pacman", "-Syu", "--noconfirm", "python", "python-pip", "base-devel", "net-tools"], check=True)
             elif shutil.which("zypper"):
                 print("[*] Installing Python build tools and venv (Zypper)...")
-                subprocess.run(["sudo", "zypper", "install", "-y", "python3", "python3-pip", "python3-devel", "gcc", "git", "net-tools"], check=True)
+                subprocess.run(["sudo", "zypper", "install", "-y", "python3", "python3-pip", "python3-devel", "gcc", "net-tools"], check=True)
             else:
                 print("[!] Warning: Unknown package manager. Please ensure Python 3, venv, and build tools are installed.")
                 return
@@ -804,7 +804,6 @@ def main():
     # 6. RUN ONLINE-ONLY TASKS
     if online:
         ensure_linux_prerequisites()
-        install_git()
         
         # Check if the app files are missing and we need to fetch from GitHub
         if not (base_dir / APP_FILENAME).exists():
