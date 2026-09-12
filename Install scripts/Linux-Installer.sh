@@ -446,6 +446,12 @@ Type=Application
 Categories=Network;System;
 EOL
             chmod +x "$SHORTCUT_FILE"
+            
+            # --- NEW: Automatically trust the shortcut on Ubuntu/GNOME ---
+            if command -v gio >/dev/null 2>&1; then
+                gio set "$SHORTCUT_FILE" metadata::trusted yes >/dev/null 2>&1
+            fi
+            
             echo "[✓] Desktop shortcut created at $SHORTCUT_FILE."
             ;;
     esac
