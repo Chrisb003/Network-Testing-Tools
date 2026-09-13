@@ -9,16 +9,11 @@
   [**View Repository**](https://github.com/Chrisb003/Network-Testing-Tools) • [**More Info**](https://chris94.uk/test.html) • [**Changelog**](https://chris94.uk/changelog.html)
 </div>
 <br>
+This is a basic network troubleshooting tool I built with AI for my own use, now made public for anyone who might find it helpful.
 
-This is a tool I built using AI to help me code that does basic network troubleshooting. If you find bugs or have suggestions on inprovements please log on github and I will try to address. I cant garrentee I will update or do anymore to this tool but as I made it to use myself I will likey update with bugfixes from time to time.
-<br>
-
-I have created installers for this which can download and set it up but if you would rather do it yourself the instructions below. The installers are currently located on my website. I am in the process of working on the website so the pages linked here are just temporary but will be updated once finished.
-<br>
-
-If you wish to copy the code and create your own version from it, all I ask is to credit me.
-<br>
-
+* **Install:** Download the automated installers from my website (temporary links while the site is under construction), or follow the manual setup instructions below.
+* **Support:** Please log bugs or suggestions on GitHub. I can't guarantee ongoing development, but since I use this tool myself, I'll try to push periodic bug fixes.
+* **Forks:** Feel free to copy the code and create your own versions, but please credit me as the original author.
 
 > [!IMPORTANT]  
 > A robust, fault-tolerant network diagnostic dashboard designed for troubleshooting network issues across home, office, and managed environments. Built using Python, Flask, SQLite, and Scapy. Internet access is strictly required for a first-time installation to download dependencies and fetch the latest updates from GitHub.
