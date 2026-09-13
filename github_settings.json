@@ -3,21 +3,14 @@
         "display_name": "Production (Stable)",
         "owner": "Chrisb003",
         "repo": "Network-Testing-Tools",
-        "token": "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",
+        "token": "",
         "branch": "main"
     },
     "dev": {
         "display_name": "Development (Dev)",
         "owner": "Chrisb003",
         "repo": "Network-Testing-Tools",
-        "token": "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",
+        "token": "",
         "branch": "dev"
     },
-    "Test": {
-        "display_name": "Development (Test)",
-        "owner": "Chrisb003",
-        "repo": "Network-Testing-Tools",
-        "token": "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",
-        "branch": "test"
-    }
 }

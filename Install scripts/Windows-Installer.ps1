@@ -45,7 +45,7 @@ $script:TargetDir = "$OriginalProfile\Network-Testing-Tools\"
 $script:RepoOwner = "Chrisb003"
 $script:RepoName  = "Network-Testing-Tools"
 $script:Branch    = "main"
-$script:Token     = "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"
+$script:Token     = ""
 $script:Version   = "1.0.2"
 
 # Set to TEMP since in-memory scripts do not have a $PSScriptRoot
@@ -212,8 +212,10 @@ if (-not (Test-Path $script:TargetDir)) {
 if (-not (Test-Path "$script:TargetDir\app.py")) {
     Write-Host "[*] Downloading latest project files from GitHub..." -ForegroundColor Cyan
     $headers = @{
-        'Authorization' = "token $script:Token"
-        'Accept'        = 'application/vnd.github.v3+json'
+        'Accept' = 'application/vnd.github.v3+json'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:Token)) {
+        $headers['Authorization'] = "token $script:Token"
     }
     $zipPath = "$env:TEMP\network_dashboard.zip"
     $extractPath = "$env:TEMP\network_dashboard_extract"
@@ -235,8 +237,10 @@ if (-not (Test-Path "$script:TargetDir\app.py")) {
     if ($updateCode -match '^[Yy]') {
         Write-Host "[*] Updating code from GitHub..." -ForegroundColor Cyan
         $headers = @{
-            'Authorization' = "token $script:Token"
-            'Accept'        = 'application/vnd.github.v3+json'
+            'Accept' = 'application/vnd.github.v3+json'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($script:Token)) {
+            $headers['Authorization'] = "token $script:Token"
         }
         $zipPath = "$env:TEMP\network_dashboard.zip"
         $extractPath = "$env:TEMP\network_dashboard_extract"

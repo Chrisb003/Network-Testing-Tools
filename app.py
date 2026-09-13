@@ -51,6 +51,12 @@ def fix_permissions(path):
 # --- LOGGING SETUP (Redirects ALL terminal output to file) ---
 # ---------------------------------------------------------
 def setup_file_logging():
+    """
+    Initializes a custom logging engine that mirrors terminal output (stdout/stderr) directly into daily log files.
+    - Manages log rotation (automatically deletes logs older than 7 days).
+    - Dynamically reads the SQLite database to apply the user's logging preferences (Full vs Errors Only vs Disabled).
+    - Hooks into Flask and Waitress internal loggers to capture web server events.
+    """
     import glob
     from datetime import timedelta
     
@@ -58,10 +64,10 @@ def setup_file_logging():
     log_dir = os.path.join(base_dir, 'logs')
     try:
         os.makedirs(log_dir, exist_ok=True)
-        fix_permissions(log_dir) # Force permissions on the log folder
+        fix_permissions(log_dir) # Force OS-level permissions so non-admins can read the folder
     except: pass
 
-    # 1. Delete logs older than 7 days
+    # 1. Automated Log Rotation: Clean up logs older than 7 days to prevent disk bloat
     cutoff_date = datetime.now() - timedelta(days=7)
     for log_file in glob.glob(os.path.join(log_dir, '*.log')):
         try:
@@ -77,50 +83,53 @@ def setup_file_logging():
             db_name_log = "network_data.db"
             if os.path.exists(db_name_log):
                 with sqlite3.connect(db_name_log, timeout=2.0) as conn:
+                    # 'full_logging' logs every single action. If disabled, only errors/warnings are logged.
                     row_f = conn.execute("SELECT value FROM system_settings WHERE key='full_logging'").fetchone()
                     if row_f and row_f[0] == '1': full_log = True
                     
+                    # 'disable_all_logs' completely halts disk I/O for logging (useful for saving Raspberry Pi SD cards).
                     row_d = conn.execute("SELECT value FROM system_settings WHERE key='disable_all_logs'").fetchone()
                     if row_d and row_d[0] == '1': disable_logs = True
         except: pass
         os.environ["APP_FULL_LOGGING"] = "1" if full_log else "0"
         os.environ["APP_DISABLE_ALL_LOGS"] = "1" if disable_logs else "0"
 
-    # 3. Create a new log file for this session
+    # 3. Create a uniquely timestamped log file for this specific session
     timestamp = os.environ.get("APP_LOG_TIME", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     log_path = os.path.join(log_dir, f"system_run_{timestamp}.log")
 
-    # 4. TeeLogger to print to terminal AND conditionally write to file
+    # 4. TeeLogger: A custom class that intercepts 'print()' statements to send them to both the terminal and the log file
     class TeeLogger:
         def __init__(self, filename, terminal, is_stderr=False):
             self.terminal = terminal
-            self.is_stderr = is_stderr
+            self.is_stderr = is_stderr # Tracks if this stream is for standard output or error output
             self.file = None
             try:
                 self.file = open(filename, 'a', encoding='utf-8')
-                fix_permissions(filename) # Force permissions on the log file
+                fix_permissions(filename)
             except Exception: pass
             
         def write(self, text):
-            # Print to the live terminal so you can see the startup banners
+            # Always print to the live terminal so the user can see startup banners
             try:
                 self.terminal.write(text)
                 self.terminal.flush()
             except: pass
             
             if self.file:
-                # NEW: Completely skip writing to the log file if disabled
+                # If logging is disabled entirely, skip disk writing
                 if os.environ.get("APP_DISABLE_ALL_LOGS", "0") == "1":
                     return
 
-                # Dynamically check if we should write this line to the log file
+                # Check if this line is an error or if full logging is enabled
                 is_full = os.environ.get("APP_FULL_LOGGING", "0") == "1"
                 is_error = self.is_stderr or any(kw in text.lower() for kw in ['[x]', '[!]', 'error', 'failed', 'exception', 'critical', 'traceback', 'warning', 'audit'])
 
+                # Write to the file only if it passes the filters
                 if is_full or is_error:
                     try:
                         self.file.write(text)
-                        self.file.flush() # Ensure live writing
+                        self.file.flush() # Flush immediately so logs survive unexpected crashes
                     except: pass
                 
         def flush(self):
@@ -130,16 +139,15 @@ def setup_file_logging():
                 try: self.file.flush()
                 except: pass
 
-    # Save original terminal outputs before overwriting
+    # Override standard Python outputs
     original_stdout = sys.stdout
     original_stderr = sys.stderr
-
     custom_logger_out = TeeLogger(log_path, original_stdout, is_stderr=False)
     custom_logger_err = TeeLogger(log_path, original_stderr, is_stderr=True)
     sys.stdout = custom_logger_out
     sys.stderr = custom_logger_err
 
-    # 5. Catch internal library logs (Waitress, Flask) and pipe them to the file too
+    # 5. Catch internal Python library logs (like Flask/Waitress HTTP requests) and pipe them into the file
     logging.basicConfig(
         stream=custom_logger_out,
         level=logging.INFO,
@@ -150,7 +158,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "0.15.3"
+APP_VERSION = "1.0.0"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -755,10 +763,9 @@ def restart_server():
 
 def get_extended_iface_info():
     """
-    Fetches Gateway, DNS, and MAC information.
-    - Windows: Parses ipconfig /all (Extremely fast, <0.1s).
-    - macOS: Parses networksetup/ipconfig.
-    - Linux: Parses ip route/resolv.conf.
+    Fetches Gateway IPs, DNS Servers, and MAC addresses for all active adapters.
+    Utilizes heavily varied, OS-specific terminal commands to extract physical hardware data.
+    Implements a 8-second global cache (OS_CACHE) to prevent spamming system processes on page refresh.
     """
     global OS_CACHE
     if time.time() - OS_CACHE["ext_info"]["time"] < CACHE_TTL:
@@ -768,6 +775,7 @@ def get_extended_iface_info():
     system = platform.system()
     
     def _clean_gw(g_str):
+        """Helper to deduplicate and clean up gateway strings (e.g., handling IPv6 junk)."""
         if not g_str or g_str == "-": 
             return "-"
         parts = [x.strip() for x in re.split(r'[, ]+', g_str) if x.strip()]
@@ -779,6 +787,7 @@ def get_extended_iface_info():
 
     try:
         if system == "Windows":
+            # WINDOWS: Uses 'ipconfig /all' (Fastest method natively available)
             try:
                 raw_ip = subprocess.check_output("ipconfig /all", shell=True, text=True, encoding='latin-1', errors='ignore')
                 current_iface = None
@@ -793,7 +802,7 @@ def get_extended_iface_info():
                     if current_iface:
                         if "Default Gateway" in line and ":" in line:
                             gw = line.split(":")[-1].strip()
-                            if gw and "." in gw and ":" not in gw:
+                            if gw and "." in gw and ":" not in gw: # Ignore IPv6
                                 info[current_iface]["gateway"] = _clean_gw(gw)
                         if "DNS Servers" in line and ":" in line:
                             dns = line.split(":")[-1].strip()
@@ -802,6 +811,7 @@ def get_extended_iface_info():
             except Exception as e: pass
 
         elif system == "Darwin": # macOS
+            # MACOS: Uses 'netstat' for the default route, and 'networksetup' / 'ipconfig' for specific hardware ports
             try:
                 gw_out = subprocess.check_output("netstat -rn -f inet | grep 'default'", shell=True, text=True, stderr=subprocess.DEVNULL)
                 default_gw = "-"
@@ -829,6 +839,7 @@ def get_extended_iface_info():
                         gw_val = default_gw if dev_name == primary_iface else "-"
                         dns_val = "-"
                         try:
+                            # Use internal ipconfig dict extraction for accurate active DNS
                             ipconfig = subprocess.check_output(["ipconfig", "getpacket", dev_name], text=True, stderr=subprocess.DEVNULL)
                             match_dns = re.search(r'domain_name_server\s*\(.*?\)\s*:\s*\{(.*?)\}', ipconfig, re.DOTALL)
                             if match_dns: dns_val = match_dns.group(1).replace('\n', '').strip().replace(',', ', ')
@@ -850,6 +861,7 @@ def get_extended_iface_info():
             except Exception as e: pass
 
         elif system == "Linux": # Linux
+            # LINUX: Uses 'ip route' and the standard '/etc/resolv.conf'
             try:
                 gw_out = subprocess.check_output("ip route show default | awk '/default/ {print $3}'", shell=True, text=True)
                 default_gw = _clean_gw(gw_out.strip()) if ":" not in gw_out else "-"
@@ -868,6 +880,108 @@ def get_extended_iface_info():
     OS_CACHE["ext_info"]["data"] = info
     OS_CACHE["ext_info"]["time"] = time.time()
     return info
+
+def get_wifi_rates():
+    """
+    Safety-first Wi-Fi capability fetching. Identifies if an adapter is a Wi-Fi card 
+    and checks its current link speed.
+    - Windows: Uses `netsh wlan show interfaces`.
+    - macOS: Uses the hidden `airport` utility or `ipconfig getsummary`.
+    - Linux: Uses `nmcli`, `iw`, or reads from `/sys/class/net/`.
+    """
+    global OS_CACHE
+    if time.time() - OS_CACHE["wifi_rates"]["time"] < CACHE_TTL:
+        return OS_CACHE["wifi_rates"]["data"]
+
+    rates = {}
+    system = platform.system()
+    try:
+        if system == "Windows":
+            try:
+                out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True, encoding='cp437', errors='ignore')
+                current_iface = None
+                rx_rate, tx_rate = 0, 0
+                for line in out.split('\n'):
+                    line = line.strip()
+                    if line.startswith("Name"):
+                        current_iface = line.split(":", 1)[1].strip()
+                        rx_rate, tx_rate = 0, 0
+                    elif current_iface:
+                        if line.startswith("Receive rate"):
+                            try: rx_rate = float(re.search(r'([0-9.]+)', line).group(1))
+                            except: pass
+                        elif line.startswith("Transmit rate"):
+                            try: tx_rate = float(re.search(r'([0-9.]+)', line).group(1))
+                            except: pass
+                            if rx_rate > 0 or tx_rate > 0:
+                                rates[current_iface] = f"Tx: {tx_rate} / Rx: {rx_rate} Mbps"
+            except: pass
+                    
+        elif system == "Darwin": # macOS
+            try:
+                airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+                if os.path.exists(airport_path):
+                    out = subprocess.check_output([airport_path, "-I"], text=True)
+                    rate_match = re.search(r'lastTxRate:\s+(\d+)', out)
+                    if rate_match: rates["en0"] = f"{rate_match.group(1)} Mbps"
+                if "en0" not in rates:
+                    out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
+                    tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
+                    if tx_match: rates["en0"] = f"{tx_match.group(1)} Mbps"
+            except: pass    
+
+        elif system == "Linux": # Linux
+            # Prioritize nmcli for stability
+            try:
+                out = subprocess.check_output(["nmcli", "-t", "-f", "IN-USE,DEVICE,RATE", "dev", "wifi"], text=True, stderr=subprocess.DEVNULL)
+                for line in out.strip().split('\n'):
+                    parts = line.split(':')
+                    if len(parts) >= 3 and parts[0].replace('\\', '') == '*': # Asterisk denotes the active connection
+                        dev = parts[1]
+                        rate_raw = parts[2]
+                        match = re.search(r'([0-9.]+)', rate_raw)
+                        if dev and match and "unknown" not in rate_raw.lower():
+                            rates[dev] = f"{match.group(1)} Mbps"
+            except: pass
+            
+            # Fallbacks for headless/embedded linux devices (Raspberry Pi without NetworkManager)
+            try:
+                for iface in os.listdir('/sys/class/net/'):
+                    if iface.startswith(('wlan', 'wlp', 'wlo')):
+                        if iface in rates: continue
+                        try:
+                            # 1st Fallback: direct sysfs
+                            speed_path = f'/sys/class/net/{iface}/speed'
+                            if os.path.exists(speed_path):
+                                with open(speed_path, 'r') as f:
+                                    speed_val = int(f.read().strip())
+                                    if speed_val > 0:
+                                        rates[iface] = f"{speed_val} Mbps"
+                                        continue
+                        except: pass
+                        try:
+                            # 2nd Fallback: iw link
+                            cmd = f"/sbin/iw dev {iface} link 2>/dev/null || /usr/sbin/iw dev {iface} link 2>/dev/null || iw dev {iface} link 2>/dev/null"
+                            out = subprocess.check_output(cmd, shell=True, text=True)
+                            if "Not connected" not in out:
+                                match = re.search(r'tx bitrate:\s+([0-9.]+)', out)
+                                if match:
+                                    rates[iface] = f"{match.group(1)} Mbps"
+                                    continue
+                        except: pass
+                        try:
+                            # 3rd Fallback: legacy iwconfig
+                            cmd = f"/sbin/iwconfig {iface} 2>/dev/null || /usr/sbin/iwconfig {iface} 2>/dev/null || iwconfig {iface} 2>/dev/null"
+                            out = subprocess.check_output(cmd, shell=True, text=True)
+                            match = re.search(r'Bit Rate[=:]\s*([0-9.]+)', out)
+                            if match: rates[iface] = f"{match.group(1)} Mbps"
+                        except: pass
+            except: pass
+    except Exception as e: pass
+    
+    OS_CACHE["wifi_rates"]["data"] = rates
+    OS_CACHE["wifi_rates"]["time"] = time.time()
+    return rates
 
 # --- Bandwidth Tracking ---
 last_received = psutil.net_io_counters().bytes_recv
@@ -1193,29 +1307,31 @@ def _query_http_title(ip, timeout=0.35):
 
 def resolve_hostname(ip, mac=None, gateway_ip=None):
     """
-    Multi-tier hostname resolution engine:
-    1. Direct Gateway/Router DHCP DNS query (UDP 53)
-    2. Unicast mDNS query (UDP 5353) - Apple, Android, Windows, Linux, IoT
-    3. Cross-platform NetBIOS socket query (UDP 137) - Windows & Samba
-    4. Native Windows nbtstat (Bypasses some local Python socket restrictions)
-    5. Operating System DNS resolver (fallback)
-    6. Web UI Title scraper (ports 80/8080)
+    Multi-tier hostname resolution engine designed to identify devices on a local subnet.
+    Runs sequentially through 6 different resolution strategies until it finds a valid name.
+    
+    1. Direct Gateway/Router DHCP DNS query (UDP 53) - Fast, relies on router cache.
+    2. Unicast mDNS query (UDP 5353) - Great for Apple, Android, and modern IoT devices.
+    3. NetBIOS Node Status (UDP 137, pure Python) - Great for Windows/Samba environments.
+    4. Native Windows nbtstat - Bypasses OS socket restrictions on Windows machines.
+    5. Operating System DNS resolver - Standard fallback (gethostbyaddr).
+    6. Web UI Title scraper - Connects to port 80/8080 and scrapes the HTML <title> tag.
     """
     hostname = None
 
-    # Step 1: Direct Router DNS query
+    # Step 1: Query the router directly (It usually knows the DHCP lease names)
     if gateway_ip:
         hostname = _query_router_dns(ip, gateway_ip)
 
-    # Step 2: mDNS (.local)
+    # Step 2: Apple Bonjour / Multicast DNS (Most mobile devices respond to this)
     if not hostname:
         hostname = _query_mdns(ip)
 
-    # Step 3: NetBIOS Node Status (pure Python UDP)
+    # Step 3: Pure-Python NetBIOS query (Works across all operating systems)
     if not hostname:
         hostname = _query_netbios_socket(ip)
 
-    # Step 4: Native Windows NetBIOS fallback
+    # Step 4: Native Windows NetBIOS fallback (Handles strict Windows firewalls better)
     if not hostname and platform.system() == "Windows":
         try:
             out = subprocess.check_output(["nbtstat", "-A", ip], text=True, timeout=1.0)
@@ -1226,7 +1342,7 @@ def resolve_hostname(ip, mac=None, gateway_ip=None):
         except Exception:
             pass
 
-    # Step 5: System Resolver (standard gethostbyaddr fallback)
+    # Step 5: System Resolver (Relies on whatever local DNS the host machine is configured for)
     if not hostname:
         try:
             name, _, _ = socket.gethostbyaddr(ip)
@@ -1235,7 +1351,7 @@ def resolve_hostname(ip, mac=None, gateway_ip=None):
         except Exception:
             pass
 
-    # Step 6: Web Title Scraping
+    # Step 6: Web Title Scraping (Useful for headless printers, routers, webcams, and switches)
     if not hostname:
         hostname = _query_http_title(ip)
 
@@ -1243,18 +1359,22 @@ def resolve_hostname(ip, mac=None, gateway_ip=None):
     if not hostname or hostname in ("Unknown", "Unknown Device", "?"):
         hostname = "Unknown Device"
         if mac:
+            # Look up the manufacturer from the MAC OUI block if we failed to get a real name
             vendor = get_mac_vendor(mac, fetch_online=False)
             if vendor:
                 hostname = f"Unknown ({vendor})"
     else:
-        # Strip trailing local domains
+        # Strip trailing local domains to make the UI look cleaner
         if hostname.endswith(".local"):
             hostname = hostname[:-6]
 
     return hostname
 
 def process_device_info(received, gateway_ip=None):
-    """Worker function for threaded scanning."""
+    """
+    Threaded worker function utilized by the Network Scanner.
+    Extracts the IP and MAC from a raw Scapy packet, then triggers hostname and port resolution.
+    """
     ip = getattr(received, 'psrc', getattr(received, 'ip', None))
     mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
     
@@ -1943,99 +2063,6 @@ def update_adapter_settings():
         conn.commit()
         
     return jsonify({"status": "success"})
-
-def get_wifi_rates():
-    """
-    Safety-first Wi-Fi rate fetching. Handles Windows netsh,
-    macOS ipconfig, and Linux nmcli/sysfs/iw/iwconfig speed attributes.
-    """
-    global OS_CACHE
-    if time.time() - OS_CACHE["wifi_rates"]["time"] < CACHE_TTL:
-        return OS_CACHE["wifi_rates"]["data"]
-
-    rates = {}
-    system = platform.system()
-    try:
-        if system == "Windows":
-            try:
-                out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True, encoding='cp437', errors='ignore')
-                current_iface = None
-                rx_rate, tx_rate = 0, 0
-                for line in out.split('\n'):
-                    line = line.strip()
-                    if line.startswith("Name"):
-                        current_iface = line.split(":", 1)[1].strip()
-                        rx_rate, tx_rate = 0, 0
-                    elif current_iface:
-                        if line.startswith("Receive rate"):
-                            try: rx_rate = float(re.search(r'([0-9.]+)', line).group(1))
-                            except: pass
-                        elif line.startswith("Transmit rate"):
-                            try: tx_rate = float(re.search(r'([0-9.]+)', line).group(1))
-                            except: pass
-                            if rx_rate > 0 or tx_rate > 0:
-                                rates[current_iface] = f"Tx: {tx_rate} / Rx: {rx_rate} Mbps"
-            except: pass
-                    
-        elif system == "Darwin": # macOS
-            try:
-                airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-                if os.path.exists(airport_path):
-                    out = subprocess.check_output([airport_path, "-I"], text=True)
-                    rate_match = re.search(r'lastTxRate:\s+(\d+)', out)
-                    if rate_match: rates["en0"] = f"{rate_match.group(1)} Mbps"
-                if "en0" not in rates:
-                    out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
-                    tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
-                    if tx_match: rates["en0"] = f"{tx_match.group(1)} Mbps"
-            except: pass    
-
-        elif system == "Linux": # Linux
-            try:
-                out = subprocess.check_output(["nmcli", "-t", "-f", "IN-USE,DEVICE,RATE", "dev", "wifi"], text=True, stderr=subprocess.DEVNULL)
-                for line in out.strip().split('\n'):
-                    parts = line.split(':')
-                    if len(parts) >= 3 and parts[0].replace('\\', '') == '*':
-                        dev = parts[1]
-                        rate_raw = parts[2]
-                        match = re.search(r'([0-9.]+)', rate_raw)
-                        if dev and match and "unknown" not in rate_raw.lower():
-                            rates[dev] = f"{match.group(1)} Mbps"
-            except: pass
-            try:
-                for iface in os.listdir('/sys/class/net/'):
-                    if iface.startswith(('wlan', 'wlp', 'wlo')):
-                        if iface in rates: continue
-                        try:
-                            speed_path = f'/sys/class/net/{iface}/speed'
-                            if os.path.exists(speed_path):
-                                with open(speed_path, 'r') as f:
-                                    speed_val = int(f.read().strip())
-                                    if speed_val > 0:
-                                        rates[iface] = f"{speed_val} Mbps"
-                                        continue
-                        except: pass
-                        try:
-                            cmd = f"/sbin/iw dev {iface} link 2>/dev/null || /usr/sbin/iw dev {iface} link 2>/dev/null || iw dev {iface} link 2>/dev/null"
-                            out = subprocess.check_output(cmd, shell=True, text=True)
-                            if "Not connected" not in out:
-                                match = re.search(r'tx bitrate:\s+([0-9.]+)', out)
-                                if match:
-                                    rates[iface] = f"{match.group(1)} Mbps"
-                                    continue
-                        except: pass
-                        try:
-                            cmd = f"/sbin/iwconfig {iface} 2>/dev/null || /usr/sbin/iwconfig {iface} 2>/dev/null || iwconfig {iface} 2>/dev/null"
-                            out = subprocess.check_output(cmd, shell=True, text=True)
-                            match = re.search(r'Bit Rate[=:]\s*([0-9.]+)', out)
-                            if match: rates[iface] = f"{match.group(1)} Mbps"
-                        except: pass
-            except: pass
-    except Exception as e: pass
-    
-    OS_CACHE["wifi_rates"]["data"] = rates
-    OS_CACHE["wifi_rates"]["time"] = time.time()
-    return rates
 
 # --- Audit Logging Middleware ---
 @app.after_request
@@ -5202,8 +5229,12 @@ def api_os_action():
 
 def manage_boot_counter():
     """
-    Crash loop protection: Increments a counter on boot. 
-    If it hits 5, restores the previous version (if updated), worker settings, and safe port.
+    Crash loop protection engine.
+    Increments a physical counter file on the disk every time the application boots.
+    If the application crashes 5 times rapidly, it engages emergency failsafes:
+    1. Extracts 'rollback.zip' to revert a failed GitHub update.
+    2. Restores 'workers.json' to hardware defaults in case thread pools caused an Out-of-Memory crash.
+    3. Reverts the web port to the last known successful binding to fix port conflicts.
     """
     base_dir = app.root_path
     counter_file = os.path.join(base_dir, "boot_attempts.txt")
@@ -5218,7 +5249,7 @@ def manage_boot_counter():
     if attempts >= 5:
         print("\n[!] CRASH LOOP DETECTED! Restoring safe settings...")
         
-        # --- NEW: 1. Rollback Failed Update ---
+        # 1. Rollback Failed Update
         rollback_zip = os.path.join(base_dir, "rollback.zip")
         if os.path.exists(rollback_zip):
             print("[*] Rollback archive found. Reverting to previous application version...")
@@ -5230,7 +5261,7 @@ def manage_boot_counter():
             except Exception as e:
                 print(f"[!] Failed to extract rollback archive: {e}")
                 
-        # --- 2. Restore Worker Settings ---
+        # 2. Restore Worker Settings
         file_path = os.path.join(base_dir, WORKERS_FILE)
         backup_path = os.path.join(base_dir, f"{WORKERS_FILE}.bak")
         
@@ -5249,7 +5280,7 @@ def manage_boot_counter():
                 add_system_alert("Crash loop detected: Worker settings restored to hardware defaults.")
             except: pass
             
-        # --- 3. Restore Last Known Good Web Port ---
+        # 3. Restore Last Known Good Web Port
         try:
             with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                 row = conn.execute("SELECT value FROM system_settings WHERE key='last_good_port'").fetchone()
@@ -5277,7 +5308,13 @@ def manage_boot_counter():
         except: pass
 
 def clear_boot_counter():
-    """Clears the boot counter if the server survives startup, saves port, and triggers startup backup."""
+    """
+    Executed 5 seconds after a successful server boot.
+    - Deletes the crash-loop counter file.
+    - Clears the update rollback archive (meaning the update was successful).
+    - Saves the current port as the 'last known good' port.
+    - Triggers the automated SQLite database backup routine.
+    """
     base_dir = app.root_path
     counter_file = os.path.join(base_dir, "boot_attempts.txt")
     
@@ -5299,8 +5336,76 @@ def clear_boot_counter():
             conn.commit()
     except: pass
     
-    # 4. Trigger the safe startup backup
     perform_startup_backup()
+
+def create_tray_icon():
+    """
+    Initializes and runs the cross-platform system tray icon using 'pystray'.
+    - Skips execution if running in headless/daemon mode (like systemd).
+    - Provides a native context menu allowing the user to seamlessly Restart or Shutdown the Python server.
+    - macOS Fix: Integrates with the native NSApplication runloop to prevent locking up the OS dock.
+    """
+    if is_headless_mode():
+        print("[*] Headless/Daemon mode detected. Skipping system tray icon.")
+        return
+
+    try:
+        import pystray
+        from PIL import Image
+    except ImportError:
+        print("[*] 'pystray' or 'Pillow' missing. Skipping system tray icon.")
+        return
+
+    # Select the correct icon format based on OS capabilities
+    if platform.system() == "Darwin":
+        icon_path = os.path.join(app.root_path, 'static', 'Logo.png')
+    else:
+        icon_path = os.path.join(app.root_path, 'static', 'favicon.ico')
+        
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(app.root_path, 'static', 'Logo.png')
+        if not os.path.exists(icon_path):
+            print("[*] Tray icon image not found in 'static' folder. Skipping.")
+            return
+
+    try:
+        image = Image.open(icon_path)
+        image.thumbnail((32, 32))
+    except Exception as e:
+        print(f"[!] Failed to load tray icon image: {e}")
+        return
+
+    def on_restart(icon, item):
+        print("[*] Tray Action: Restart requested.")
+        threading.Thread(target=restart_server).start()
+
+    def on_stop(icon, item):
+        print("[*] Tray Action: Shutdown requested.")
+        try:
+            with open(os.path.join(app.root_path, "shutdown_signal"), "w") as f:
+                f.write("shutdown")
+        except Exception: 
+            pass
+        icon.stop() 
+        os._exit(0)
+
+    try:
+        menu = pystray.Menu(
+            pystray.MenuItem("Restart Dashboard", on_restart),
+            pystray.MenuItem("Stop Dashboard", on_stop)
+        )
+        icon = pystray.Icon("NetworkDiagnostics", image, "Network Diagnostics", menu)
+        
+        # CRITICAL MACOS FIX: 
+        # On macOS, icon.run() blocks the main thread and requires a setup callback 
+        # to properly attach to the native application runloop.
+        def setup_action(icon_instance):
+            icon_instance.visible = True
+
+        icon.run(setup=setup_action)
+        
+    except Exception as e:
+        print(f"[!] System tray icon failed to initialize (GUI may be inaccessible): {e}")
 
 def get_available_port(start_port):
     """
@@ -5350,70 +5455,6 @@ def is_headless_mode():
             return True
             
     return False
-
-def create_tray_icon():
-    """Initializes and runs the cross-platform system tray icon."""
-    if is_headless_mode():
-        print("[*] Headless/Daemon mode detected. Skipping system tray icon.")
-        return
-
-    try:
-        import pystray
-        from PIL import Image
-    except ImportError:
-        print("[*] 'pystray' or 'Pillow' missing. Skipping system tray icon.")
-        return
-
-    # macOS prefers PNGs. Windows natively prefers ICOs.
-    if platform.system() == "Darwin":
-        icon_path = os.path.join(app.root_path, 'static', 'Logo.png')
-    else:
-        icon_path = os.path.join(app.root_path, 'static', 'favicon.ico')
-        
-    if not os.path.exists(icon_path):
-        icon_path = os.path.join(app.root_path, 'static', 'Logo.png')
-        if not os.path.exists(icon_path):
-            print("[*] Tray icon image not found in 'static' folder. Skipping.")
-            return
-
-    try:
-        image = Image.open(icon_path)
-        image.thumbnail((32, 32))
-    except Exception as e:
-        print(f"[!] Failed to load tray icon image: {e}")
-        return
-
-    def on_restart(icon, item):
-        print("[*] Tray Action: Restart requested.")
-        threading.Thread(target=restart_server).start()
-
-    def on_stop(icon, item):
-        print("[*] Tray Action: Shutdown requested.")
-        try:
-            with open(os.path.join(app.root_path, "shutdown_signal"), "w") as f:
-                f.write("shutdown")
-        except Exception: 
-            pass
-        icon.stop() 
-        os._exit(0)
-
-    try:
-        menu = pystray.Menu(
-            pystray.MenuItem("Restart Dashboard", on_restart),
-            pystray.MenuItem("Stop Dashboard", on_stop)
-        )
-        icon = pystray.Icon("NetworkDiagnostics", image, "Network Diagnostics", menu)
-        
-        # CRITICAL MACOS FIX: 
-        # On macOS, icon.run() requires a setup callback to properly attach to 
-        # the native application runloop on the main thread.
-        def setup_action(icon_instance):
-            icon_instance.visible = True
-
-        icon.run(setup=setup_action)
-        
-    except Exception as e:
-        print(f"[!] System tray icon failed to initialize (GUI may be inaccessible): {e}")
 
 if __name__ == '__main__':
     # --- 1. Catch boot loops before doing anything else ---

@@ -18,7 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "0.15.1"
+SETUP_VERSION = "1.0.0"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pystray", "Pillow"]
@@ -54,22 +54,23 @@ DEFAULT_GITHUB_CONFIG = {
         "display_name": "Production (Stable)",
         "owner": "Chrisb003",
         "repo": "Network-Testing-Tools",
-        "token": "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",
+        "token": "",
         "branch": "main"
     },
     "dev": {
         "display_name": "Development (Dev)",
         "owner": "Chrisb003",
         "repo": "Network-Testing-Tools",
-        "token": "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",
+        "token": "",
         "branch": "dev"
     }
 }
 
 def get_foreign_items(base_dir):
     """
-    Scans the directory and returns a list of items that do NOT belong to this application.
-    Smart enough to ignore dynamically generated backups, caches, and databases.
+    Scans the application directory and identifies files that do not belong to the core software[cite: 23].
+    It explicitly ignores hidden files, python caches, known application files, and dynamically generated backups[cite: 23].
+    Returns a list of foreign item names[cite: 23].
     """
     current_items = set(os.listdir(base_dir))
     foreign = []
@@ -91,7 +92,11 @@ def get_foreign_items(base_dir):
     return foreign
 
 def is_dev_build(base_dir):
-    """Determines if the system is on the DEV channel to route database and GitHub checks."""
+    """
+    Determines if the system is currently set to the Development (DEV) channel[cite: 23].
+    It checks for a manual 'dev' override file or parses the 'version.json' file[cite: 23].
+    Returns True if on the dev channel, False otherwise[cite: 23].
+    """
     if (base_dir / "dev").exists():
         return True
     version_file = base_dir / "version.json"
@@ -105,7 +110,10 @@ def is_dev_build(base_dir):
     return False
 
 def ensure_github_settings(base_dir):
-    """Creates the github_settings.json file if it is missing."""
+    """
+    Ensures that the 'github_settings.json' configuration file exists[cite: 23].
+    If missing, it creates it using the default stable and dev channel repository configurations[cite: 23].
+    """
     settings_file = base_dir / "github_settings.json"
     if not settings_file.exists():
         try:
@@ -116,7 +124,10 @@ def ensure_github_settings(base_dir):
             print(f"[*] Failed to create github_settings.json: {e}")
 
 def get_active_github_settings(base_dir):
-    """Reads the active settings from github_settings.json or the setup defaults."""
+    """
+    Reads the active repository settings from 'github_settings.json' based on the current update channel[cite: 23].
+    Falls back to the hardcoded default configuration if the file is unreadable[cite: 23].
+    """
     ensure_github_settings(base_dir)
     settings_file = base_dir / "github_settings.json"
     channel = "dev" if is_dev_build(base_dir) else "stable"
@@ -133,7 +144,10 @@ def get_active_github_settings(base_dir):
 
 
 def setup_supervisor_logging(base_dir):
-    """Initializes a dual-logger for the setup script and sets the environment sync variable."""
+    """
+    Initializes a dual-logging system that prints output to the terminal while simultaneously writing it to a file[cite: 23].
+    It automatically cleans up old log files exceeding 7 days and checks the SQLite database for the user's logging preferences[cite: 23].
+    """
     log_dir = base_dir / 'logs'
     try:
         log_dir.mkdir(exist_ok=True)
@@ -205,7 +219,10 @@ def setup_supervisor_logging(base_dir):
     sys.stderr = TeeLogger(log_path, sys.stderr, is_stderr=True)
 
 def is_admin():
-    """Checks if the script is running with administrative privileges."""
+    """
+    Checks if the script is running with elevated administrative privileges[cite: 23].
+    On Windows, it checks the shell32 library; on Unix, it checks for a root UID of 0[cite: 23].
+    """
     try:
         if platform.system() == "Windows":
             return ctypes.windll.shell32.IsUserAnAdmin() != 0
@@ -215,7 +232,10 @@ def is_admin():
         return False
 
 def get_autostart_setting(base_dir):
-    """Reads the autostart file, creates it with '1' if missing."""
+    """
+    Reads the 'autostart' configuration file to determine if the web browser should launch on boot[cite: 23].
+    Defaults to True (1) if the file is missing[cite: 23].
+    """
     autostart_file = base_dir / "autostart"
     if not autostart_file.exists():
         with open(autostart_file, "w") as f:
@@ -229,9 +249,8 @@ def get_autostart_setting(base_dir):
 
 def ensure_linux_prerequisites():
     """
-    Ensures Linux systems have the necessary Python build tools 
-    and venv modules installed BEFORE trying to create the virtual environment.
-    Supports APT (Debian/Ubuntu), DNF (Fedora/RHEL), Pacman (Arch), and Zypper (openSUSE).
+    Ensures Linux systems have the necessary Python build tools, venv modules, and network utilities installed before setup[cite: 23].
+    Dynamically identifies the Linux package manager (APT, DNF, Pacman, or Zypper) to install dependencies automatically[cite: 23].
     """
     if platform.system() == "Linux":
         print("[*] Checking Linux system prerequisites...")
@@ -260,7 +279,10 @@ def ensure_linux_prerequisites():
             print(f"[!] Warning: Failed to install Linux prerequisites automatically: {e}")
 
 def fetch_latest_from_github(base_dir):
-    """Downloads and extracts the private project and sets full permissions."""
+    """
+    Downloads the latest zipped release directly from the GitHub REST API and extracts it[cite: 23].
+    Utilizes authorization headers for private repository access and explicitly sets folder/file permissions[cite: 23].
+    """
     print(f"[*] '{APP_FILENAME}' not found. Initializing private download from GitHub...")
     
     # Use the dynamic settings instead of hardcoding
@@ -296,7 +318,10 @@ def fetch_latest_from_github(base_dir):
         sys.exit(1)
 
 def create_venv(base_dir):
-    """Creates the virtual environment and links standalone macOS libraries."""
+    """
+    Generates an isolated Python Virtual Environment (venv) for the application dependencies[cite: 23].
+    Contains a specific macOS fix to manually link shared libraries required for standalone execution[cite: 23].
+    """
     venv_path = base_dir / VENV_DIR_NAME
     if not venv_path.exists():
         print(f"[*] Creating virtual environment (Setup v{SETUP_VERSION})...")
@@ -324,7 +349,10 @@ def create_venv(base_dir):
     return venv_path
 
 def get_venv_paths(venv_path):
-    """Returns executable paths based on OS."""
+    """
+    Resolves the correct internal file paths for the Python executable and binaries within the virtual environment[cite: 23].
+    Accounts for the structural differences between Windows (Scripts folder) and Unix (bin folder)[cite: 23].
+    """
     if platform.system() == "Windows":
         return {
             "python": venv_path / "Scripts" / "python.exe",
@@ -341,7 +369,10 @@ def get_venv_paths(venv_path):
         }
 
 def install_requirements(python_path):
-    """Installs required Python libraries into the venv."""
+    """
+    Executes pip within the virtual environment to install all defined module dependencies[cite: 23].
+    Automatically manages OS-specific frameworks, like CoreWLAN for macOS[cite: 23].
+    """
     print("[*] Installing Python dependencies...")
     try:
         subprocess.check_call([str(python_path), "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
@@ -360,9 +391,9 @@ def install_requirements(python_path):
 
 def install_speedtest_cli(bin_dir):
     """
-    Installs Speedtest CLI and sets full Read/Write/Execute permissions.
-    Includes dynamic architecture detection for Linux and macOS (x86 vs ARM).
-    Bypasses Homebrew completely for native macOS installation.
+    Downloads and extracts the official Ookla Speedtest CLI binary tailored for the host operating system and architecture[cite: 23].
+    Supports Windows, macOS (Universal), and Linux (x86_64, ARM32, ARM64) seamlessly[cite: 23].
+    Ensures the binary receives full executable permissions upon extraction[cite: 23].
     """
     system = platform.system()
     machine = platform.machine().lower()
@@ -441,7 +472,10 @@ def install_speedtest_cli(bin_dir):
         print("="*60 + "\n")
 
 def install_npcap_windows():
-    """Checks/Installs Npcap on Windows."""
+    """
+    Checks for the presence of Npcap on Windows systems[cite: 23].
+    If missing, it attempts an automated installation using Chocolatey to satisfy Scapy requirements[cite: 23].
+    """
     if platform.system() != "Windows": return
     
     sys_root = os.environ.get('SystemRoot', 'C:\\Windows')
@@ -459,7 +493,11 @@ def install_npcap_windows():
             print("[!] Please manually install Npcap from https://npcap.com/")
 
 def run_application(base_dir, venv_python):
-    """Launches the main app, force-stops any hung instances, and auto-restarts on crash."""
+    """
+    The main supervisor loop that handles launching the dashboard application[cite: 23].
+    It automatically forces the cleanup of stale processes blocking the web port, opens the browser upon successful boot, 
+    catches application crashes, and safely handles intentional shutdown signals from the UI[cite: 23].
+    """
     app_path = base_dir / APP_FILENAME
     print("\n" + "="*60)
     print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
@@ -552,8 +590,9 @@ def run_application(base_dir, venv_python):
 
 def fix_permissions(path):
     """
-    Sets path to full Read/Write/Execute for all users.
-    Returns True on success, False on failure.
+    Grants comprehensive Read, Write, and Execute access permissions to a specified file or directory[cite: 23].
+    Utilizes 'icacls' to grant Full Control to 'Everyone' on Windows, or 'chmod 777' on Unix environments[cite: 23].
+    Returns True upon success, False otherwise[cite: 23].
     """
     try:
         if platform.system() == "Windows":
@@ -568,7 +607,10 @@ def fix_permissions(path):
         return False
 
 def fix_permissions_bulk(base_path):
-    """Recursively sets Read/Write/Execute permissions for the entire directory rapidly."""
+    """
+    Recursively applies Read, Write, and Execute access permissions to an entire directory tree structure rapidly[cite: 23].
+    Operates using directory-wide flags for 'icacls' on Windows and recursive 'chmod -R' via sudo on Unix[cite: 23].
+    """
     try:
         if platform.system() == "Windows":
             subprocess.run(['icacls', str(base_path), '/grant', 'Everyone:(F)', '/T', '/C', '/Q'], capture_output=True)
@@ -578,7 +620,10 @@ def fix_permissions_bulk(base_path):
         pass
 
 def install_chocolatey():
-    """Installs Chocolatey on Windows if not present and updates the current PATH."""
+    """
+    Checks for the Chocolatey package manager on Windows systems and installs it seamlessly via PowerShell if missing[cite: 23].
+    Injects the newly installed binary into the current Python runtime environment path to allow immediate use[cite: 23].
+    """
     if platform.system() != "Windows":
         return True
         
@@ -607,7 +652,10 @@ def install_chocolatey():
         return False
 
 def has_internet():
-    """Checks for internet connectivity by attempting to reach Google DNS."""
+    """
+    Tests for active internet connectivity by opening a socket connection to Google DNS (8.8.8.8) on port 53[cite: 23].
+    Utilizes a short 2-second timeout to prevent stalling during offline startup routines[cite: 23].
+    """
     try:
         # Timeout set to 2 seconds to avoid long hangs
         socket.create_connection(("8.8.8.8", 53), timeout=2)
@@ -616,7 +664,11 @@ def has_internet():
         return False
 
 def get_configured_port(base_dir):
-    """Reads the configured port from the DB or the 'webport' override file, defaulting to 81."""
+    """
+    Retrieves the target port for the web dashboard[cite: 23].
+    It prioritizes checking the 'webport' configuration override file, then reads from the SQLite database[cite: 23].
+    Returns port 81 as a failsafe default[cite: 23].
+    """
     # Check if the override file is waiting to be processed
     port_file = base_dir / "webport"
     if port_file.exists():
@@ -640,6 +692,15 @@ def get_configured_port(base_dir):
     return 81
 
 def main():
+    """
+    The master entry point for the setup and application execution pipeline[cite: 23].
+    It handles:
+    1. Privilege escalation (UAC on Windows).
+    2. Detecting destructive 'reinstall' signals or system isolation needs based on foreign files.
+    3. Downloading application codebase from GitHub dynamically.
+    4. Bootstrapping the Virtual Environment.
+    5. Delegating execution to the primary supervisor application thread.
+    """
     base_dir = Path(__file__).parent.resolve()
 
     # 1. WINDOWS ADMIN CHECK (MUST HAPPEN FIRST to prevent permission errors on cleanup)

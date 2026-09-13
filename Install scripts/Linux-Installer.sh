@@ -12,12 +12,12 @@ TARGET_DIR="$HOME/Network-Testing-Tools"
 REPO_OWNER="Chrisb003"
 REPO_NAME="Network-Testing-Tools"
 BRANCH="main"
-TOKEN="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"
+TOKEN=""
 SERVICE_NAME="network-dashboard.service"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
 AUTOSTART_DIR="$HOME/.config/autostart"
 AUTOSTART_FILE="$AUTOSTART_DIR/Network-Diagnostics.desktop"
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.0.3"
 
 # --- 2. EXISTING INSTALLATION CHECK & UNINSTALL OPTION ---
 if [ -d "$TARGET_DIR" ]; then
@@ -126,7 +126,11 @@ echo ""
 echo "[*] Step 2: Managing application files..."
 if [ ! -d "$TARGET_DIR" ]; then
     echo "[*] Downloading latest project files from GitHub..."
-    curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
+    if [ -n "$TOKEN" ]; then
+        curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
+    else
+        curl -s -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
+    fi
     
     mkdir -p /tmp/network_dashboard_extract
     unzip -q /tmp/network_dashboard.zip -d /tmp/network_dashboard_extract
@@ -140,7 +144,11 @@ else
     read update_code < /dev/tty
     case "$update_code" in
         [Yy]* )
-            curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
+            if [ -n "$TOKEN" ]; then
+                curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
+            else
+                curl -s -H "Accept: application/vnd.github.v3+json" -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$BRANCH" -o /tmp/network_dashboard.zip
+            fi
             mkdir -p /tmp/network_dashboard_extract
             unzip -q /tmp/network_dashboard.zip -d /tmp/network_dashboard_extract
             EXTRACTED_FOLDER=$(ls -d /tmp/network_dashboard_extract/*/)

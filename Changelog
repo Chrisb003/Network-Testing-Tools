@@ -1,103 +1,232 @@
-0.15.4 - removal of git requirement within the setup scripts. Fallback option for speedtest mechanism
+# Changelog
 
-0.15.3 - Removed speedtest cli homebrew install on mac os. Now just downloads from speedtest site.
+## [1.0.0] - Official Public Release
+* Bumped version to 1.0.0 as the application has reached a stable point with most bugs fixed.
+* The project has been officially made public for anyone to use.
 
-0.15.2 - Fix for update mechanism on linux
+## [0.15.4]
+* Removed the Git dependency requirement within the setup scripts.
+* Added a fallback option for the Speedtest mechanism.
 
-0.15.1 - Fixed issue with touch controls if accessing from the ipad. Now remembers the page you are on if you refresh the page. Fix for network scan showing unknown hostnames.
+## [0.15.3]
+* Removed the Speedtest CLI Homebrew installation requirement on macOS.
+* The application now downloads the Speedtest binary directly from the Speedtest website.
 
-0.15.0 - Added tray icon which can stop and restart the app. Install scripts for Windows, Mac OS and Linux that should fully handle the download and install of requirements and code.
+## [0.15.2]
+* Fixed the update mechanism on Linux environments.
 
-0.14.0 - Fixed various server restart mechanism. Unified the UI experience by making all popups etc look and work the same. Fixed comments not being availible with certain bits. Fixed csv export and comments are now exported. Tables can now be sorted via any of the columns
+## [0.15.1]
+* Fixed an issue with touch controls when accessing the dashboard from an iPad.
+* The dashboard now remembers your active page upon refreshing.
+* Fixed a bug in the network scan that caused unknown hostnames to display incorrectly.
 
-0.13.0 - Added help section, tool tips on each function, add isolated network scan function (This allow you to do a new network scan that isnt merged with previous data). Merge network scan results, choose whether to use the previous scan as data for new scan and various other fixes and enhancements to network scanning. Added option to restart and shutdown dashboard from settings, as well as option to restart and shutdown os if being used as standalone test device.
-File permission fixes, changed logic regading the setup script installing into current folder.
-Updated install scripts for linux, mac and windows.
+## [0.15.0]
+* Added a system tray icon that allows users to stop and restart the application.
+* Introduced installer scripts for Windows, macOS, and Linux that fully handle the downloading and installation of requirements and code.
 
-0.12.5 - Preformance fixes for windows, quality of life improvements.
+## [0.14.0]
+* Fixed various server restart mechanisms.
+* Unified the UI experience by ensuring all popups look and function consistently.
+* Fixed an issue where comments were not available in certain sections.
+* Fixed CSV exports to ensure comments are successfully exported.
+* Tables can now be dynamically sorted via any column.
 
-0.12.4 - Wifi scan fixes, UI fixes
+## [0.13.0]
+* Added a Help section and tooltips for all functions.
+* Added an Isolated Network Scan function, allowing for a new network scan that is not merged with previous data.
+* Added the ability to merge network scan results and choose whether to use previous scan data for new scans.
+* Various fixes and enhancements to network scanning.
+* Added an option to restart and shut down the dashboard from Settings.
+* Added an option to restart and shut down the OS when used as a standalone test device.
+* Fixed file permissions and changed the logic regarding the setup script installing into the current folder.
+* Updated installer scripts for Linux, macOS, and Windows.
 
-0.12.3 - Fix wifi scan bug windows, that may not identify networks correctly.
+## [0.12.5]
+* Performance fixes for Windows and various quality of life improvements.
 
-0.12.2 - Added edit button to network name on network scan page. Fixed issue with wifi names.
+## [0.12.4]
+* Wi-Fi scan fixes and UI tweaks.
 
-0.12.1 - UI tweaks and allows you to choose wifi adapter used for scan.
+## [0.12.3]
+* Fixed a Wi-Fi scan bug on Windows that caused networks to be identified incorrectly.
 
-0.12.0 - Changed wifi and network devices history so the wifi networks and device are kept even if the orignal scan was deleted. Fix loading animation when doing network scanning. Add mechanism for the page to sleep if not actave for more than 1 hour.
+## [0.12.2]
+* Added an edit button to the network name on the network scan page.
+* Fixed an issue with Wi-Fi network names.
 
-0.11.1-2- - Testing release.
+## [0.12.1]
+* UI tweaks.
+* Added the ability to manually select the Wi-Fi adapter used for scanning.
 
-0.11.0 - Fixed various bugs and added various fail safes should the app fail to start up correctly. Various UI fixes. You can now protect speed test, ping and dns lookup results from the database clear tool if removing data older than a certain amount of time. Stopped user being able to hide all adaptors, you need to have atleast one visable. Also stop it from being able to use a hidden adaptor for anything.
+## [0.12.0]
+* Changed Wi-Fi and network device history to retain networks and devices even if the original scan is deleted.
+* Fixed loading animations during network scanning.
+* Added a mechanism to pause/sleep the page if it is inactive for more than 1 hour.
 
-0.10.0 - Major fixes and changes to improve and fix issues. This can now be run on a raspberry pi. Although I dont recommend anything earlier than a pi 4 due to preformance and hardware limitation it should still run on a pi 3. Major rework to the network scanning part, improving responsiveness and functionality.
+## [0.11.1 - 0.11.2]
+* Testing releases.
 
-0.9.2 - A few UI bug fixes. Added setting to allow you to disable the automatic launching of the webpage if you dont want it to when it starts (Usefull if you want to create a dedicated device for it). Added basic user authenication (Useful if running from dedicated device.). Able to change port number app is running on.
+## [0.11.0]
+* Fixed various bugs and added failsafes should the application fail to start up correctly.
+* Various UI fixes.
+* You can now protect Speedtest, Ping, and DNS lookup results from the database clearing tool when removing data older than a certain time period.
+* Prevented users from hiding all adapters (at least one must remain visible).
+* Stopped the system from utilizing hidden adapters for any tasks.
 
-0.9.1 - A few UI fixes and clean up of dashboard code moving styles and scripts to seperate file. Added option to switch between production and dev environments
+## [0.10.0]
+* Major fixes and improvements to resolve various issues.
+* The dashboard can now be run on a Raspberry Pi.
+* *Note: A Pi 4 is recommended due to performance and hardware limitations, though it supports a Pi 3.*
+* Major rework of the network scanning engine, drastically improving responsiveness and functionality.
 
-0.9.0 - New device history page allowing you to lookup history of devices found during network scans. Also added option to look through wifi networks. Few small bug fixes with mac address vendor lookup. Fixed search and it now remembers selected items between pages.
+## [0.9.2]
+* Minor UI bug fixes.
+* Added a setting to disable the automatic browser launch on startup, useful for creating a dedicated headless device.
+* Added basic user authentication (login credentials), highly useful when running from a dedicated device.
+* Added the ability to change the active web server port.
 
-0.8.1-3 - Linux wifi speed fix
+## [0.9.1]
+* Minor UI fixes and dashboard code cleanup (moved styles and scripts to separate files).
+* Added the option to switch between Production and Development environments.
 
-0.8.0 - Wifi scanning on mac os now posible. This version fixes it and allows that function to work on mac os.
+## [0.9.0]
+* Introduced a new Device History page to look up historical data for devices found during network scans.
+* Added an option to browse historical Wi-Fi networks.
+* Fixed minor bugs with MAC address vendor lookups.
+* Fixed search functionality and ensured selected items are remembered across page navigations.
 
-0.7.14 - Minor bug fixes and fixing of export behaviour while filtering results. Now the export button will either export selected items, all items or filtered items depending on if anything is selected or not.
+## [0.8.1 - 0.8.3]
+* Linux Wi-Fi speed fixes.
 
-0.7.13 - Fix for incosistant network scan and now shows vendor ID's. Loading screen for interface list rather than being blank when page first loads.
+## [0.8.0]
+* Enabled and fixed Wi-Fi scanning support for macOS.
 
-0.7.12 - Inproved usability for touch screen devices by adding a toggle
+## [0.7.14]
+* Minor bug fixes.
+* Fixed CSV export behavior when filtering results (the export button will now intelligently grab selected items, all items, or filtered items depending on context).
 
-0.7.11 - Updated github reference in setup script.
+## [0.7.13]
+* Fixed inconsistent network scans.
+* Scans now accurately resolve and display Vendor IDs.
+* Added a loading screen for the interface list on initial page load (prevents a blank screen).
 
-0.7.10 - Speed test bug fix.
+## [0.7.12]
+* Improved usability for touch-screen devices by adding a dedicated Touch Mode toggle.
 
-0.7.9 - Bug fixes for network scan. Now labels Device used for scan as this device and the router as router in the list. If router isnt picked up in scan it will now inject it into the list. Can now press enter after setting name in speedtestbox to run speedtest, after putting in domain in dnslook up and address in ping test. Fix table for speedtest.
+## [0.7.11]
+* Updated GitHub repository references in the setup script.
 
-0.7.8 - Fix to reduce time app takes to start. Only fixes permissions of files if it needs to update or if downloading from github if app.py missing. Fixes network scanning issues. Speed test fixes. Added bulk deletion feature and bulk export of network and wifi scan csv.
+## [0.7.10]
+* Speedtest bug fixes.
 
-0.7.7 - Fix to Windows launcher bat file to fix issue with starting when offline. Fix to setup script to fix issues when starting when offline
+## [0.7.9]
+* Network scan bug fixes.
+* The scanning interface now explicitly labels 'This device' and the 'Router' in the list.
+* If the router drops from the scan, it is automatically injected back into the list.
+* Added Enter-key support for initiating Speedtests, DNS lookups, and Ping tests.
+* Fixed formatting on the Speedtest table.
 
-0.7.6 - Slightly updated setup script to launch web browser when ready.
+## [0.7.8]
+* Boot time optimizations (reduced the time the app takes to start).
+* File permissions are now only fixed during updates or initial GitHub cloning.
+* Network scanning and Speedtest fixes.
+* Added bulk deletion and bulk CSV export features for network and Wi-Fi scans.
 
-0.7.5 - Inital Tests show it now should be stable. Switch from flask debug mode to using waitress. Version number are - Setup 0.7.1, app 0.7.3, dashboard 0.7.1. No plans to update past this point unless I find bugs to fix. Once I am happy it is stable will be bumped to 0.9.0 as the final beta version before 1.0
+## [0.7.7]
+* Fixed the Windows launcher `.bat` file to resolve issues when starting offline.
+* Fixed the setup script to resolve issues when starting offline.
 
-0.7.1-4 - minor fixes and update testing with linux
+## [0.7.6]
+* Slightly updated the setup script to automatically launch the web browser when the server is ready.
 
-0.7.0 - More of a major bump, still currently beta. Fixed speed test. It will now use the active adapter unless one is pinned and it will now use that. Various bug fixes. Local IP of interface logged with speedtest, added database import and export and cleanup functions. Added alert at top of page if interface pinned
+## [0.7.5]
+* Stability milestone: Tests show the application is now stable.
+* Switched from the Flask debug server to the production Waitress WSGI server.
+* Version tracking aligned across Setup (0.7.1), App (0.7.3), and Dashboard (0.7.1).
+* *Note: No plans to update past this point unless bugs require fixing. Once deemed fully stable, the version will be bumped to 0.9.0 as the final beta version before 1.0.*
 
-0.6.12-15 update test - update fixes and file permission fixes.
+## [0.7.1 - 0.7.4]
+* Minor fixes and update testing for Linux environments.
 
-0.6.11 update fixes and few bug fixes relating to getting adaptor information.
+## [0.7.0]
+* Major feature bump (Beta status).
+* Fixed Speedtest logic to strictly use the active adapter unless an adapter is explicitly pinned.
+* Various bug fixes.
+* Local IP of the interface is now logged alongside Speedtest results.
+* Added Database Import, Export, and Cleanup functionalities.
+* Added a visual alert banner at the top of the page if an interface is pinned.
 
-0.6.10 update test - no changes
+## [0.6.12 - 0.6.15]
+* Update mechanism testing, update fixes, and file permission fixes.
 
-0.6.9 - Fixed issue saving network scan as same network when working with VLANs, updated scan network page to add indication it is scanning. Fix issue with speedtestcli download linux, prompt user to download from speedtest site if fails. More fixes for update mechanism.
+## [0.6.11]
+* Update mechanism fixes and minor bug fixes related to retrieving adapter hardware information.
 
-0.6.8 - added logo and favicon to dashboard. Dashboard version now 0.6.3
+## [0.6.10]
+* Internal update test (no feature changes).
 
-0.6.7 - Included a couple of scripts for Windows, Mac OS and Linux to ensure python is installed then run the setup script. This can also be used when wanting to start the script.
-    Update mechanism in the dashboard is still broken, but delete the app.py script and it will download the latest version of the whole thing.
+## [0.6.9]
+* Fixed an issue with saving network scans as the same network when working across VLANs.
+* Added visual loading indicators to the Network Scan page to indicate active scanning.
+* Fixed Speedtest CLI downloads on Linux (added prompts to download manually from the Speedtest site if it fails).
+* Additional fixes for the update mechanism.
 
-0.6.5-0.6.6 - Various fixes to allow functions to work correctly with linux. Versions are as follows Setup 0.6.0, app 0.6.6, dashboard 0.6.1
+## [0.6.8]
+* Added the project logo and favicon to the dashboard.
+* Dashboard version updated to 0.6.3.
 
-0.6.4 - More changes to fix issues with linux. app script now version 0.6.3 and setup script 0.6.0 
+## [0.6.7]
+* Included launcher scripts for Windows, macOS, and Linux to ensure Python prerequisites are installed before executing the setup script.
+* *Note: Update mechanism in the dashboard is still broken; deleting the app.py script will force a fresh download of the latest version.*
 
-0.6.3 - Changelog seperated to own file. App script updated to 0.6.2 to update reference to file.
+## [0.6.5 - 0.6.6]
+* Various system fixes to allow functions to work correctly on Linux distributions.
+* Version sync: Setup (0.6.0), App (0.6.6), Dashboard (0.6.1).
 
-0.6.2 - small fixes with setup script to better support linux. Setup script now version - 0.5.1
+## [0.6.4]
+* Additional Linux compatibility fixes.
+* App script updated to 0.6.3, Setup script updated to 0.6.0.
 
-0.6.1 - Small fix to adapter checks to make it work with no active connection (No wifi or ethernet connected)
+## [0.6.3]
+* Changelog separated into its own dedicated file.
+* App script updated to 0.6.2 to reflect the new file reference.
 
-0.6.0 - Various small fixes to functions. As well as huge amount of work done on the wifi scanning. Wifi scanning doesnt work on Mac. It has now been tested on windows and seems functional. To get it to scan properly when doing this it will disable and reenable the wifi adaptor. There has also been various updates to the dashboard to support the changes. With the setup script most of the changes are to get it to install the prerequirments when first ran. 
-In this version the code is at 0.6.0, the setup is at 0.5.0. Added version number for html dashboard currently 0.6.0
+## [0.6.2]
+* Minor fixes to the setup script for improved Linux support.
+* Setup script updated to 0.5.1.
 
-0.5.0 - Various fixes and changes. Setup scipt also downloads the latest version from github the first time it runs. The main app script there has been various changes to make sure everything is working as it should be. The dashboard page updated visuals to fix a few things, csv export now working correctly, Wifi scanning tool still to be worked on remove various duplicate functions.
+## [0.6.1]
+* Fixed adapter checks to prevent crashes when the device has absolutely no active connection (offline).
 
-0.3.1 - Fixes for missing code relating to speedtest
+## [0.6.0]
+* Various functional fixes.
+* Major overhaul of the Wi-Fi scanning engine.
+* *Note: Wi-Fi scanning is not functional on macOS yet. Tested and functional on Windows.*
+* Windows Wi-Fi scanning briefly disables and re-enables the adapter to force a fresh airwave check.
+* Dashboard UI updated to support the new features.
+* Setup scripts updated to automatically install prerequisites on first boot.
+* Version sync: Code (0.6.0), Setup (0.5.0), HTML Dashboard (0.6.0).
 
-0.3.0 - Setup script version 0.1.0 nothing has changed with this. Main app script 0.3.0 various changes adding in ability to save network scans and give names to devices, doo dns lookup and ping tool. Dashboard has been updated to acomidate these extra features.
+## [0.5.0]
+* Various fixes and changes.
+* Setup script now automatically clones the latest version from GitHub on its first run.
+* Main app script updated to ensure general stability.
+* Dashboard visuals updated.
+* CSV exports are now fully functional.
+* Removed various duplicated functions (Wi-Fi scanning tool still in development).
 
-0.2.0 - few fixes to existing functions and adding darkmode/lightmode toggle
+## [0.3.1]
+* Fixed missing codebase references relating to the Speedtest tools.
 
-0.1.0 - Initial beta version
+## [0.3.0]
+* Added the ability to save network scans and assign custom names to devices.
+* Introduced the DNS Lookup and Ping tools.
+* Dashboard updated to accommodate these new features.
+* Setup script version remains 0.1.0; Main app script updated to 0.3.0.
+
+## [0.2.0]
+* Minor functional fixes to existing functions.
+* Added a Dark Mode / Light Mode toggle.
+
+## [0.1.0]
+* Initial Beta release.
