@@ -6,10 +6,16 @@
   **Installation & Documentation Guide**
   
   ![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FChrisb003%2FNetwork-Testing-Tools%2Fmain%2Fversion.json&query=%24.version&label=Version&color=2ea44f) <br>
-  [**View Repository**](https://github.com/Chrisb003/Network-Testing-Tools) • [**More Info**](https://test.chris94.com/test.html) • [**Changelog**](changelog.html)
+  [**View Repository**](https://github.com/Chrisb003/Network-Testing-Tools) • [**More Info**](https://chris94.uk/test.html) • [**Changelog**](https://chris94.uk/changelog.html)
 </div>
-
 <br>
+> This is a tool I built using AI to help me code that does basic network troubleshooting. If you find bugs or have suggestions on inprovements please log on github and I will try to address. I cant garrentee I will update or do anymore to this tool but as I made it to use myself I will likey update with bugfixes from time to time.
+
+> I have created installers for this which can download and set it up but if you would rather do it yourself the instructions below. The installers are currently located on my website. I am in the process of working on the website so the pages linked here are just temporary but will be updated once finished.
+
+> If you wish to copy the code and create your own version from it, all I ask is to credit me.
+<br>
+
 
 > [!IMPORTANT]  
 > A robust, fault-tolerant network diagnostic dashboard designed for troubleshooting network issues across home, office, and managed environments. Built using Python, Flask, SQLite, and Scapy. Internet access is strictly required for a first-time installation to download dependencies and fetch the latest updates from GitHub.
@@ -43,7 +49,7 @@ The `Windows-Installer.ps1` script requests Administrator privileges, downloads 
 
 Open **PowerShell** and paste the following command to begin:
 ```powershell
-& ([scriptblock]::Create((irm "[https://test.chris94.com/install-scripts/Windows-Installer.ps1](https://test.chris94.com/install-scripts/Windows-Installer.ps1)")))
+& ([scriptblock]::Create((irm "https://chris94.uk/install-scripts/Windows-Installer.ps1")))
 ```
 
 ### <img src="https://cdn.simpleicons.org/apple/999999" width="20" alt="macOS" /> macOS Automated Setup
@@ -51,7 +57,7 @@ The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 
 
 Open the **Terminal** app and paste the following command:
 ```bash
-curl -sSLq [https://test.chris94.com/install-scripts/MacOS-Installer.sh](https://test.chris94.com/install-scripts/MacOS-Installer.sh) | sh
+curl -sSLq https://chris94.uk/install-scripts/MacOS-Installer.sh | sh
 ```
 
 ### <img src="https://cdn.simpleicons.org/linux/FCC624" width="20" alt="Linux" /> Linux Automated Setup
@@ -59,7 +65,7 @@ The `Linux-Installer.sh` script dynamically detects your package manager to inst
 
 Open your **Terminal** and paste the following command:
 ```bash
-curl -sSLq [https://test.chris94.com/install-scripts/Linux-Installer.sh](https://test.chris94.com/install-scripts/Linux-Installer.sh) | sh
+curl -sSLq https://chris94.uk/install-scripts/Linux-Installer.sh | sh
 ```
 
 ---
@@ -70,7 +76,7 @@ Once the setup completes, the Waitress WSGI server will spin up. If you ran the 
 
 Open your web browser and navigate to your chosen port (e.g., port 81):
 ```text
-[http://127.0.0.1:81](http://127.0.0.1:81)
+http://127.0.0.1:81
 ```
 If you enabled the Wi-Fi hotspot during installation, connect your phone to the broadcasted SSID and navigate to the Gateway IP with your configured port (usually `http://10.42.0.1:81` on Linux or `http://192.168.137.1:81` on Windows).
 
