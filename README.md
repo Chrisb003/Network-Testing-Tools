@@ -12,7 +12,7 @@
 This is a basic network troubleshooting tool I built with AI for my own use, now made public for anyone who might find it helpful.
 
 * **Install:** Download the automated installers from my website (temporary links while the site is under construction), or follow the manual setup instructions below.
-* **Support:** Please log bugs or suggestions on GitHub. I can't guarantee ongoing development, but since I use this tool myself, I'll try to push periodic bug fixes. I will be updating the dev branch first then pushing to main branch once tested.
+* **Support:** Please log bugs or suggestions on GitHub. I can't guarantee ongoing development, but since I use this tool myself, I'll try to push periodic bug fixes. I will be updating the dev branch first with fixes then pushing to main branch once tested.
 * **Forks:** Feel free to copy the code and create your own versions, but please credit me as the original author.
 
 > [!IMPORTANT]  
