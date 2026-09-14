@@ -280,27 +280,23 @@ def ensure_linux_prerequisites():
 
 def fetch_latest_from_github(base_dir):
     """
-    Downloads the latest zipped release directly from the GitHub REST API and extracts it.
-    Utilizes authorization headers for private repository access and explicitly sets folder/file permissions.
+    Downloads the latest zipped release directly from GitHub and extracts it.
+    Uses standard archive links to bypass API rate limits for public repositories.
     """
     print(f"[*] '{APP_FILENAME}' not found. Initializing download from GitHub...")
     
-    # Use the dynamic settings instead of hardcoding
     gh_set = get_active_github_settings(base_dir)
     
-    zip_url = f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/zipball/{gh_set['branch']}"
+    zip_url = f"https://github.com/{gh_set['owner']}/{gh_set['repo']}/archive/refs/heads/{gh_set['branch']}.zip"
     req = urllib.request.Request(zip_url)
     
-    # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
     req.add_header("User-Agent", "Network-Diagnostics-Setup")
-    req.add_header("Accept", "application/vnd.github.v3+json")
     
-    # NEW: Only attach the Authorization header if the token actually exists
     if gh_set.get('token'):
         req.add_header("Authorization", f"token {gh_set['token']}")
     
     try:
-        print(f"[*] Authorizing and fetching: {gh_set['repo']}...")
+        print(f"[*] Fetching repository: {gh_set['repo']}...")
         with urllib.request.urlopen(req) as response:
             with zipfile.ZipFile(io.BytesIO(response.read())) as zip_ref:
                 top_folder = zip_ref.namelist()[0]
@@ -311,12 +307,12 @@ def fetch_latest_from_github(base_dir):
                     
                     if member.is_dir():
                         target_path.mkdir(parents=True, exist_ok=True)
-                        fix_permissions(target_path) # Set folder permissions
+                        fix_permissions(target_path)
                     else:
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         with zip_ref.open(member) as source, open(target_path, "wb") as target:
                             shutil.copyfileobj(source, target)
-                        fix_permissions(target_path) # Set file permissions
+                        fix_permissions(target_path)
                         
         print("[✓] Project files synchronized and permissions set.")
     except Exception as e:

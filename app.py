@@ -4087,23 +4087,26 @@ def handle_update_channel():
     return jsonify({"status": "success", "channel": channel})
 
 def fetch_github_file(filename):
-    """Fetches raw file content from private GitHub repo."""
+    """Fetches raw file content from GitHub, bypassing API rate limits for public repos."""
     gh_set = get_github_settings()
-    url = f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/contents/{filename}?ref={gh_set['branch']}"
+    
+    # Use raw.githubusercontent to completely bypass the 60 req/hr API limit!
+    url = f"https://raw.githubusercontent.com/{gh_set['owner']}/{gh_set['repo']}/{gh_set['branch']}/{filename}"
     req = urllib.request.Request(url)
     
-    # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
     req.add_header("User-Agent", "Network-Diagnostics-App")
-    req.add_header("Accept", "application/vnd.github.v3+json")
     
-    if gh_set.get("token"): 
+    # If a token is provided (for private forks), add it safely
+    if gh_set.get('token'): 
         req.add_header("Authorization", f"token {gh_set['token']}")
+        
     try:
         with urllib.request.urlopen(req) as response:
-            return base64.b64decode(json.loads(response.read().decode())['content']).decode('utf-8')
+            # Raw URL returns plain text directly, no base64 decoding needed!
+            return response.read().decode('utf-8')
     except: 
         return None
-
+    
 @app.route('/api/update/check')
 def check_update():
     """
@@ -4229,14 +4232,14 @@ def update_software():
         except Exception as e:
             print(f"[!] Rollback backup warning: {e}")
         
-        # 3. Download from GitHub
-        req = urllib.request.Request(f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/zipball/{gh_set['branch']}")
+       # 3. Download from GitHub (Using standard web archive to bypass API limits)
+        zip_url = f"https://github.com/{gh_set['owner']}/{gh_set['repo']}/archive/refs/heads/{gh_set['branch']}.zip"
+        req = urllib.request.Request(zip_url)
         
-        # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
         req.add_header("User-Agent", "Network-Diagnostics-App")
-        req.add_header("Accept", "application/vnd.github.v3+json")
         
-        if gh_set.get('token'): req.add_header("Authorization", f"token {gh_set['token']}")
+        if gh_set.get('token'): 
+            req.add_header("Authorization", f"token {gh_set['token']}")
         
         try:
             with urllib.request.urlopen(req) as response: zip_data = io.BytesIO(response.read())
@@ -4293,7 +4296,7 @@ def update_software():
     except Exception as e:
         print(f"[X] Update Error: {e}")
         return jsonify({"error": str(e)}), 500
-    
+
 def fix_permissions(path):
     """
     Sets path to full Read/Write/Execute for all users.
