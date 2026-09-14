@@ -3541,6 +3541,7 @@ function isVersionHigher(v1, v2) {
 /**
  * Opens the System Update modal, fetches dynamic release notes from the GitHub Changelog, 
  * and configures the UI based on whether a channel switch or standard update is required.
+ * Includes a safeguard to prevent updating if the target branch does not exist.
  */
 function openUpdateModal() {
     if (!updateModal) {
@@ -3576,7 +3577,13 @@ function openUpdateModal() {
             const isHigher = isVersionHigher(remote, local);
             const updateFound = d.update_available || isHigher || crossChannelUpdate;
             
-            if (updateFound) {
+            // BUGFIX: If remote is 0.0.0, the branch does not exist on GitHub (404 Error).
+            if (remote === "0.0.0") {
+                msg.className = "alert alert-danger"; 
+                msg.innerText = `Update Error: The '${channel}' branch could not be found on your GitHub repository.`; 
+                btn.disabled = true;
+            } 
+            else if (updateFound) {
                 pendingRemoteVersion = remote; 
                 msg.className = "alert alert-warning";
                 
@@ -3613,7 +3620,7 @@ function openUpdateModal() {
 
 /**
  * Triggers the backend Python engine to download the GitHub zipball, extract it, and restart the server.
- * Sets a local storage flag to verify the file integrity upon browser reload.
+ * Displays backend errors safely if the download or extraction fails.
  */
 function applyUpdate() { 
     if(!confirm("Update system? The server will restart.")) return;
@@ -3627,8 +3634,16 @@ function applyUpdate() {
     fetch('/api/update/apply', {method: 'POST'})
         .then(r => r.json())
         .then(d => { 
-            alert(d.message); 
-            setTimeout(() => location.reload(), 5000); 
+            // BUGFIX: Check for the 'error' key specifically to prevent "undefined" alerts
+            if (d.error) {
+                alert("Update Failed: " + d.error);
+                localStorage.removeItem('update_pending');
+                btn.disabled = false;
+                btn.innerText = "Install Update";
+            } else {
+                alert(d.message || "Update applied successfully."); 
+                setTimeout(() => location.reload(), 5000); 
+            }
         })
         .catch(err => {
             alert("Connection lost. Server is likely restarting. Page will reload.");

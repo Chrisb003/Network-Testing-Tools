@@ -158,7 +158,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -4091,7 +4091,12 @@ def fetch_github_file(filename):
     gh_set = get_github_settings()
     url = f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/contents/{filename}?ref={gh_set['branch']}"
     req = urllib.request.Request(url)
-    if gh_set["token"]: 
+    
+    # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
+    req.add_header("User-Agent", "Network-Diagnostics-App")
+    req.add_header("Accept", "application/vnd.github.v3+json")
+    
+    if gh_set.get("token"): 
         req.add_header("Authorization", f"token {gh_set['token']}")
     try:
         with urllib.request.urlopen(req) as response:
@@ -4226,6 +4231,11 @@ def update_software():
         
         # 3. Download from GitHub
         req = urllib.request.Request(f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/zipball/{gh_set['branch']}")
+        
+        # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
+        req.add_header("User-Agent", "Network-Diagnostics-App")
+        req.add_header("Accept", "application/vnd.github.v3+json")
+        
         if gh_set.get('token'): req.add_header("Authorization", f"token {gh_set['token']}")
         
         try:
@@ -4283,7 +4293,7 @@ def update_software():
     except Exception as e:
         print(f"[X] Update Error: {e}")
         return jsonify({"error": str(e)}), 500
-
+    
 def fix_permissions(path):
     """
     Sets path to full Read/Write/Execute for all users.
