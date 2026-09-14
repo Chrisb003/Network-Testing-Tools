@@ -761,12 +761,11 @@ def main():
         prod_config = DEFAULT_GITHUB_CONFIG["stable"]
         
         print(f"[*] Downloading latest production release from {prod_config['repo']} ({prod_config['branch']})...")
-        zip_url = f"https://api.github.com/repos/{prod_config['owner']}/{prod_config['repo']}/zipball/{prod_config['branch']}"
+        
+        zip_url = f"https://github.com/{prod_config['owner']}/{prod_config['repo']}/archive/refs/heads/{prod_config['branch']}.zip"
         req = urllib.request.Request(zip_url)
         
-        # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
         req.add_header("User-Agent", "Network-Diagnostics-Setup")
-        req.add_header("Accept", "application/vnd.github.v3+json")
         
         if prod_config.get('token'):
             req.add_header("Authorization", f"token {prod_config['token']}")
