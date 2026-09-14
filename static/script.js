@@ -4434,6 +4434,19 @@ upgradeTooltips();
 // Whenever a live scan finishes and generates new DOM rows, this instantly upgrades their tooltips!
 const tooltipObserver = new MutationObserver(() => {
     upgradeTooltips();
+    
+    // BUGFIX: Clean up "stuck" orphaned tooltips when their parent elements are destroyed by live data streams.
+    // Bootstrap adds 'aria-describedby' to the hovered element. If that element no longer exists in the DOM, 
+    // the tooltip floating in the body is an orphan and must be deleted to prevent ghost tooltips.
+    document.querySelectorAll('.tooltip').forEach(tooltipNode => {
+        const tooltipId = tooltipNode.getAttribute('id');
+        if (tooltipId) {
+            const triggerEl = document.querySelector(`[aria-describedby="${tooltipId}"]`);
+            if (!triggerEl) {
+                tooltipNode.remove();
+            }
+        }
+    });
 });
 
 tooltipObserver.observe(document.body, { childList: true, subtree: true });

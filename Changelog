@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.0.1] - Official Public Release
+* Small bug fix releated to tool tips getting stuck on page during network scan.
+
 ## [1.0.0] - Official Public Release
 * Bumped version to 1.0.0 as the application has reached a stable point with most bugs fixed.
 * The project has been officially made public for anyone to use.
