@@ -512,7 +512,7 @@ def run_application(base_dir, venv_python):
     print("\n" + "="*60)
     print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
     print("="*60)
-
+    
     # --- NEW: Trigger macOS Permissions as Standard User BEFORE Sudo ---
     if platform.system() == "Darwin":
         print("[*] Probing macOS Network & Location permissions...")
@@ -541,14 +541,14 @@ def run_application(base_dir, venv_python):
         
         time.sleep(1.5) # Give the UI prompt time to appear on screen
     # -------------------------------------------------------------------
-    
+
     cmd = [str(venv_python), str(app_path)]
     
-    # On Linux/Mac, we need sudo for Scapy to read ARP tables
-    if platform.system() != "Windows" and not is_admin():
+    # Only use sudo on Linux, bypass for macOS to allow CoreLocation prompts
+    if platform.system() == "Linux" and not is_admin():
         print("[*] Elevating privileges for network scanning...")
         cmd = ["sudo"] + cmd
-        
+            
     first_launch = True
     
     try:
@@ -658,38 +658,6 @@ def fix_permissions_bulk(base_path):
             subprocess.run(['chmod', '-R', '777', str(base_path)], stderr=subprocess.DEVNULL)
     except:
         pass
-
-def install_chocolatey():
-    """
-    Checks for the Chocolatey package manager on Windows systems and installs it seamlessly via PowerShell if missing[cite: 23].
-    Injects the newly installed binary into the current Python runtime environment path to allow immediate use[cite: 23].
-    """
-    if platform.system() != "Windows":
-        return True
-        
-    if shutil.which("choco"):
-        return True
-        
-    print("[*] Chocolatey not found. Installing Chocolatey...")
-    try:
-        # Standard Chocolatey PowerShell installation command
-        ps_command = (
-            "Set-ExecutionPolicy Bypass -Scope Process -Force; "
-            "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; "
-            "iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))"
-        )
-        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_command], check=True)
-        
-        # Add Chocolatey bin to the current Python process PATH so it can be used immediately
-        choco_path = os.path.join(os.environ.get('ALLUSERSPROFILE', 'C:\\ProgramData'), 'chocolatey', 'bin')
-        if choco_path not in os.environ["PATH"]:
-            os.environ["PATH"] = choco_path + os.pathsep + os.environ["PATH"]
-            
-        print("[✓] Chocolatey successfully installed.")
-        return True
-    except Exception as e:
-        print(f"[X] Failed to install Chocolatey: {e}")
-        return False
 
 def has_internet():
     """

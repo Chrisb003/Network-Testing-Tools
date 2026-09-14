@@ -3198,6 +3198,13 @@ def get_wifi_networks():
         # ==========================================
         if sys_plat == "Darwin":
             try:
+                try:
+                    import CoreLocation
+                    loc_manager = CoreLocation.CLLocationManager.alloc().init()
+                    loc_manager.requestWhenInUseAuthorization()
+                except Exception as e:
+                    print(f"CoreLocation trigger error: {e}")
+                    
                 import CoreWLAN
                 
                 for target_iface in target_ifaces:
