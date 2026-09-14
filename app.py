@@ -118,6 +118,10 @@ def setup_file_logging():
             except Exception: pass
             
         def write(self, text):
+            # --- NEW: Ignore harmless macOS kernel threading warnings ---
+            if "Task policy set failed" in text:
+                return
+            # ------------------------------------------------------------
             # Always print to the live terminal so the user can see startup banners
             try:
                 self.terminal.write(text)
@@ -166,7 +170,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
