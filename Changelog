@@ -1,4 +1,7 @@
 # Changelog
+## [1.0.4] - Mac OS permisions fixes
+* Mac OS permisions fixes
+
 ## [1.0.3] - Update fixes
 * Hide mac specific error in log. This error is not helpful so it has been hidden.
 

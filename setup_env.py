@@ -26,7 +26,7 @@ except AttributeError:
 # ------------------------------------------------
 
 # --- Configuration ---
-SETUP_VERSION = "1.0.1"
+SETUP_VERSION = "1.0.2"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pystray", "Pillow"]
@@ -504,14 +504,40 @@ def install_npcap_windows():
 
 def run_application(base_dir, venv_python):
     """
-    The main supervisor loop that handles launching the dashboard application[cite: 23].
-    It automatically forces the cleanup of stale processes blocking the web port, opens the browser upon successful boot, 
-    catches application crashes, and safely handles intentional shutdown signals from the UI[cite: 23].
+    The main supervisor loop that handles launching the dashboard application.
+    It automatically forces the cleanup of stale processes blocking the web port...
     """
     app_path = base_dir / APP_FILENAME
     print("\n" + "="*60)
     print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
     print("="*60)
+    
+    # --- NEW: Trigger macOS Permissions as Standard User ---
+    if platform.system() == "Darwin":
+        print("[*] Probing macOS Network & Location permissions...")
+        probe_script = """
+import socket
+try:
+    s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(('8.8.8.8', 80))
+    s.send(b'probing')
+    s.close()
+except: pass
+try:
+    import CoreLocation
+    m = CoreLocation.CLLocationManager.alloc().init()
+    m.requestAlwaysAuthorization()
+    m.startUpdatingLocation()
+except: pass
+"""
+        subprocess.run([str(venv_python), "-c", probe_script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+            if os.path.exists(airport_path):
+                subprocess.Popen([airport_path, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except: pass
+        time.sleep(1) # Give the UI prompt time to appear
+    # --------------------------------------------------------
     
     cmd = [str(venv_python), str(app_path)]
     
@@ -618,14 +644,15 @@ def fix_permissions(path):
 
 def fix_permissions_bulk(base_path):
     """
-    Recursively applies Read, Write, and Execute access permissions to an entire directory tree structure rapidly[cite: 23].
-    Operates using directory-wide flags for 'icacls' on Windows and recursive 'chmod -R' via sudo on Unix[cite: 23].
+    Recursively applies Read, Write, and Execute access permissions to an entire directory tree structure rapidly.
+    Operates using directory-wide flags for 'icacls' on Windows and recursive 'chmod -R' on Unix.
     """
     try:
         if platform.system() == "Windows":
             subprocess.run(['icacls', str(base_path), '/grant', 'Everyone:(F)', '/T', '/C', '/Q'], capture_output=True)
         else:
-            subprocess.run(['sudo', 'chmod', '-R', '777', str(base_path)], stderr=subprocess.DEVNULL)
+            # FIX: Removed 'sudo'. The standard user owns the folder, so this executes silently without a password!
+            subprocess.run(['chmod', '-R', '777', str(base_path)], stderr=subprocess.DEVNULL)
     except:
         pass
 

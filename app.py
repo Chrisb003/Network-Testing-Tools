@@ -170,7 +170,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -5484,18 +5484,6 @@ def is_headless_mode():
 if __name__ == '__main__':
     # --- 1. Catch boot loops before doing anything else ---
     manage_boot_counter()
-
-    request_macos_permissions()
-
-    if platform.system() == "Darwin":
-        try:
-            import CoreLocation
-            loc_manager = CoreLocation.CLLocationManager.alloc().init()
-            loc_manager.requestAlwaysAuthorization()
-            loc_manager.startUpdatingLocation()
-            print("[*] CoreLocation authorization requested.")
-        except Exception as e:
-            print(f"[!] CoreLocation initialization failed: {e}")
 
     # Disable Wi-Fi Power Management on Linux/Raspberry Pi for stable scanning
     if platform.system() == "Linux":
