@@ -17,6 +17,14 @@ from pathlib import Path
 import sqlite3
 from datetime import datetime, timedelta
 
+# --- NEW: Fix for SSL Certificate Verify Errors ---
+import ssl
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+# ------------------------------------------------
+
 # --- Configuration ---
 SETUP_VERSION = "1.0.1"
 VENV_DIR_NAME = "venv"
