@@ -33,6 +33,14 @@ from werkzeug.security import generate_password_hash, check_password_hash
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
+# --- NEW: Fix for SSL Certificate Verify Errors ---
+import ssl
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+# ------------------------------------------------
+
 # ==========================================
 # PERMISSION ENGINE
 # ==========================================
