@@ -5485,6 +5485,8 @@ if __name__ == '__main__':
     # --- 1. Catch boot loops before doing anything else ---
     manage_boot_counter()
 
+    request_macos_permissions()
+
     if platform.system() == "Darwin":
         try:
             import CoreLocation
