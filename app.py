@@ -118,6 +118,10 @@ def setup_file_logging():
             except Exception: pass
             
         def write(self, text):
+            # --- NEW: Ignore harmless macOS kernel threading warnings ---
+            if "Task policy set failed" in text:
+                return
+            # ------------------------------------------------------------
             # Always print to the live terminal so the user can see startup banners
             try:
                 self.terminal.write(text)
@@ -166,7 +170,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.4"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -3194,6 +3198,13 @@ def get_wifi_networks():
         # ==========================================
         if sys_plat == "Darwin":
             try:
+                try:
+                    import CoreLocation
+                    loc_manager = CoreLocation.CLLocationManager.alloc().init()
+                    loc_manager.requestWhenInUseAuthorization()
+                except Exception as e:
+                    print(f"CoreLocation trigger error: {e}")
+                    
                 import CoreWLAN
                 
                 for target_iface in target_ifaces:
@@ -5480,16 +5491,6 @@ def is_headless_mode():
 if __name__ == '__main__':
     # --- 1. Catch boot loops before doing anything else ---
     manage_boot_counter()
-
-    if platform.system() == "Darwin":
-        try:
-            import CoreLocation
-            loc_manager = CoreLocation.CLLocationManager.alloc().init()
-            loc_manager.requestAlwaysAuthorization()
-            loc_manager.startUpdatingLocation()
-            print("[*] CoreLocation authorization requested.")
-        except Exception as e:
-            print(f"[!] CoreLocation initialization failed: {e}")
 
     # Disable Wi-Fi Power Management on Linux/Raspberry Pi for stable scanning
     if platform.system() == "Linux":

@@ -26,7 +26,7 @@ except AttributeError:
 # ------------------------------------------------
 
 # --- Configuration ---
-SETUP_VERSION = "1.0.1"
+SETUP_VERSION = "1.0.2"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pystray", "Pillow"]
@@ -504,22 +504,51 @@ def install_npcap_windows():
 
 def run_application(base_dir, venv_python):
     """
-    The main supervisor loop that handles launching the dashboard application[cite: 23].
+    The main supervisor loop that handles launching the dashboard application.
     It automatically forces the cleanup of stale processes blocking the web port, opens the browser upon successful boot, 
-    catches application crashes, and safely handles intentional shutdown signals from the UI[cite: 23].
+    catches application crashes, and safely handles intentional shutdown signals from the UI.
     """
     app_path = base_dir / APP_FILENAME
     print("\n" + "="*60)
     print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
     print("="*60)
     
+    # --- NEW: Trigger macOS Permissions as Standard User BEFORE Sudo ---
+    if platform.system() == "Darwin":
+        print("[*] Probing macOS Network & Location permissions...")
+        try:
+            # 1. Trigger Local Network Prompt
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            s.send(b"probing-local-network")
+            s.close()
+        except: pass
+
+        try:
+            # 2. Trigger Location Prompt via Native Framework
+            import CoreLocation
+            loc_manager = CoreLocation.CLLocationManager.alloc().init()
+            loc_manager.requestAlwaysAuthorization()
+            loc_manager.startUpdatingLocation()
+        except: pass
+
+        try:
+            # 3. Fallback Wi-Fi trigger
+            airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+            if os.path.exists(airport_path):
+                subprocess.Popen([airport_path, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except: pass
+        
+        time.sleep(1.5) # Give the UI prompt time to appear on screen
+    # -------------------------------------------------------------------
+
     cmd = [str(venv_python), str(app_path)]
     
-    # On Linux/Mac, we need sudo for Scapy to read ARP tables
-    if platform.system() != "Windows" and not is_admin():
+    # Only use sudo on Linux, bypass for macOS to allow CoreLocation prompts
+    if platform.system() == "Linux" and not is_admin():
         print("[*] Elevating privileges for network scanning...")
         cmd = ["sudo"] + cmd
-        
+            
     first_launch = True
     
     try:
@@ -618,48 +647,17 @@ def fix_permissions(path):
 
 def fix_permissions_bulk(base_path):
     """
-    Recursively applies Read, Write, and Execute access permissions to an entire directory tree structure rapidly[cite: 23].
-    Operates using directory-wide flags for 'icacls' on Windows and recursive 'chmod -R' via sudo on Unix[cite: 23].
+    Recursively applies Read, Write, and Execute access permissions to an entire directory tree structure rapidly.
+    Operates using directory-wide flags for 'icacls' on Windows and recursive 'chmod -R' on Unix.
     """
     try:
         if platform.system() == "Windows":
             subprocess.run(['icacls', str(base_path), '/grant', 'Everyone:(F)', '/T', '/C', '/Q'], capture_output=True)
         else:
-            subprocess.run(['sudo', 'chmod', '-R', '777', str(base_path)], stderr=subprocess.DEVNULL)
+            # FIX: Removed 'sudo'. The standard user owns the folder, so this executes silently without a password!
+            subprocess.run(['chmod', '-R', '777', str(base_path)], stderr=subprocess.DEVNULL)
     except:
         pass
-
-def install_chocolatey():
-    """
-    Checks for the Chocolatey package manager on Windows systems and installs it seamlessly via PowerShell if missing[cite: 23].
-    Injects the newly installed binary into the current Python runtime environment path to allow immediate use[cite: 23].
-    """
-    if platform.system() != "Windows":
-        return True
-        
-    if shutil.which("choco"):
-        return True
-        
-    print("[*] Chocolatey not found. Installing Chocolatey...")
-    try:
-        # Standard Chocolatey PowerShell installation command
-        ps_command = (
-            "Set-ExecutionPolicy Bypass -Scope Process -Force; "
-            "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; "
-            "iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))"
-        )
-        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_command], check=True)
-        
-        # Add Chocolatey bin to the current Python process PATH so it can be used immediately
-        choco_path = os.path.join(os.environ.get('ALLUSERSPROFILE', 'C:\\ProgramData'), 'chocolatey', 'bin')
-        if choco_path not in os.environ["PATH"]:
-            os.environ["PATH"] = choco_path + os.pathsep + os.environ["PATH"]
-            
-        print("[✓] Chocolatey successfully installed.")
-        return True
-    except Exception as e:
-        print(f"[X] Failed to install Chocolatey: {e}")
-        return False
 
 def has_internet():
     """

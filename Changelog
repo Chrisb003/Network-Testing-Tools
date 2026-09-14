@@ -1,4 +1,10 @@
 # Changelog
+## [1.0.4] - Mac OS permisions fixes
+* Mac OS permisions fixes
+
+## [1.0.3] - Update fixes
+* Hide mac specific error in log. This error is not helpful so it has been hidden.
+
 ## [1.0.2] - Update fixes
 * Change log display is now more readable.
 * Fix for update mechanism now that the github is public.
