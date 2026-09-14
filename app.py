@@ -158,7 +158,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 # Chrome, Firefox, and Edge restricted ports
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -4090,8 +4090,8 @@ def fetch_github_file(filename):
     """Fetches raw file content from GitHub, bypassing API rate limits for public repos."""
     gh_set = get_github_settings()
     
-    # Use raw.githubusercontent to completely bypass the 60 req/hr API limit!
-    url = f"https://raw.githubusercontent.com/{gh_set['owner']}/{gh_set['repo']}/{gh_set['branch']}/{filename}"
+    # FIXED URL: Added 'refs/heads/' which is required for raw content routing on GitHub
+    url = f"https://raw.githubusercontent.com/{gh_set['owner']}/{gh_set['repo']}/refs/heads/{gh_set['branch']}/{filename}"
     req = urllib.request.Request(url)
     
     req.add_header("User-Agent", "Network-Diagnostics-App")
@@ -4102,9 +4102,9 @@ def fetch_github_file(filename):
         
     try:
         with urllib.request.urlopen(req) as response:
-            # Raw URL returns plain text directly, no base64 decoding needed!
             return response.read().decode('utf-8')
-    except: 
+    except Exception as e:
+        print(f"[!] GitHub Fetch Error ({filename}): {e}")
         return None
     
 @app.route('/api/update/check')

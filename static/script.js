@@ -3609,7 +3609,56 @@ function openUpdateModal() {
         })
         .then(r => r.json())
         .then(d => { 
-            cl.innerText = d.changelog || "No release notes available for this version."; 
+            if (!d.changelog) {
+                cl.innerText = "No release notes available for this version.";
+                return;
+            }
+            
+            // Parse the Markdown changelog by splitting at version headers
+            const parts = d.changelog.split(/(?=## \[)/); 
+            let header = "";
+            let releases = [];
+            
+            parts.forEach(part => {
+                if (part.trim().startsWith("# Changelog")) {
+                    header = part.trim() + "\n\n";
+                } else if (part.trim().startsWith("## [")) {
+                    releases.push(part.trim());
+                }
+            });
+            
+            if (releases.length > 0) {
+                const latest = releases[0];
+                const older = releases.slice(1).join('\n\n');
+                
+                cl.innerHTML = ""; // Clear fetching text
+                
+                // Inject the newest release
+                const latestDiv = document.createElement("div");
+                latestDiv.textContent = header + latest;
+                cl.appendChild(latestDiv);
+                
+                // Hide older releases inside an expandable accordion
+                if (older.length > 0) {
+                    const details = document.createElement("details");
+                    details.className = "mt-3";
+                    details.style.cursor = "pointer";
+                    
+                    const summary = document.createElement("summary");
+                    summary.className = "fw-bold text-primary mb-2";
+                    summary.textContent = "View Previous Versions";
+                    
+                    const olderDiv = document.createElement("div");
+                    olderDiv.className = "mt-2 pt-3 border-top border-secondary-subtle";
+                    olderDiv.textContent = older;
+                    
+                    details.appendChild(summary);
+                    details.appendChild(olderDiv);
+                    cl.appendChild(details);
+                }
+            } else {
+                cl.innerText = d.changelog; // Fallback
+            }
         })
         .catch(err => {
             msg.className = "alert alert-danger";
