@@ -18,7 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- Configuration ---
-SETUP_VERSION = "1.0.0"
+SETUP_VERSION = "1.0.1"
 VENV_DIR_NAME = "venv"
 
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pystray", "Pillow"]
@@ -280,18 +280,24 @@ def ensure_linux_prerequisites():
 
 def fetch_latest_from_github(base_dir):
     """
-    Downloads the latest zipped release directly from the GitHub REST API and extracts it[cite: 23].
-    Utilizes authorization headers for private repository access and explicitly sets folder/file permissions[cite: 23].
+    Downloads the latest zipped release directly from the GitHub REST API and extracts it.
+    Utilizes authorization headers for private repository access and explicitly sets folder/file permissions.
     """
-    print(f"[*] '{APP_FILENAME}' not found. Initializing private download from GitHub...")
+    print(f"[*] '{APP_FILENAME}' not found. Initializing download from GitHub...")
     
     # Use the dynamic settings instead of hardcoding
     gh_set = get_active_github_settings(base_dir)
     
     zip_url = f"https://api.github.com/repos/{gh_set['owner']}/{gh_set['repo']}/zipball/{gh_set['branch']}"
     req = urllib.request.Request(zip_url)
-    req.add_header("Authorization", f"token {gh_set['token']}")
+    
+    # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
+    req.add_header("User-Agent", "Network-Diagnostics-Setup")
     req.add_header("Accept", "application/vnd.github.v3+json")
+    
+    # NEW: Only attach the Authorization header if the token actually exists
+    if gh_set.get('token'):
+        req.add_header("Authorization", f"token {gh_set['token']}")
     
     try:
         print(f"[*] Authorizing and fetching: {gh_set['repo']}...")
@@ -761,9 +767,13 @@ def main():
         print(f"[*] Downloading latest production release from {prod_config['repo']} ({prod_config['branch']})...")
         zip_url = f"https://api.github.com/repos/{prod_config['owner']}/{prod_config['repo']}/zipball/{prod_config['branch']}"
         req = urllib.request.Request(zip_url)
+        
+        # NEW: Required headers to prevent GitHub from blocking unauthenticated public requests
+        req.add_header("User-Agent", "Network-Diagnostics-Setup")
+        req.add_header("Accept", "application/vnd.github.v3+json")
+        
         if prod_config.get('token'):
             req.add_header("Authorization", f"token {prod_config['token']}")
-        req.add_header("Accept", "application/vnd.github.v3+json")
         
         try:
             with urllib.request.urlopen(req) as response:
