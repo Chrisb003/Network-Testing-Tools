@@ -1,5 +1,5 @@
 # Changelog
-## [1.0.1] - Official Public Release
+## [1.0.1] - Update and tool tip fixes
 * Small bug fix releated to tool tips getting stuck on page during network scan.
 * Fix for update mechanism now that the github is public.
 
