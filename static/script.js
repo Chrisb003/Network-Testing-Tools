@@ -3539,6 +3539,54 @@ function isVersionHigher(v1, v2) {
 }
 
 /**
+ * Custom Parser to convert markdown text into structured JSON objects.
+ * Separates the version number, optional title, and bullet points.
+ */
+function parseChangelogText(rawText) {
+    const lines = rawText.split('\n');
+    const releases = [];
+    let currentRelease = null;
+
+    const versionRegex = /^##\s*\[(.*?)\](?:\s*-\s*(.*))?/;
+
+    for (let line of lines) {
+        line = line.trim();
+        if (!line || line === '# Changelog') continue;
+
+        const match = line.match(versionRegex);
+        
+        if (match) {
+            if (currentRelease) releases.push(currentRelease);
+            currentRelease = {
+                version: match[1],
+                title: match[2] ? match[2].trim() : '',
+                notes: []
+            };
+        } else if (currentRelease) {
+            let cleanLine = line.replace(/^[\*\-]\s*/, '').trim();
+            if (cleanLine) {
+                currentRelease.notes.push(cleanLine);
+            }
+        }
+    }
+    if (currentRelease) releases.push(currentRelease);
+    return releases;
+}
+
+/**
+ * Formats an array of release notes into an HTML unordered list.
+ */
+function formatNotesToHTML(notesArray) {
+    if (notesArray.length === 0) return '<p class="text-muted mb-0">No notes provided.</p>';
+    let html = '<ul class="mb-0 ps-3">';
+    notesArray.forEach(note => {
+        html += `<li class="mb-1">${note}</li>`;
+    });
+    html += '</ul>';
+    return html;
+}
+
+/**
  * Opens the System Update modal, fetches dynamic release notes from the GitHub Changelog, 
  * and configures the UI based on whether a channel switch or standard update is required.
  * Includes a safeguard to prevent updating if the target branch does not exist.
@@ -3610,54 +3658,59 @@ function openUpdateModal() {
         .then(r => r.json())
         .then(d => { 
             if (!d.changelog) {
-                cl.innerText = "No release notes available for this version.";
+                cl.innerHTML = '<p class="text-muted mb-0">No release notes available for this version.</p>';
                 return;
             }
             
-            // Parse the Markdown changelog by splitting at version headers
-            const parts = d.changelog.split(/(?=## \[)/); 
-            let header = "";
-            let releases = [];
+            const releases = parseChangelogText(d.changelog);
+            if (releases.length === 0) {
+                cl.innerText = d.changelog;
+                return;
+            }
+
+            cl.innerHTML = ""; // Clear fetching text
+
+            // --- 1. Render Latest Release (Index 0) ---
+            const latest = releases[0];
+            const latestTitleDisplay = latest.title ? `<span class="fw-normal text-muted">- ${escapeHTML(latest.title)}</span>` : '';
             
-            parts.forEach(part => {
-                if (part.trim().startsWith("# Changelog")) {
-                    header = part.trim() + "\n\n";
-                } else if (part.trim().startsWith("## [")) {
-                    releases.push(part.trim());
+            const latestHtml = `
+                <div class="card border-success mb-3">
+                    <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center py-2 px-3">
+                        <h6 class="mb-0 fw-bold text-success">
+                            <i class="bi bi-star-fill me-1"></i> Version ${escapeHTML(latest.version)} ${latestTitleDisplay}
+                        </h6>
+                        <span class="badge bg-success rounded-pill">Latest</span>
+                    </div>
+                    <div class="card-body py-2 px-3">
+                        ${formatNotesToHTML(latest.notes)}
+                    </div>
+                </div>
+            `;
+            cl.insertAdjacentHTML('beforeend', latestHtml);
+
+            // --- 2. Render Older Releases (Index 1 to End) ---
+            if (releases.length > 1) {
+                let olderHtml = `
+                    <details class="mt-3">
+                        <summary class="fw-bold text-primary mb-2" style="cursor: pointer;">View Previous Versions</summary>
+                        <div class="pt-2 border-top border-secondary-subtle">
+                `;
+
+                for (let i = 1; i < releases.length; i++) {
+                    const release = releases[i];
+                    const titleDisplay = release.title ? `<span class="fw-normal text-muted">- ${escapeHTML(release.title)}</span>` : '';
+                    
+                    olderHtml += `
+                        <div class="mb-3">
+                            <div class="fw-bold text-body mb-1">Version ${escapeHTML(release.version)} ${titleDisplay}</div>
+                            ${formatNotesToHTML(release.notes)}
+                        </div>
+                    `;
                 }
-            });
-            
-            if (releases.length > 0) {
-                const latest = releases[0];
-                const older = releases.slice(1).join('\n\n');
-                
-                cl.innerHTML = ""; // Clear fetching text
-                
-                // Inject the newest release
-                const latestDiv = document.createElement("div");
-                latestDiv.textContent = header + latest;
-                cl.appendChild(latestDiv);
-                
-                // Hide older releases inside an expandable accordion
-                if (older.length > 0) {
-                    const details = document.createElement("details");
-                    details.className = "mt-3";
-                    details.style.cursor = "pointer";
-                    
-                    const summary = document.createElement("summary");
-                    summary.className = "fw-bold text-primary mb-2";
-                    summary.textContent = "View Previous Versions";
-                    
-                    const olderDiv = document.createElement("div");
-                    olderDiv.className = "mt-2 pt-3 border-top border-secondary-subtle";
-                    olderDiv.textContent = older;
-                    
-                    details.appendChild(summary);
-                    details.appendChild(olderDiv);
-                    cl.appendChild(details);
-                }
-            } else {
-                cl.innerText = d.changelog; // Fallback
+
+                olderHtml += `</div></details>`;
+                cl.insertAdjacentHTML('beforeend', olderHtml);
             }
         })
         .catch(err => {

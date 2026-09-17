@@ -1,3 +1,9 @@
+"""
+Network Diagnostics Dashboard - Main Application
+Handles the Flask web server, background network scanning (Scapy), device discovery,
+database management (SQLite), and OS-level network interactions across Windows, macOS, and Linux.
+"""
+
 import time
 import psutil
 import socket
@@ -30,10 +36,13 @@ import filecmp
 from flask import stream_with_context
 from concurrent.futures import as_completed
 from werkzeug.security import generate_password_hash, check_password_hash
+
+# Silence Scapy's default startup warnings about missing routes or IPv6
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 conf.verb = 0
 
 # --- NEW: Fix for SSL Certificate Verify Errors ---
+# Prevents urllib from crashing on systems with outdated root certificate stores
 import ssl
 try:
     ssl._create_default_https_context = ssl._create_unverified_context
@@ -45,12 +54,21 @@ except AttributeError:
 # PERMISSION ENGINE
 # ==========================================
 def fix_permissions(path):
-    """Sets path to full Read/Write/Execute for all users."""
+    """
+    Sets the specified path to full Read/Write/Execute permissions for all users (777).
+    Crucial for allowing standard UI interaction (like deleting logs/backups) with files 
+    created by the root/admin background service.
+    """
     try:
         if platform.system() == "Windows":
             subprocess.run(['icacls', str(path), '/grant', 'Everyone:(F)'], capture_output=True)
         else:
-            subprocess.run(['sudo', 'chmod', '777', str(path)], stderr=subprocess.DEVNULL)
+            # 1. Try native Python chmod first (Lightning fast, perfect if app is already root)
+            try:
+                os.chmod(path, 0o777)
+            except PermissionError:
+                # 2. Fallback to sudo if a standard user process needs to override an old root file
+                subprocess.run(['sudo', 'chmod', '777', str(path)], stderr=subprocess.DEVNULL)
         return True
     except:
         return False
@@ -63,16 +81,18 @@ def setup_file_logging():
     Initializes a custom logging engine that mirrors terminal output (stdout/stderr) directly into daily log files.
     - Manages log rotation (automatically deletes logs older than 7 days).
     - Dynamically reads the SQLite database to apply the user's logging preferences (Full vs Errors Only vs Disabled).
-    - Hooks into Flask and Waitress internal loggers to capture web server events.
+    - Hooks into Flask and Waitress internal loggers to capture web server HTTP events.
     """
     import glob
     from datetime import timedelta
     
     base_dir = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.join(base_dir, 'logs')
+    
+    # Ensure the logs directory exists and is accessible
     try:
         os.makedirs(log_dir, exist_ok=True)
-        fix_permissions(log_dir) # Force OS-level permissions so non-admins can read the folder
+        fix_permissions(log_dir) 
     except: pass
 
     # 1. Automated Log Rotation: Clean up logs older than 7 days to prevent disk bloat
@@ -102,7 +122,7 @@ def setup_file_logging():
         os.environ["APP_FULL_LOGGING"] = "1" if full_log else "0"
         os.environ["APP_DISABLE_ALL_LOGS"] = "1" if disable_logs else "0"
 
-    # 3. Create a uniquely timestamped log file for this specific session
+    # 3. Create a uniquely timestamped log file for this specific session execution
     timestamp = os.environ.get("APP_LOG_TIME", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     log_path = os.path.join(log_dir, f"system_run_{timestamp}.log")
 
@@ -118,10 +138,10 @@ def setup_file_logging():
             except Exception: pass
             
         def write(self, text):
-            # --- NEW: Ignore harmless macOS kernel threading warnings ---
+            # Ignore harmless macOS kernel threading warnings that spam the console
             if "Task policy set failed" in text:
                 return
-            # ------------------------------------------------------------
+            
             # Always print to the live terminal so the user can see startup banners
             try:
                 self.terminal.write(text)
@@ -141,7 +161,7 @@ def setup_file_logging():
                 if is_full or is_error:
                     try:
                         self.file.write(text)
-                        self.file.flush() # Flush immediately so logs survive unexpected crashes
+                        self.file.flush() # Flush immediately so logs survive unexpected power losses/crashes
                     except: pass
                 
         def flush(self):
@@ -151,7 +171,7 @@ def setup_file_logging():
                 try: self.file.flush()
                 except: pass
 
-    # Override standard Python outputs
+    # Override standard Python outputs to route through our custom TeeLogger
     original_stdout = sys.stdout
     original_stderr = sys.stderr
     custom_logger_out = TeeLogger(log_path, original_stdout, is_stderr=False)
@@ -172,12 +192,14 @@ setup_file_logging()
 # --- Configuration ---
 APP_VERSION = "1.0.4"
 
-# Chrome, Firefox, and Edge restricted ports
+# Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
 
-
 def get_global_version():
-    """Reads the current global version from local version.json."""
+    """
+    Reads the current global version from the local 'version.json' file.
+    Fails safely by returning '0.0.0' or 'Error' if the file is missing or corrupted.
+    """
     try:
         if os.path.exists("version.json"):
             with open("version.json", "r") as f:
@@ -186,7 +208,7 @@ def get_global_version():
     except:
         return "Error"
 
-# Unified Global Database
+# Unified Global Database filename
 DB_NAME = "network_data.db"
 
 app = Flask(__name__)
@@ -195,7 +217,10 @@ app = Flask(__name__)
 ALERTS_FILE = "system_alerts.json"
 
 def add_system_alert(message):
-    """Saves a system alert to be displayed on the web dashboard and prints to terminal."""
+    """
+    Saves a system alert string to a JSON file to be displayed persistently on the web dashboard.
+    Also prints the alert to the terminal logs.
+    """
     print(f"\n[*] SYSTEM ALERT: {message}\n")
     alerts = []
     try:
@@ -210,7 +235,10 @@ def add_system_alert(message):
         print(f"[!] Failed to save system alert: {e}")
 
 def check_db_integrity():
-    """Checks if the SQLite database is malformed or corrupted."""
+    """
+    Executes SQLite's internal integrity check PRAGMA to detect malformed or corrupted database files.
+    Returns True if the DB is healthy or doesn't exist yet, False if it is corrupted.
+    """
     if not os.path.exists(DB_NAME): return True
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
@@ -224,7 +252,10 @@ def check_db_integrity():
         return False
 
 def check_db_size():
-    """Checks if the DB is over 100MB and warns the user."""
+    """
+    Calculates the physical size of the SQLite database.
+    If it exceeds 100MB, it triggers a UI alert suggesting the user perform database maintenance.
+    """
     try:
         if os.path.exists(DB_NAME):
             size_mb = os.path.getsize(DB_NAME) / (1024 * 1024)
@@ -234,7 +265,11 @@ def check_db_size():
         print(f"[*] Could not check DB size: {e}")
 
 def get_safe_channel():
-    """Reads the update channel safely and sanitizes it for safe file naming."""
+    """
+    Reads the user's selected software update channel (e.g., 'stable' or 'dev') from the DB.
+    Strips out any invalid characters to ensure the channel name can be safely used in backup filenames.
+    Returns 'stable' as a default fallback.
+    """
     try:
         if os.path.exists(DB_NAME):
             with sqlite3.connect(DB_NAME, timeout=2.0) as conn:
@@ -247,13 +282,18 @@ def get_safe_channel():
     return 'stable'
 
 def is_version_compatible(backup_ver, current_ver):
-    """Compares semantic versions. Returns True if backup_ver <= current_ver."""
+    """
+    Compares semantic version strings (e.g., '1.0.4' vs '1.1.0').
+    Returns True if the backup version is older than or equal to the current version,
+    ensuring we do not accidentally restore a database schema built by a future app version.
+    """
     def parse_ver(v):
         return [int(x) for x in re.sub(r'[^\d.]', '', str(v)).split('.') if x]
     
     b_parts = parse_ver(backup_ver)
     c_parts = parse_ver(current_ver)
     
+    # Pad arrays with 0s to compare varying lengths (e.g., 1.0 vs 1.0.1)
     for i in range(max(len(b_parts), len(c_parts))):
         b = b_parts[i] if i < len(b_parts) else 0
         c = c_parts[i] if i < len(c_parts) else 0
@@ -262,25 +302,36 @@ def is_version_compatible(backup_ver, current_ver):
     return True
 
 def get_safe_filename(name):
-    """Strips Windows/Mac/Linux invalid file path characters from a string."""
+    """
+    Sanitizes user input (like custom network names) to create valid OS file paths.
+    Strips Windows/Mac/Linux invalid path characters (\ / * ? : " < > |) and replaces spaces.
+    """
     if not name: return "Unknown"
-    # Removes \ / * ? : " < > | and replaces spaces with underscores
     safe = re.sub(r'[\\/*?:"<>|]', '', str(name)).replace(" ", "_")
     return safe if safe else "Export"
 
 def manage_backup_rotation(category, max_count):
-    """Sorts backups by category prefix and enforces strict quotas."""
+    """
+    Scans the backups directory, groups backups by their prefix category (e.g., 'startup' or 'routine'),
+    sorts them by modification date, and deletes the oldest files to enforce the max_count quota.
+    """
     backup_dir = os.path.join(app.root_path, 'backups')
     os.makedirs(backup_dir, exist_ok=True)
     files = [os.path.join(backup_dir, f) for f in os.listdir(backup_dir) if category in f and f.endswith('.back')]
+    
+    # Sort files from newest to oldest
     files.sort(key=os.path.getmtime, reverse=True) 
     
+    # Delete any files extending past the maximum allowed count
     for f in files[max_count:]:
         try: os.remove(f)
         except: pass
 
 def get_newest_backup():
-    """Returns the path to the absolute newest backup file across all categories."""
+    """
+    Scans the entire backups directory and returns the absolute file path of the most recently modified backup.
+    Ignores temporary snapshot files.
+    """
     backup_dir = os.path.join(app.root_path, 'backups')
     if not os.path.exists(backup_dir): return None
     
@@ -289,13 +340,19 @@ def get_newest_backup():
     return max(files, key=os.path.getmtime)
 
 def execute_backup(prefix, max_count, force=False):
-    """Takes a snapshot of the database. Skips if identical to newest backup."""
+    """
+    Executes a live snapshot of the SQLite database.
+    - Creates a temporary clone of the active database using SQLite's native backup API.
+    - Compares the clone to the most recent backup. If identical and force=False, discards the clone to save space.
+    - Renames the clone with a detailed timestamp and version signature, and enforces rotation quotas.
+    """
     if not os.path.exists(DB_NAME) or not check_db_integrity(): return None
     
     backup_dir = os.path.join(app.root_path, 'backups')
     os.makedirs(backup_dir, exist_ok=True)
     temp_backup = os.path.join(backup_dir, "temp_snapshot.back")
     
+    # Safely clone the live database while avoiding file lock collisions
     try:
         with sqlite3.connect(DB_NAME, timeout=10) as source:
             with sqlite3.connect(temp_backup) as dest:
@@ -307,10 +364,12 @@ def execute_backup(prefix, max_count, force=False):
             except: pass
         return None
 
+    # Check if the data has actually changed since the last backup
     if not force:
         newest_existing = get_newest_backup()
         if newest_existing and os.path.exists(newest_existing):
             try:
+                # filecmp checks physical file bytes; if identical, we don't need a new backup
                 if filecmp.cmp(temp_backup, newest_existing, shallow=False):
                     os.remove(temp_backup)
                     print(f"[*] No new data since last backup. Skipping {prefix} backup.")
@@ -321,15 +380,15 @@ def execute_backup(prefix, max_count, force=False):
     channel = get_safe_channel()
     ts = int(time.time())
     
-    # OS-Agnostic Safe Naming
+    # OS-Agnostic Safe Naming Scheme
     final_name = os.path.join(backup_dir, f"network_data_{prefix}_{channel}_v{APP_VERSION}_{ts}.back")
     
     try:
-        # CHANGED: os.replace is safer than os.rename on Windows (prevents FileExistsError)
+        # os.replace is safer than os.rename on Windows (prevents FileExistsError)
         os.replace(temp_backup, final_name)
         fix_permissions(final_name) # Force permissions on the newly created backup file
         print(f"[*] Database backup created: {os.path.basename(final_name)}")
-        manage_backup_rotation(prefix, max_count)
+        manage_backup_rotation(prefix, max_count) # Apply quota pruning
         return final_name
     except Exception as e:
         if os.path.exists(temp_backup): 
@@ -338,19 +397,27 @@ def execute_backup(prefix, max_count, force=False):
         return None
 
 def perform_startup_backup():
+    """
+    Wrapper function triggered during application boot.
+    Creates a routine snapshot labeled 'startup_good' and keeps the last 10 boots.
+    """
     execute_backup("startup_good", 10, force=False)
 
 def schedule_routine_backups():
-    """Runs a silent background thread that creates a backup every 7 days if the app is left open."""
+    """
+    Spawns a silent background thread that creates a backup every 7 days.
+    Ensures backups continue even if the application is left running indefinitely on a dedicated host.
+    """
     def backup_loop():
         while True:
-            time.sleep(86400) # Sleep 24 hours
+            time.sleep(86400) # Sleep exactly 24 hours
             newest = get_newest_backup()
             should_backup = False
             
             if not newest:
                 should_backup = True
             else:
+                # Check if the newest backup is older than 7 days
                 if time.time() - os.path.getmtime(newest) >= 7 * 86400:
                     should_backup = True
                     
@@ -362,14 +429,19 @@ def schedule_routine_backups():
     t.start()
 
 def init_db():
-    """Initializes the database, handles automatic backup recovery, and runs migrations."""
+    """
+    The core database bootloader. Handles three primary tasks:
+    1. Automatic Database Recovery: If corruption is detected, wipes the broken DB and restores the newest compatible backup.
+    2. Initialization: Executes all CREATE TABLE IF NOT EXISTS statements.
+    3. Live Migration: Scans tables for missing columns (added in updates) and dynamically alters schemas.
+    """
     # --- 1. CORRUPTION & AUTO-RECOVERY SYSTEM ---
     if not check_db_integrity():
         print("\n[!] DATABASE CORRUPTION DETECTED! Initiating emergency recovery...")
         backup_dir = os.path.join(app.root_path, 'backups')
         os.makedirs(backup_dir, exist_ok=True)
         
-        # A. Save the corrupted DB to the error rotation
+        # A. Save the corrupted DB to the error rotation for forensic inspection
         channel = get_safe_channel()
         ts = int(time.time())
         corrupt_name = os.path.join(backup_dir, f"network_data_error_{channel}_v{APP_VERSION}_{ts}.back")
@@ -378,14 +450,14 @@ def init_db():
             manage_backup_rotation("error_", 2)
         except: pass
         
-        # B. Safely wipe the broken database files
+        # B. Safely wipe the broken database files (including WAL and SHM temp files)
         for ext in ["", "-wal", "-shm"]:
             temp_file = f"{DB_NAME}{ext}"
             if os.path.exists(temp_file): 
                 try: os.remove(temp_file)
                 except: pass
                 
-        # C. Find valid restore candidates (Must be "good" and Compatible)
+        # C. Find valid restore candidates (Must be marked "good" and be version-compatible)
         candidates = []
         if os.path.exists(backup_dir):
             for f in os.listdir(backup_dir):
@@ -395,7 +467,7 @@ def init_db():
                     if match and is_version_compatible(match.group(1), APP_VERSION):
                         candidates.append(file_path)
         
-        # D. Restore the newest valid backup or start fresh
+        # D. Restore the newest valid backup, or start fresh if none exist
         if candidates:
             best_backup = max(candidates, key=os.path.getmtime)
             best_name = os.path.basename(best_backup)
@@ -419,6 +491,8 @@ def init_db():
     # --- 3. TABLE CREATION ---
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         c = conn.cursor()
+        
+        # Enable Write-Ahead Logging (WAL) for significantly faster concurrent read/writes
         c.execute("PRAGMA journal_mode=WAL;") 
         c.execute("PRAGMA busy_timeout = 5000;")
         
@@ -465,6 +539,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS connection_types (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
         
+        # Seed default connection types if the table is empty
         c.execute("SELECT COUNT(*) FROM connection_types")
         if c.fetchone()[0] == 0:
             for t in ["Ethernet", "Wi-Fi", "Mobile data"]:
@@ -472,7 +547,9 @@ def init_db():
 
         c.execute('''CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)''')
         c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('update_channel', 'stable')")
+        
         c.execute('''CREATE TABLE IF NOT EXISTS protected_wifi_ssids (ssid TEXT PRIMARY KEY)''')
+        
         c.execute('''CREATE TABLE IF NOT EXISTS device_scans (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         mac_address TEXT, network_id INTEGER, 
@@ -480,6 +557,7 @@ def init_db():
                         timestamp TEXT)''')
         
         # --- 4. DATA MIGRATIONS ---
+        # Detect legacy schema and migrate 'networks' table to support identical Gateways with different IPs (VLANs)
         try:
             c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='networks'")
             row = c.fetchone()
@@ -493,6 +571,7 @@ def init_db():
 
         c.execute('''CREATE TABLE IF NOT EXISTS global_device_vendors (mac_address TEXT PRIMARY KEY, custom_vendor TEXT)''')
 
+        # Safely attempt to add new columns from recent updates. Ignores OperationalError if they already exist.
         for col in ["isp TEXT", "connection_type TEXT", "device_ip TEXT"]:
             try: c.execute(f"ALTER TABLE history ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
@@ -510,16 +589,6 @@ def init_db():
             try: c.execute(f"ALTER TABLE {table} ADD COLUMN is_protected INTEGER DEFAULT 0")
             except sqlite3.OperationalError: pass
 
-        # --- UPDATED: New snapshot columns added below ---
-        for col in ["previous_ip TEXT", "discovery_status TEXT DEFAULT 'New Device'", "vendor TEXT", "custom_vendor TEXT", "last_network_name TEXT"]:
-            try: c.execute(f"ALTER TABLE devices ADD COLUMN {col}")
-            except sqlite3.OperationalError: pass
-
-        for col in ["network_name TEXT"]:
-            try: c.execute(f"ALTER TABLE device_scans ADD COLUMN {col}")
-            except sqlite3.OperationalError: pass
-
-        # --- UPDATED: New snapshot columns added below ---
         for col in ["previous_ip TEXT", "discovery_status TEXT DEFAULT 'New Device'", "vendor TEXT", "custom_vendor TEXT", "last_network_name TEXT"]:
             try: c.execute(f"ALTER TABLE devices ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
@@ -532,12 +601,6 @@ def init_db():
             try: c.execute(f"ALTER TABLE wifi_history ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
 
-       # --- NEW: Support for Auto-Matching Toggle & Comments ---
-        for col in ["allow_matching INTEGER DEFAULT 1", "comments TEXT"]:
-            try: c.execute(f"ALTER TABLE networks ADD COLUMN {col}")
-            except sqlite3.OperationalError: pass
-
-        # --- NEW: Support for Auto-Matching Toggle & Global Comments ---
         for col in ["allow_matching INTEGER DEFAULT 1", "comments TEXT"]:
             try: c.execute(f"ALTER TABLE networks ADD COLUMN {col}")
             except sqlite3.OperationalError: pass
@@ -550,32 +613,40 @@ def init_db():
         conn.commit()
 
 def check_clear_database():
-    """Checks for a 'cleardatabase' file to completely wipe the database on startup."""
+    """
+    Emergency Startup Trigger: Checks for the existence of a 'cleardatabase' file.
+    If found, it completely wipes the SQLite database and its temporary WAL/SHM files,
+    allowing the user to hard-reset the application without needing SQLite tools.
+    """
     clear_file = os.path.join(app.root_path, "cleardatabase")
     
     if os.path.exists(clear_file):
         print("[*] 'cleardatabase' file detected. Wiping the database completely...")
         try:
-            # Delete the main DB file and its WAL/SHM temporary files
+            # Delete the main DB file and its Write-Ahead Log (WAL) / Shared-Memory (SHM) files
             for ext in ["", "-wal", "-shm"]:
                 db_file = os.path.join(app.root_path, f"{DB_NAME}{ext}")
                 if os.path.exists(db_file):
                     os.remove(db_file)
             
-            # Delete the trigger file so it doesn't wipe on the next boot
+            # Delete the trigger file so it doesn't wipe again on the next boot
             os.remove(clear_file)
             print("[✓] Database completely wiped. 'cleardatabase' file removed.")
         except Exception as e:
             print(f"[X] Failed to clear database: {e}")
 
 def check_password_reset():
-    """Checks for a 'passwordreset' file to reset authentication credentials."""
+    """
+    Emergency Startup Trigger: Checks for a 'passwordreset' file.
+    If a user gets locked out of the web UI, creating this file and restarting the app 
+    will securely strip their credentials and disable the authentication requirement.
+    """
     reset_file = os.path.join(app.root_path, "passwordreset")
     
     if os.path.exists(reset_file):
         print("[*] 'passwordreset' file detected. Disabling authentication and removing credentials...")
         try:
-            # We use IF EXISTS logic inherently by just executing the query safely
+            # Execute safely; if the table doesn't exist yet, it just skips gracefully
             with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                 conn.execute("UPDATE system_settings SET value='0' WHERE key='auth_enabled'")
                 conn.execute("DELETE FROM system_settings WHERE key='auth_username'")
@@ -587,16 +658,17 @@ def check_password_reset():
             print(f"[X] Failed to reset authentication: {e}")
 
 # --- Startup Sequence ---
-# 1. Check if we need to wipe the DB first
+# Execute the emergency file checks before building the database schema
 check_clear_database()
-# 2. Build or rebuild the tables
 init_db()
-# 3. Check if we need to wipe passwords from the existing DB
 check_password_reset()
 
 # --- Versioning Helpers ---
 def get_setup_version():
-    """Reads SETUP_VERSION from setup_env.py."""
+    """
+    Reads the SETUP_VERSION string directly from setup_env.py using a regex.
+    This prevents us from needing to import the setup file into the web server.
+    """
     try:
         if os.path.exists("setup_env.py"):
             with open("setup_env.py", "r") as f:
@@ -609,7 +681,11 @@ def get_setup_version():
 WORKERS_FILE = "workers"
 
 def detect_hardware():
-    """Identifies system hardware (Raspberry Pi models vs PC/Mac)."""
+    """
+    Identifies the underlying hardware architecture.
+    On Linux, it specifically checks the device-tree to differentiate between 
+    a standard Linux Server/PC and various Raspberry Pi models (which have constrained CPU/RAM).
+    """
     if platform.system() == "Linux":
         for path in ["/proc/device-tree/model", "/sys/firmware/devicetree/base/model"]:
             if os.path.exists(path):
@@ -626,7 +702,11 @@ def detect_hardware():
     return "Generic Host"
 
 def get_default_workers_for_hardware():
-    """Returns sensible concurrency defaults based on detected hardware profile."""
+    """
+    Provides sensible concurrency limits for the ThreadPoolExecutors based on the detected hardware.
+    Prevents the application from causing out-of-memory (OOM) crashes or CPU lockups on older Raspberry Pis
+    when ping-sweeping large subnets.
+    """
     hw = detect_hardware().lower()
     if "pi 3" in hw or "pi 2" in hw or "pi zero" in hw:
         # Constrained: 1GB RAM, 4 slower Cortex-A53 cores
@@ -635,11 +715,14 @@ def get_default_workers_for_hardware():
         # Moderate: 2GB-8GB RAM, Cortex-A72 cores
         return {"server_threads": 12, "scan_workers": 20, "ping_workers": 30}
     else:
-        # High performance: Pi 5, Desktop PCs, Servers
+        # High performance: Pi 5, Desktop PCs, Servers, Macs
         return {"server_threads": 24, "scan_workers": 30, "ping_workers": 50}
 
 def get_worker_config():
-    """Reads the 'workers' file, automatically generating it from defaults if missing."""
+    """
+    Reads the custom 'workers' JSON file to apply user-defined thread limits.
+    If the file is missing or corrupted, it automatically generates a new one based on hardware defaults.
+    """
     file_path = os.path.join(app.root_path, WORKERS_FILE)
     defaults = get_default_workers_for_hardware()
     
@@ -659,6 +742,7 @@ def get_worker_config():
         config = {}
         for k in ["server_threads", "scan_workers", "ping_workers"]:
             val = data.get(k)
+            # Ensure the provided values are safe integers
             config[k] = int(val) if str(val).isdigit() and int(val) > 0 else defaults[k]
         return config
     except Exception as e:
@@ -666,15 +750,21 @@ def get_worker_config():
         return defaults
 
 # --- System & Network Helpers ---
-# --- GLOBAL CACHE FOR HEAVY OS CALLS ---
+
+# GLOBAL CACHE: Terminal calls for hardware stats are slow and expensive.
+# We cache them for 8 seconds so rapid UI refreshes don't crash the server.
 OS_CACHE = {
     "ext_info": {"data": {}, "time": 0},
     "wifi_rates": {"data": {}, "time": 0},
     "wifi_ifaces": {"data": [], "time": 0}
 }
-CACHE_TTL = 8.0  # Seconds to hold hardware data in memory
+CACHE_TTL = 8.0  
+
 def get_isp_info():
-    """Fetches Public WAN IP and ISP name."""
+    """
+    Fetches the Public WAN IP and ISP name using the ip-api service.
+    Short timeout applied so the dashboard doesn't hang if the internet is down.
+    """
     try:
         with urllib.request.urlopen('http://ip-api.com/json/?fields=query,isp', timeout=3) as url:
             data = json.loads(url.read().decode())
@@ -683,7 +773,11 @@ def get_isp_info():
         return {"ip": "Unknown", "isp": "Unknown ISP"}
 
 def get_local_ip():
-    """Identifies the primary local LAN IP address."""
+    """
+    Identifies the primary local LAN IP address used for internet routing.
+    Creates a dummy UDP socket connecting to Google DNS. Because UDP is connectionless, 
+    no packets are actually sent, but the OS calculates which local interface IP would be used.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('8.8.8.8', 80))
@@ -695,15 +789,16 @@ def get_local_ip():
 
 def cleanup_old_files():
     """
-    Scans the application directory for .old files (created during Windows updates)
-    and removes them to keep the folder clean.
+    Windows rigidly locks files (like setup_env.py) while they are executing.
+    When the auto-updater runs on Windows, it renames the locked files to .old to bypass the lock.
+    This function deletes those orphaned .old files upon a fresh reboot to keep the folder clean.
     """
     base_dir = app.root_path
     print("[*] Performing startup cleanup...")
     
     # Walk through all directories in the project
     for root, dirs, files in os.walk(base_dir):
-        # Skip the venv folder to save time and avoid permission issues
+        # Skip the virtual environment to save time and avoid massive iteration loops
         if "venv" in dirs:
             dirs.remove("venv")
         if "__pycache__" in dirs:
@@ -721,21 +816,19 @@ def cleanup_old_files():
 def get_linux_dns(interface_name):
     """
     Fetches the actual upstream DNS servers for a specific interface on Linux.
-    Prioritizes nmcli, then resolvectl, then falls back to /etc/resolv.conf.
+    Requires tiered fallbacks because Linux network management varies heavily across distros.
     """
     try:
         # Method 1: NMCLI (Best for Ubuntu Desktop/Server with NetworkManager)
-        # -g returns just the value, cleaner than parsing grep
+        # -g returns just the value, cleaner than parsing grep output
         cmd = ["nmcli", "-g", "IP4.DNS", "dev", "show", interface_name]
         output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
         if output:
-            # nmcli separates multiple servers with lines or pipes
             return output.replace('\n', ', ').replace(' | ', ', ')
 
-        # Method 2: resolvectl (Standard on modern systemd Linux)
+        # Method 2: resolvectl (Standard on modern systemd Linux like Ubuntu 22.04+)
         cmd = f"resolvectl status {interface_name}"
         output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode()
-        # Parse output like "DNS Servers: 8.8.8.8 1.1.1.1"
         for line in output.split('\n'):
             if "DNS Servers:" in line:
                 return line.split(":", 1)[1].strip().replace(' ', ', ')
@@ -744,7 +837,7 @@ def get_linux_dns(interface_name):
         pass
 
     # Method 3: Global Fallback (/etc/resolv.conf)
-    # This usually returns 127.0.0.53 on Ubuntu, but it's better than nothing
+    # This usually just returns 127.0.0.53 on Ubuntu, but it's a necessary safety net
     dns_list = []
     try:
         with open('/etc/resolv.conf', 'r') as f:
@@ -758,15 +851,20 @@ def get_linux_dns(interface_name):
         return "Unknown"
 
 def restart_server():
-    """Signals the supervisor to restart the application, or restarts in-place on Unix."""
+    """
+    Gracefully handles application restarts triggered by the UI.
+    Provides a 2-second sleep so the HTTP success response reaches the browser before the app dies.
+    """
     print("[*] Triggering application restart in 2 seconds...")
-    time.sleep(2)  # Allow the HTTP response to finish sending
+    time.sleep(2) 
     
     if platform.system() == "Windows":
-        # On Windows, setup_env is fully elevated globally, so dropping to the supervisor loop works without UAC prompts
+        # On Windows, setup_env is fully elevated globally, so terminating the app 
+        # drops back to the supervisor loop which simply respawns it.
         os._exit(0)
     else:
-        # On Linux/macOS, replacing the process image natively preserves the active sudo token and PID forever!
+        # On Linux/macOS, replacing the process image natively with os.execv 
+        # is necessary to preserve the active sudo token/PID forever without prompting again!
         try:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as e:
@@ -775,9 +873,10 @@ def restart_server():
 
 def get_extended_iface_info():
     """
-    Fetches Gateway IPs, DNS Servers, and MAC addresses for all active adapters.
-    Utilizes heavily varied, OS-specific terminal commands to extract physical hardware data.
-    Implements a 8-second global cache (OS_CACHE) to prevent spamming system processes on page refresh.
+    Deep hardware query to fetch Gateway IPs, DNS Servers, and MAC addresses for all active adapters.
+    Utilizes heavily varied, OS-specific terminal commands because standard Python libraries (like socket)
+    cannot retrieve adapter-specific DNS or Gateways easily.
+    Utilizes OS_CACHE to prevent spamming system processes on quick page refreshes.
     """
     global OS_CACHE
     if time.time() - OS_CACHE["ext_info"]["time"] < CACHE_TTL:
@@ -787,7 +886,7 @@ def get_extended_iface_info():
     system = platform.system()
     
     def _clean_gw(g_str):
-        """Helper to deduplicate and clean up gateway strings (e.g., handling IPv6 junk)."""
+        """Helper to deduplicate and clean up gateway strings (e.g., stripping out IPv6 junk)."""
         if not g_str or g_str == "-": 
             return "-"
         parts = [x.strip() for x in re.split(r'[, ]+', g_str) if x.strip()]
@@ -799,7 +898,7 @@ def get_extended_iface_info():
 
     try:
         if system == "Windows":
-            # WINDOWS: Uses 'ipconfig /all' (Fastest method natively available)
+            # WINDOWS: Uses 'ipconfig /all' (Fastest native method available)
             try:
                 raw_ip = subprocess.check_output("ipconfig /all", shell=True, text=True, encoding='latin-1', errors='ignore')
                 current_iface = None
@@ -811,6 +910,8 @@ def get_extended_iface_info():
                             current_iface = parts[-1].split(":")[0].strip()
                             if current_iface not in info:
                                 info[current_iface] = {"gateway": "-", "dns": "-"}
+                    
+                    # Associate the Gateway/DNS to the last identified adapter
                     if current_iface:
                         if "Default Gateway" in line and ":" in line:
                             gw = line.split(":")[-1].strip()
@@ -822,7 +923,7 @@ def get_extended_iface_info():
                                 info[current_iface]["dns"] = dns
             except Exception as e: pass
 
-        elif system == "Darwin": # macOS
+        elif system == "Darwin": 
             # MACOS: Uses 'netstat' for the default route, and 'networksetup' / 'ipconfig' for specific hardware ports
             try:
                 gw_out = subprocess.check_output("netstat -rn -f inet | grep 'default'", shell=True, text=True, stderr=subprocess.DEVNULL)
@@ -872,7 +973,7 @@ def get_extended_iface_info():
                         info[dev_name] = {"gateway": gw_val, "dns": dns_val, "mac": mac_addr}
             except Exception as e: pass
 
-        elif system == "Linux": # Linux
+        elif system == "Linux": 
             # LINUX: Uses 'ip route' and the standard '/etc/resolv.conf'
             try:
                 gw_out = subprocess.check_output("ip route show default | awk '/default/ {print $3}'", shell=True, text=True)
@@ -896,10 +997,10 @@ def get_extended_iface_info():
 def get_wifi_rates():
     """
     Safety-first Wi-Fi capability fetching. Identifies if an adapter is a Wi-Fi card 
-    and checks its current link speed.
-    - Windows: Uses `netsh wlan show interfaces`.
+    and checks its current theoretical link speed to the router.
+    - Windows: Parses `netsh wlan show interfaces`.
     - macOS: Uses the hidden `airport` utility or `ipconfig getsummary`.
-    - Linux: Uses `nmcli`, `iw`, or reads from `/sys/class/net/`.
+    - Linux: Uses `nmcli`, `iw`, or reads from sysfs (`/sys/class/net/`).
     """
     global OS_CACHE
     if time.time() - OS_CACHE["wifi_rates"]["time"] < CACHE_TTL:
@@ -936,14 +1037,16 @@ def get_wifi_rates():
                     out = subprocess.check_output([airport_path, "-I"], text=True)
                     rate_match = re.search(r'lastTxRate:\s+(\d+)', out)
                     if rate_match: rates["en0"] = f"{rate_match.group(1)} Mbps"
+                
+                # Fallback if airport utility is removed/broken
                 if "en0" not in rates:
                     out = subprocess.check_output(["ipconfig", "getsummary", "en0"], text=True)
                     tx_match = re.search(r'transmitRate\s+:\s+(\d+)', out)
                     if tx_match: rates["en0"] = f"{tx_match.group(1)} Mbps"
             except: pass    
 
-        elif system == "Linux": # Linux
-            # Prioritize nmcli for stability
+        elif system == "Linux": 
+            # Prioritize nmcli for stability as it handles parsing driver outputs nicely
             try:
                 out = subprocess.check_output(["nmcli", "-t", "-f", "IN-USE,DEVICE,RATE", "dev", "wifi"], text=True, stderr=subprocess.DEVNULL)
                 for line in out.strip().split('\n'):
@@ -956,13 +1059,13 @@ def get_wifi_rates():
                             rates[dev] = f"{match.group(1)} Mbps"
             except: pass
             
-            # Fallbacks for headless/embedded linux devices (Raspberry Pi without NetworkManager)
+            # Tiered Fallbacks for headless/embedded linux devices (e.g. Raspberry Pi without NetworkManager)
             try:
                 for iface in os.listdir('/sys/class/net/'):
                     if iface.startswith(('wlan', 'wlp', 'wlo')):
                         if iface in rates: continue
                         try:
-                            # 1st Fallback: direct sysfs
+                            # 1st Fallback: direct sysfs reading (Fastest)
                             speed_path = f'/sys/class/net/{iface}/speed'
                             if os.path.exists(speed_path):
                                 with open(speed_path, 'r') as f:
@@ -982,7 +1085,7 @@ def get_wifi_rates():
                                     continue
                         except: pass
                         try:
-                            # 3rd Fallback: legacy iwconfig
+                            # 3rd Fallback: legacy iwconfig parsing
                             cmd = f"/sbin/iwconfig {iface} 2>/dev/null || /usr/sbin/iwconfig {iface} 2>/dev/null || iwconfig {iface} 2>/dev/null"
                             out = subprocess.check_output(cmd, shell=True, text=True)
                             match = re.search(r'Bit Rate[=:]\s*([0-9.]+)', out)
@@ -995,23 +1098,25 @@ def get_wifi_rates():
     OS_CACHE["wifi_rates"]["time"] = time.time()
     return rates
 
-# --- Bandwidth Tracking ---
+# --- Global Bandwidth Tracking Variables ---
+# Stored globally so we can calculate the delta between API calls
 last_received = psutil.net_io_counters().bytes_recv
 last_sent = psutil.net_io_counters().bytes_sent
 last_time = time.time()
 
 def get_html_version():
     """
-    Finds 'Version number ' on the first line of dashboard.html
-    and extracts the numeric version following it.
+    Parses the frontend 'dashboard.html' file to extract its embedded version number.
+    Reads only the very first line of the file to prevent loading the entire HTML 
+    document into memory, keeping the boot process and update checker extremely fast.
     """
     try:
-        # Locate the template folder relative to this script
+        # Locate the template folder relative to this script's execution path
         template_path = os.path.join(app.root_path, "templates", "dashboard.html")
         
         if os.path.exists(template_path):
             with open(template_path, "r", encoding='utf-8') as f:
-                # Read only the first line of the document
+                # Read only the first line of the document for maximum performance
                 first_line = f.readline()
                 
                 # Search specifically for 'Version number ' followed by digits and dots
@@ -1027,19 +1132,20 @@ def get_html_version():
     except Exception as e:
         print(f"[X] HTML Version Error: {e}")
         return "Error"
-    
+
 def get_bandwidth():
     """
-    Calculates network throughput. 
-    Prioritizes the Pinned Adapter's traffic if one is set[cite: 1].
-    Includes protection against negative values caused by interface counter resets.
+    Calculates live network throughput (MB/s).
+    Crucially, it prioritizes tracking the traffic of the user's "Pinned Adapter" if one is set in the UI.
+    Includes bounds-checking to prevent displaying negative speeds if the OS network counters reset 
+    (which happens frequently when connecting/disconnecting from VPNs).
     """
     global last_received, last_sent, last_time
     
     target_iface = None
     pinned_mac = None
 
-    # 1. Identify if an adapter is pinned[cite: 1]
+    # 1. Identify if an adapter is pinned in the database
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
@@ -1048,23 +1154,23 @@ def get_bandwidth():
     except: 
         pass
 
-    # 2. Map Pinned MAC to system interface name[cite: 1]
+    # 2. Map Pinned MAC Address back to the OS system interface name
     if pinned_mac:
         for name, addrs in psutil.net_if_addrs().items():
             if any(a.family == psutil.AF_LINK and a.address == pinned_mac for a in addrs):
                 target_iface = name
                 break
 
-    # 3. Get IO Counters[cite: 1]
+    # 3. Retrieve IO Counters
     if target_iface:
-        # Get stats ONLY for the pinned adapter[cite: 1]
+        # Get stats ONLY for the specifically pinned adapter
         try:
             io = psutil.net_io_counters(pernic=True)[target_iface]
         except KeyError:
-            # Fallback to global if adapter was unplugged[cite: 1]
+            # Fallback to global sum if the pinned adapter was unplugged/disabled
             io = psutil.net_io_counters()
     else:
-        # Use global sum if no pin is set[cite: 1]
+        # Use global sum if no pin is set
         io = psutil.net_io_counters()
 
     curr_recv = io.bytes_recv
@@ -1077,11 +1183,11 @@ def get_bandwidth():
     down = (curr_recv - last_received) / delta
     up = (curr_sent - last_sent) / delta
     
-    # GUARD: If network counters reset (e.g., reconnect/VPN), delta is negative. Clamp to 0.
+    # GUARD: If network counters reset, delta is negative. Clamp to 0.0 MB/s.
     if down < 0: down = 0.0
     if up < 0: up = 0.0
     
-    # Update global tracking variables for the next poll[cite: 1]
+    # Update global tracking variables for the next UI poll
     last_received, last_sent, last_time = curr_recv, curr_sent, curr_time
     
     return {
@@ -1090,7 +1196,11 @@ def get_bandwidth():
     }
 
 def get_active_interface_name():
-    """Finds the interface matching the local IP, but returns empty if it is hidden."""
+    """
+    Connects a dummy socket to find the active internet routing IP, then matches it to an interface name.
+    Important: It checks the database to see if the interface is marked "hidden" by the user.
+    If it is hidden, it returns an empty string to prevent the app from auto-selecting it.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('8.8.8.8', 80))
@@ -1107,7 +1217,7 @@ def get_active_interface_name():
     for iface_name, addrs in interfaces.items():
         for addr in addrs:
             if addr.family == socket.AF_INET and addr.address == target_ip:
-                # --- NEW: Check if this interface is hidden in the DB ---
+                # Check if this interface is hidden in the DB
                 mac = None
                 for a in addrs:
                     if a.family == psutil.AF_LINK:
@@ -1118,7 +1228,7 @@ def get_active_interface_name():
                         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                             row = conn.execute("SELECT is_visible FROM adapter_settings WHERE mac_address=?", (mac,)).fetchone()
                             if row and row[0] == 0:
-                                return "" # It is hidden, treat it as unusable
+                                return "" # It is explicitly hidden, treat it as unusable
                     except:
                         pass
                 
@@ -1128,14 +1238,20 @@ def get_active_interface_name():
 MAC_VENDOR_CACHE = {}
 
 def get_mac_vendor(mac, fetch_online=False):
-    """Fetches the manufacturer name based on the MAC address."""
+    """
+    Identifies the hardware manufacturer of a device based on its MAC address prefix (OUI block).
+    Tiered caching system to prevent API rate limits:
+    1. Checks in-memory dictionary.
+    2. Checks the SQLite device history to see if we've looked it up before.
+    3. Only reaches out to the maclookup.app API if fetch_online is True.
+    """
     if not mac or mac == "-" or mac.startswith("NO_MAC"): return ""
     
     mac_prefix = mac[:8].upper() 
     if mac_prefix in MAC_VENDOR_CACHE:
         return MAC_VENDOR_CACHE[mac_prefix]
 
-    # Check database before making an HTTP request
+    # Check database before making an HTTP request to save time/bandwidth
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT vendor FROM devices WHERE mac_address=? AND vendor IS NOT NULL AND vendor != '' LIMIT 1", (mac,)).fetchone()
@@ -1145,7 +1261,7 @@ def get_mac_vendor(mac, fetch_online=False):
     except Exception:
         pass
 
-    # If we are just scanning locally, skip the slow internet lookup
+    # Standard offline network sweeps skip the slow internet lookup
     if not fetch_online:
         return ""
 
@@ -1157,6 +1273,7 @@ def get_mac_vendor(mac, fetch_online=False):
         with urllib.request.urlopen(req, timeout=2) as url:
             data = json.loads(url.read().decode())
             
+            # Clean up long legal names (e.g. "Apple Inc." -> "Apple")
             if data.get('success') and data.get('company'):
                 company = data['company'].replace(' Inc.', '').replace(' Ltd.', '').split(',')[0]
                 MAC_VENDOR_CACHE[mac_prefix] = company
@@ -1171,27 +1288,40 @@ def get_mac_vendor(mac, fetch_online=False):
 # ==========================================
 
 def _build_dns_ptr_query(ip):
-    """Builds a raw DNS PTR query payload for an IPv4 address."""
+    """
+    Constructs a raw DNS PTR (Pointer) query packet payload for an IPv4 address.
+    Building raw bytes instead of using heavy libraries like 'dnspython' keeps the 
+    application footprint small and allows us to send queries to specific target IPs natively.
+    """
     octets = ip.split('.')
+    # Reverse the IP address to match the 'in-addr.arpa' standard for reverse DNS
     reversed_ip = '.'.join(reversed(octets)) + '.in-addr.arpa'
-    txid = b'\x13\x37'
+    
+    txid = b'\x13\x37' # Arbitrary Transaction ID
     flags = b'\x01\x00'  # Standard query with recursion desired
-    counts = b'\x00\x01\x00\x00\x00\x00\x00\x00'
+    counts = b'\x00\x01\x00\x00\x00\x00\x00\x00' # 1 Question, 0 Answers, 0 Authority, 0 Additional
+    
+    # Format the query name (e.g. 1.0.168.192.in-addr.arpa) into DNS label format
     qname = b''.join(bytes([len(part)]) + part.encode('ascii') for part in reversed_ip.split('.')) + b'\x00'
-    qtype_qclass = b'\x00\x0c\x00\x01'  # PTR (12), IN (1)
+    qtype_qclass = b'\x00\x0c\x00\x01'  # QTYPE: PTR (12), QCLASS: IN (1)
+    
     return txid + flags + counts + qname + qtype_qclass
 
 def _parse_dns_ptr_response(data):
-    """Extracts the domain/hostname from a DNS/mDNS PTR response packet."""
+    """
+    Decodes a raw DNS/mDNS PTR response packet to extract the domain/hostname string.
+    Navigates through the complex DNS header, skips the Question section, and 
+    resolves pointers (0xC0) in the Answer section to extract the actual text.
+    """
     try:
         if len(data) < 12: return None
-        ancount = int.from_bytes(data[6:8], 'big')
+        ancount = int.from_bytes(data[6:8], 'big') # Number of answers
         if ancount == 0: return None
         
         idx = 12
-        # Skip Question section
+        # Skip Question section by jumping over the label lengths until we hit the null byte
         while idx < len(data) and data[idx] != 0:
-            if (data[idx] & 0xC0) == 0xC0:
+            if (data[idx] & 0xC0) == 0xC0: # Hit a pointer, stop skipping
                 idx += 2
                 break
             idx += 1 + data[idx]
@@ -1202,6 +1332,8 @@ def _parse_dns_ptr_response(data):
         # Parse Answer section
         for _ in range(ancount):
             if idx >= len(data): break
+            
+            # Skip the Name field of the answer
             if (data[idx] & 0xC0) == 0xC0:
                 idx += 2
             else:
@@ -1211,35 +1343,45 @@ def _parse_dns_ptr_response(data):
                     idx += 1
             
             if idx + 10 > len(data): break
-            atype = int.from_bytes(data[idx:idx+2], 'big')
-            rdlength = int.from_bytes(data[idx+8:idx+10], 'big')
-            idx += 10
+            
+            atype = int.from_bytes(data[idx:idx+2], 'big') # Record Type
+            rdlength = int.from_bytes(data[idx+8:idx+10], 'big') # Data Length
+            idx += 10 # Move to the actual data payload
             rdata_end = idx + rdlength
             
-            if atype == 12:  # PTR Record
+            if atype == 12:  # PTR Record found!
                 name_parts = []
                 curr = idx
-                visited = set()
+                visited = set() # Prevent infinite loops from recursive DNS pointers
                 while curr < len(data) and data[curr] != 0:
                     if curr in visited: break
                     visited.add(curr)
+                    
+                    # Handle DNS compression pointers
                     if (data[curr] & 0xC0) == 0xC0:
                         pointer = int.from_bytes(data[curr:curr+2], 'big') & 0x3FFF
                         curr = pointer
                         continue
+                        
+                    # Extract literal string segment
                     length = data[curr]
                     curr += 1
                     name_parts.append(data[curr:curr+length].decode('utf-8', errors='ignore'))
                     curr += length
+                    
                 if name_parts:
                     return '.'.join(name_parts).strip('.')
+                    
             idx = rdata_end
     except Exception:
         pass
     return None
 
 def _query_router_dns(ip, gateway_ip, timeout=0.3):
-    """Directly queries the local router/DHCP server for local DNS registration."""
+    """
+    Directly queries the local router/DHCP server for the device's assigned name.
+    Routers often cache the hostname a device provides when requesting a DHCP IP address.
+    """
     if not gateway_ip or gateway_ip in ("-", "Unknown") or ip == gateway_ip:
         return None
     try:
@@ -1250,6 +1392,7 @@ def _query_router_dns(ip, gateway_ip, timeout=0.3):
             data, _ = s.recvfrom(1024)
             name = _parse_dns_ptr_response(data)
             if name:
+                # Strip generic router-assigned domain suffixes for a cleaner UI
                 for suffix in [".lan", ".home", ".localdomain", ".domain"]:
                     if name.lower().endswith(suffix):
                         name = name[:-len(suffix)]
@@ -1259,7 +1402,10 @@ def _query_router_dns(ip, gateway_ip, timeout=0.3):
     return None
 
 def _query_mdns(ip, timeout=0.35):
-    """Queries target device directly via Unicast mDNS (UDP 5353)."""
+    """
+    Queries the target device directly via Unicast mDNS (UDP port 5353).
+    Highly effective for discovering Apple devices, Android phones, smart TVs, and modern IoT hubs.
+    """
     try:
         query = _build_dns_ptr_query(ip)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -1276,7 +1422,12 @@ def _query_mdns(ip, timeout=0.35):
     return None
 
 def _query_netbios_socket(ip, timeout=0.3):
-    """Cross-platform NetBIOS Node Status query over UDP 137."""
+    """
+    Cross-platform NetBIOS Node Status query over UDP port 137.
+    Sends a raw Windows SMB/NetBIOS payload directly to the device.
+    Crucial for identifying Windows PCs, legacy servers, and Samba file shares.
+    """
+    # Standard NetBIOS Node Status Request Payload
     nb_query = b"\x82\x28\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x20CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x00\x00\x21\x00\x01"
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -1292,6 +1443,7 @@ def _query_netbios_socket(ip, timeout=0.3):
                         rtype = data[offset+15]
                         flags = int.from_bytes(data[offset+16:offset+18], 'big')
                         is_group = bool(flags & 0x8000)
+                        # Return the first unique active workstation name (Type 0x00 or 0x20)
                         if not is_group and rtype in (0x00, 0x20) and raw_name and not raw_name.startswith("IS~"):
                             return raw_name
                         offset += 18
@@ -1300,7 +1452,11 @@ def _query_netbios_socket(ip, timeout=0.3):
     return None
 
 def _query_http_title(ip, timeout=0.35):
-    """Scrapes the HTML <title> tag for printers, routers, switches, and webcams."""
+    """
+    Scrapes the HTML <title> tag on common web server ports (80/8080).
+    Many headless devices (printers, smart switches, IP cameras) don't broadcast a hostname
+    but host a configuration webpage. This extracts the name from that page.
+    """
     for port in (80, 8080):
         try:
             url = f"http://{ip}:{port}/"
@@ -1310,7 +1466,7 @@ def _query_http_title(ip, timeout=0.35):
                 match = re.search(r'<title>(.*?)</title>', chunk, re.IGNORECASE | re.DOTALL)
                 if match:
                     title = " ".join(match.group(1).split()).strip()
-                    # Filter generic, unhelpful webpage titles
+                    # Filter generic, unhelpful webpage titles so they don't pollute the UI
                     if title and title.lower() not in ("login", "welcome", "home", "index", "404 not found", "error"):
                         return title[:40]
         except Exception:
@@ -1319,7 +1475,7 @@ def _query_http_title(ip, timeout=0.35):
 
 def resolve_hostname(ip, mac=None, gateway_ip=None):
     """
-    Multi-tier hostname resolution engine designed to identify devices on a local subnet.
+    Multi-tier hostname resolution engine designed to quickly identify devices on a local subnet.
     Runs sequentially through 6 different resolution strategies until it finds a valid name.
     
     1. Direct Gateway/Router DHCP DNS query (UDP 53) - Fast, relies on router cache.
@@ -1339,11 +1495,11 @@ def resolve_hostname(ip, mac=None, gateway_ip=None):
     if not hostname:
         hostname = _query_mdns(ip)
 
-    # Step 3: Pure-Python NetBIOS query (Works across all operating systems)
+    # Step 3: Pure-Python NetBIOS query (Works across all operating systems natively)
     if not hostname:
         hostname = _query_netbios_socket(ip)
 
-    # Step 4: Native Windows NetBIOS fallback (Handles strict Windows firewalls better)
+    # Step 4: Native Windows NetBIOS fallback (Handles strict Windows firewalls/permissions better)
     if not hostname and platform.system() == "Windows":
         try:
             out = subprocess.check_output(["nbtstat", "-A", ip], text=True, timeout=1.0)
@@ -1367,11 +1523,11 @@ def resolve_hostname(ip, mac=None, gateway_ip=None):
     if not hostname:
         hostname = _query_http_title(ip)
 
-    # Clean up and apply Vendor fallback if unresolved
+    # Clean up and apply Vendor fallback if completely unresolved
     if not hostname or hostname in ("Unknown", "Unknown Device", "?"):
         hostname = "Unknown Device"
         if mac:
-            # Look up the manufacturer from the MAC OUI block if we failed to get a real name
+            # Look up the manufacturer from the MAC OUI block locally if we failed to get a real name
             vendor = get_mac_vendor(mac, fetch_online=False)
             if vendor:
                 hostname = f"Unknown ({vendor})"
@@ -1384,8 +1540,9 @@ def resolve_hostname(ip, mac=None, gateway_ip=None):
 
 def process_device_info(received, gateway_ip=None):
     """
-    Threaded worker function utilized by the Network Scanner.
-    Extracts the IP and MAC from a raw Scapy packet, then triggers hostname and port resolution.
+    Threaded worker function utilized by the main Network Scanner engine.
+    Extracts the target's IP and MAC from a raw Scapy network packet, 
+    then independently triggers hostname resolution and open port scanning.
     """
     ip = getattr(received, 'psrc', getattr(received, 'ip', None))
     mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
@@ -1400,11 +1557,11 @@ def process_device_info(received, gateway_ip=None):
 
 def check_open_ports(ip):
     """
-    Scans for common web and management ports.
-    Returns a formatted string of services found.
+    Performs a rapid TCP connection test on a specific set of critical network management ports.
+    Returns a formatted string of identified services (e.g., 'HTTP, SSH') to be saved in the database.
     """
     services = []
-    # Dictionary of ports to scan: {port: "Name"}
+    # Dictionary of specific administration ports to check: {port: "Name"}
     common_ports = {
         22: "SSH", 
         80: "HTTP", 
@@ -1417,7 +1574,9 @@ def check_open_ports(ip):
     
     for port, name in common_ports.items():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.15)  # Fast check
+        s.settimeout(0.15)  # Exceptionally fast timeout since we only scan the local subnet
+        
+        # connect_ex returns 0 if the port is open and accepting connections
         if s.connect_ex((ip, port)) == 0:
             services.append(name)
         s.close()
@@ -1426,8 +1585,9 @@ def check_open_ports(ip):
 
 def get_gateway_mac(gateway_ip):
     """
-    Resolves Gateway MAC while respecting the Pinned Adapter.
-    Prevents 'bind' errors by locking Scapy to a single interface.
+    Resolves the actual physical MAC address of the network's gateway router.
+    This is crucial because Corporate VLANs or VPNs often reuse common IPs (like 192.168.1.1).
+    By locking the Network ID to the Gateway MAC address, we prevent device collision in the database.
     """
     if not gateway_ip or gateway_ip == "-" or gateway_ip == "Unknown": 
         return None
@@ -1435,7 +1595,7 @@ def get_gateway_mac(gateway_ip):
     target_iface = None
     pinned_mac = None
 
-    # 1. Check for a user-pinned adapter first
+    # 1. Check if the user has explicitly pinned an adapter for scanning
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
@@ -1444,29 +1604,29 @@ def get_gateway_mac(gateway_ip):
     except: 
         pass
 
-    # 2. Match the Pinned MAC to a system interface name
+    # 2. Match the Pinned MAC back to its system interface name
     if pinned_mac:
         for name, addrs in psutil.net_if_addrs().items():
             if any(a.family == psutil.AF_LINK and a.address == pinned_mac for a in addrs):
                 target_iface = name
                 break
 
-    # 3. Fallback to the active interface if no pin is found
+    # 3. Fallback to the active interface if no pin is configured
     if not target_iface:
         target_iface = get_active_interface_name()
 
-    # --- NEW: Abort if the active interface was hidden (returned "") ---
+    # Abort if the active interface was intentionally hidden by the user
     if not target_iface:
         return None
 
     try:
-        # Use 'iface' to force Scapy to only bind to the chosen adapter
+        # Use 'iface' to force Scapy to only send the ARP request out of the target adapter
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), 
                      timeout=2, verbose=0, iface=target_iface, promisc=False)
         for _, received in ans: 
             return received.hwsrc
     except Exception as e:
-        # If Windows rejects the interface string, fallback to Scapy's default routing
+        # If Windows/Npcap rejects the direct interface string, fall back to Scapy's default routing table
         print(f"[*] Targeted Gateway MAC resolution failed on {target_iface}: {e}. Retrying globally...")
         try:
             ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), 
@@ -1478,7 +1638,11 @@ def get_gateway_mac(gateway_ip):
     return None
 
 def get_current_network_context():
-    """Returns (lan_ip, gateway_ip, network_name) strictly using IPv4."""
+    """
+    Helper function designed specifically to enrich DNS and Ping tool logs.
+    Calculates the active LAN IP, Gateway Router IP, and resolves the current Network Name
+    so that tools have context of *where* the user was when they ran a test.
+    """
     lan_ip = get_local_ip()
     
     # 1. Get Gateway
@@ -1487,12 +1651,12 @@ def get_current_network_context():
     
     for iface_details in ext_info.values():
         gw = iface_details.get("gateway", "-")
-        # STRICT FILTER: Only accept if not "-" and NO colons present
+        # STRICT FILTER: Only accept if not "-" and NO colons present (blocks IPv6 noise)
         if gw != "-" and ":" not in gw:
             gateway_ip = gw
             break
             
-    # 2. Get Network Name
+    # 2. Lookup the human-readable Network Name using the Gateway MAC
     network_name = "Unknown Network"
     if gateway_ip != "-":
         gateway_mac = get_gateway_mac(gateway_ip)
@@ -1504,11 +1668,16 @@ def get_current_network_context():
     return lan_ip, gateway_ip, network_name
 
 def request_macos_permissions():
-    """Probes for macOS Location and Local Network permissions."""
+    """
+    Legacy Native Application Permission Probe for macOS TCC.
+    (Note: Replaced primarily by the launcher script in updated installers to prevent sudo blocking).
+    Attempts to force macOS to display the 'Location Services' and 'Local Network' permission
+    dialogs by simulating native API activity, which are strictly required for Wi-Fi scanning.
+    """
     if platform.system() == "Darwin":
         print("[*] Probing macOS Network & Location permissions...")
         
-        # 1. Trigger Local Network Access Prompt (by sending a single UDP packet)
+        # 1. Trigger Local Network Access Prompt by sending a raw UDP packet outward
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -1516,18 +1685,21 @@ def request_macos_permissions():
             s.close()
         except: pass
 
-        # 2. Trigger Location Services Prompt (by attempting a Wi-Fi scan)
+        # 2. Trigger Location Services Prompt by executing a Wi-Fi scan via the native 'airport' utility
         airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
         if os.path.exists(airport_path):
             try:
-                # Running a scan forces the OS to check for Location permissions
+                # Running a scan forces the OS to evaluate Location permissions
                 subprocess.Popen([airport_path, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print("[!] If prompted, please allow 'Location Access' for Wi-Fi scanning to work.")
             except: pass
 
 # --- Authentication Middleware ---
 def authenticate():
-    """Sends a 401 response that enables basic auth"""
+    """
+    Sends a 401 Unauthorized HTTP response.
+    This explicitly tells the browser to trigger its native Basic Authentication popup window.
+    """
     return Response(
         'Could not verify your access level for that URL.\n'
         'You have to login with proper credentials', 401,
@@ -1535,7 +1707,13 @@ def authenticate():
 
 @app.before_request
 def require_auth():
-    """Checks every single request to see if authentication is enabled and valid."""
+    """
+    Security Middleware: Intercepts and evaluates EVERY single incoming HTTP request.
+    - Allows 'OPTIONS' requests to pass freely (required for standard browser CORS preflight checks).
+    - Verifies the requested Basic Auth credentials against the securely hashed SQLite database.
+    - Implements an Anti-Lockout Failsafe: If the database says auth is enabled, but the 
+      actual username/password rows are missing or corrupted, it safely bypasses the lock.
+    """
     # Allow preflight requests to pass without auth
     if request.method == 'OPTIONS':
         return
@@ -1555,15 +1733,16 @@ def require_auth():
                 if not auth or not auth.username or not auth.password:
                     return authenticate()
                     
+                # Verify the provided password against the PBKDF2:SHA256 hash stored in the database
                 if auth.username != user_row[0] or not check_password_hash(pass_row[0], auth.password):
                     return authenticate()
         except sqlite3.OperationalError:
-            pass # Failsafe if the database hasn't fully initialized yet
+            pass # Failsafe if the database hasn't fully initialized yet on the very first application boot
 
 # --- Authentication API Routes ---
 @app.route('/api/settings/auth', methods=['GET'])
 def get_auth_settings():
-    """Fetches the current auth state for the UI toggle."""
+    """Fetches the current authentication state to populate the UI Settings toggle."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         try:
             enabled = conn.execute("SELECT value FROM system_settings WHERE key='auth_enabled'").fetchone()
@@ -1577,20 +1756,23 @@ def get_auth_settings():
 
 @app.route('/api/settings/auth', methods=['POST'])
 def set_auth_settings():
-    """Saves the auth state and securely hashes the password."""
+    """
+    Saves the authentication state and securely hashes the user's password.
+    Enforces string limits to prevent buffer bloat and requires a password on initial setup.
+    """
     d = request.json
     enabled = '1' if d.get('enabled') else '0'
-    username = str(d.get('username', '')).strip()[:50] # Limit applied
-    password = str(d.get('password', ''))[:255] # Limit applied
+    username = str(d.get('username', '')).strip()[:50] # Hard limit to 50 characters
+    password = str(d.get('password', ''))[:255] # Hard limit to 255 characters
 
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        # Check if a password already exists
+        # Check if a password already exists so we don't accidentally overwrite a valid hash with an empty string
         try:
             pass_row = conn.execute("SELECT value FROM system_settings WHERE key='auth_password'").fetchone()
         except sqlite3.OperationalError:
             pass_row = None
             
-        # Server-side validation to prevent bad states
+        # Server-side validation to prevent broken lockout states
         if enabled == '1':
             if not username:
                 return jsonify({"status": "error", "message": "A username is required."}), 400
@@ -1601,6 +1783,7 @@ def set_auth_settings():
         if username:
             conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('auth_username', ?)", (username,))
         if password: 
+            # Use Werkzeug to generate a salted PBKDF2:SHA256 hash (never store plain-text passwords)
             hashed_pw = generate_password_hash(password, method='pbkdf2:sha256')
             conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('auth_password', ?)", (hashed_pw,))
         conn.commit()
@@ -1609,7 +1792,7 @@ def set_auth_settings():
 
 @app.route('/api/settings/port', methods=['GET'])
 def get_port():
-    """Fetches the current web port."""
+    """Fetches the current internal Waitress web server port from the database."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         try:
             row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
@@ -1620,10 +1803,13 @@ def get_port():
 
 @app.route('/api/settings/port', methods=['POST'])
 def set_port():
-    """Saves a new port and restarts the server."""
+    """
+    Saves a new web port and immediately triggers a background application restart to apply it.
+    Applies strict mathematical validation to ensure the port is within the valid OS TCP bounds.
+    """
     new_port = request.json.get('port')
     
-    # ADDED STRICT VALIDATION
+    # ADDED STRICT VALIDATION: Ensures the port isn't empty, is numeric, and fits the 1-65535 standard
     if not new_port or not str(new_port).isdigit() or not (1 <= int(new_port) <= 65535):
         return jsonify({"status": "error", "message": "Invalid port number. Must be between 1 and 65535."}), 400
     
@@ -1631,12 +1817,16 @@ def set_port():
         conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (str(new_port),))
         conn.commit()
         
-    # Trigger a restart in the background to apply the new port
+    # Trigger a restart in the background to apply the new port binding
     threading.Thread(target=restart_server).start()
     return jsonify({"status": "success", "port": new_port})
 
 def check_webport_file():
-    """Checks for a 'webport' file to override the default web port on startup."""
+    """
+    Headless CLI Fallback: Checks for a physical 'webport' file in the root directory.
+    If a user locks themselves out of the dashboard by setting a bad port, they can just create
+    a file named 'webport' containing '8080' to force a recovery on the next boot.
+    """
     port_file = os.path.join(app.root_path, "webport")
     if os.path.exists(port_file):
         print("[*] 'webport' file detected. Updating web server port...")
@@ -1658,7 +1848,10 @@ def check_webport_file():
             print(f"[X] Failed to process webport file: {e}")
 
 def check_dev_file():
-    """Checks for a 'dev' trigger file, updates the DB channel, and removes it."""
+    """
+    Headless CLI Fallback: Checks for a 'dev' trigger file.
+    Updates the software update channel to Development if found, then cleans up the trigger.
+    """
     dev_file = os.path.join(app.root_path, "dev")
     if os.path.exists(dev_file):
         print("[*] 'dev' file detected. Updating database channel to 'dev'...")
@@ -1672,7 +1865,7 @@ def check_dev_file():
             print(f"[X] Failed to process dev file: {e}")
 
 def get_current_port():
-    """Reads the current port for Waitress to bind to."""
+    """Reads the current port from the DB for Waitress to bind to on initial startup."""
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT value FROM system_settings WHERE key='web_port'").fetchone()
@@ -1683,31 +1876,35 @@ def get_current_port():
 # --- Routes ---
 @app.route('/')
 def index():
+    """
+    The primary Dashboard render route.
+    Calculates the active interface and its specific DNS/Gateway. Because OS network
+    naming conventions vary wildly, it uses fuzzy-matching to associate physical settings.
+    """
     info = get_isp_info()
     ext_info = get_extended_iface_info()
-    active_iface = get_active_interface_name() # e.g., "Wi-Fi" or "Ethernet"
+    active_iface = get_active_interface_name() # e.g., "Wi-Fi" or "eth0"
     
-    # Default to "Unknown"
+    # Default to "Unknown" if we can't find a definitive match
     active_gateway = "Unknown"
     active_dns = "Unknown"
 
     # Try to find the specific Gateway/DNS for the active interface
     if active_iface:
-        # 1. Try Exact Match
+        # 1. Try Exact Match (Works beautifully on Linux and macOS)
         if active_iface in ext_info:
             active_gateway = ext_info[active_iface].get("gateway", "Unknown")
             active_dns = ext_info[active_iface].get("dns", "Unknown")
         
-        # 2. Try Fuzzy Match (Windows naming is often messy)
+        # 2. Try Fuzzy Match (Windows naming is often messy, e.g., "Wi-Fi" inside "Wireless LAN adapter Wi-Fi")
         elif platform.system() == "Windows":
             for k, v in ext_info.items():
-                # If "Wi-Fi" is in "Wireless LAN adapter Wi-Fi"
                 if active_iface in k or k in active_iface:
                     active_gateway = v.get("gateway", active_gateway)
                     active_dns = v.get("dns", active_dns)
                     break
     
-    # 3. Fallback: If still unknown, just grab the first one that has a Gateway
+    # 3. Fallback: If still unknown, just grab the first interface that possesses a valid Gateway IP
     if active_gateway == "Unknown" or active_gateway == "-":
         for v in ext_info.values():
             if v.get("gateway") and v.get("gateway") != "-":
@@ -1715,16 +1912,16 @@ def index():
                 active_dns = v.get("dns")
                 break
 
-# Grab the current channel to pass to the frontend
+    # Grab the current update channel to pass to the frontend
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         row = conn.execute("SELECT value FROM system_settings WHERE key='update_channel'").fetchone()
         current_channel = row[0] if row else 'stable'
 
-    # Get the display name for the footer
+    # Get the display name (e.g. 'Production (Stable)') for the footer tag
     all_settings = get_all_github_settings()
     channel_display_name = all_settings.get(current_channel, {}).get("display_name", current_channel.capitalize())
     
-    # --- NEW: Check for Dedicated Server Mode ---
+    # --- NEW: Check for Dedicated Server Mode (Hides OS Reboot/Shutdown controls if absent) ---
     is_standalone = os.path.exists(os.path.join(app.root_path, "standalone"))
 
     return render_template('dashboard.html', 
@@ -1744,8 +1941,9 @@ def index():
 @app.route('/api/system/cleanup', methods=['POST'])
 def cleanup_database():
     """
-    Cleans up the database based on the selected interval across ALL tables.
-    Respects the is_protected flag for every table.
+    Maintenance Tool: Cleans up the database based on the selected interval across ALL tables.
+    Crucially, it respects the 'is_protected' (locked) flag for every table, guaranteeing
+    that user-favorited devices/logs are never automatically wiped unless a full 'all' wipe is forced.
     """
     days = request.json.get('days')
     
@@ -1754,8 +1952,8 @@ def cleanup_database():
             cursor = conn.cursor()
             
             if days == 'all':
+                # Note: We do NOT respect is_protected on a total factory wipe ("Clear Database Completely")
                 for table in ['history', 'dns_logs', 'ping_logs', 'wifi_history', 'networks', 'devices', 'device_scans', 'global_device_names', 'global_device_vendors']:
-                    # Note: We do NOT respect is_protected on a total factory wipe ("Clear Database Completely")
                     cursor.execute(f"DELETE FROM {table}")
                 message = "Database cleared completely."
             else:
@@ -1764,22 +1962,22 @@ def cleanup_database():
                 
                 date_filter = f"datetime('now', '-{int(days)} days')"
                 
-                # Standard tables using 'timestamp'
+                # Standard tables using 'timestamp' column
                 for table in ['history', 'dns_logs', 'ping_logs', 'wifi_history', 'device_scans']:
-                    # device_scans doesn't have an is_protected column, it relies on the device itself
+                    # device_scans relies entirely on the 'devices' table for its protection status
                     if table == 'device_scans':
                         cursor.execute(f"DELETE FROM {table} WHERE timestamp < {date_filter} AND mac_address NOT IN (SELECT mac_address FROM devices WHERE is_protected=1)")
                     else:
                         cursor.execute(f"DELETE FROM {table} WHERE timestamp < {date_filter} AND is_protected = 0")
                 
-                # Tables using 'last_seen' or 'last_scan'
+                # Tables using 'last_seen' or 'last_scan' columns
                 cursor.execute(f"DELETE FROM devices WHERE last_seen < {date_filter} AND is_protected = 0")
                 cursor.execute(f"DELETE FROM networks WHERE last_scan < {date_filter} AND is_protected = 0")
                 
                 message = f"All data older than {days} days has been removed. (Protected items were kept)."
             
             conn.commit()
-            conn.execute("VACUUM")
+            conn.execute("VACUUM") # Force SQLite to defragment and release the physical hard drive space
             
             return jsonify({"status": "success", "message": message})
     except Exception as e:
@@ -1787,7 +1985,7 @@ def cleanup_database():
 
 @app.route('/api/system/db_info', methods=['GET'])
 def get_db_info():
-    """Returns the current size of the main SQLite database in MB."""
+    """Returns the current physical size of the main SQLite database converted to MB for the UI."""
     try:
         size_mb = 0
         if os.path.exists(DB_NAME):
@@ -1798,12 +1996,16 @@ def get_db_info():
 
 @app.route('/api/system/cleanup_orphaned_devices', methods=['POST'])
 def cleanup_orphaned_devices():
-    """Removes devices that are ONLY associated with deleted networks."""
+    """
+    Maintenance Tool: Removes specific devices that are ONLY associated with deleted network profiles.
+    This safely prunes 'ghost' devices that clutter the historical registry without deleting
+    devices that might still be active on a different active network.
+    """
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             cursor = conn.cursor()
             
-            # Smart isolation query: 
+            # Smart isolation query using SET logic (UNION/EXCEPT): 
             # Grab MACs that exist in deleted networks, EXCEPT any MACs that also exist in active networks
             query = """
                 SELECT mac_address FROM devices WHERE network_id NOT IN (SELECT id FROM networks)
@@ -1822,7 +2024,7 @@ def cleanup_orphaned_devices():
 
             placeholders = ','.join(['?'] * len(orphaned_macs))
             
-            # Completely purge the orphaned devices from all tables
+            # Completely purge the orphaned ghost devices from all tables
             cursor.execute(f"DELETE FROM devices WHERE mac_address IN ({placeholders})", orphaned_macs)
             cursor.execute(f"DELETE FROM device_scans WHERE mac_address IN ({placeholders})", orphaned_macs)
             cursor.execute(f"DELETE FROM global_device_names WHERE mac_address IN ({placeholders})", orphaned_macs)
@@ -1837,16 +2039,23 @@ def cleanup_orphaned_devices():
 
 @app.route('/api/live_bandwidth')
 def api_live_bandwidth():
+    """Simple API wrapper to return the live bandwidth throughput dict."""
     return jsonify(get_bandwidth())
 
 @app.route('/api/adapters')
 def get_adapters():
-    """Fetches all network adapters utilizing ThreadPoolExecutor to run OS queries concurrently."""
+    """
+    Fetches the physical and virtual network adapters available on the host machine.
+    - Utilizes ThreadPoolExecutor to run heavy OS-level terminal commands (Gateway/Wi-Fi info) concurrently,
+      cutting the API response time dramatically (from ~3 seconds to ~0.5 seconds).
+    - Identifies if an adapter is Wi-Fi vs Ethernet using name fuzzy-matching and physical link speed checks.
+    - Evaluates which adapter is actively providing internet ('Active') and which one the user has prioritized ('Pinned').
+    """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     
-    # Execute OS calls concurrently (Cuts delay dramatically)
+    # Execute heavy OS calls concurrently (Cuts delay dramatically)
     with ThreadPoolExecutor(max_workers=3) as executor:
         f_ext = executor.submit(get_extended_iface_info)
         f_wifi = executor.submit(get_wifi_rates)
@@ -1867,7 +2076,7 @@ def get_adapters():
                 settings[row[0]] = {
                     "name": row[1], 
                     "visible": row[2], 
-                    "is_primary": bool(row[3])
+                    "is_primary": bool(row[3]) # Tracks if the user pinned this adapter for scanning
                 }
                 if row[3] == 1:
                     pinned_mac = row[0]
@@ -1877,6 +2086,7 @@ def get_adapters():
     for name, addrs in interfaces.items():
         st = stats.get(name)
         
+        # Completely ignore internal software loopbacks and Hyper-V virtual switches to reduce noise
         if "Loopback" in name or "vEthernet" in name or name == "lo": 
             continue
         
@@ -1889,6 +2099,7 @@ def get_adapters():
 
         spec_info = ext_info.get(name, {})
         
+        # Windows formatting fuzzy match
         if not spec_info and platform.system() == "Windows":
              for k, v in ext_info.items():
                  if k in name or name in k:
@@ -1899,10 +2110,10 @@ def get_adapters():
             mac = spec_info.get("mac")
 
         gw = spec_info.get("gateway", "-")
-        if ":" in gw: gw = "-"
+        if ":" in gw: gw = "-" # Filter out IPv6 noise
         
         dns = spec_info.get("dns", "-")
-        if ":" in dns: dns = "-"
+        if ":" in dns: dns = "-" # Filter out IPv6 noise
 
         if platform.system() == "Linux":
             real_dns = get_linux_dns(name)
@@ -1914,6 +2125,7 @@ def get_adapters():
         if not pinned_mac and active_iface_name:
             is_active_default = (name == active_iface_name or name in active_iface_name)
 
+        # Set the Global Primary Gateway/DNS specifically based on the pinned/active adapter
         if is_pinned or (not pinned_mac and is_active_default):
              if gw != "-": primary_gw = gw
              if dns != "-": primary_dns = dns
@@ -1932,6 +2144,7 @@ def get_adapters():
             else:
                 display_speed = f"{raw_speed} Mbps"
         
+        # Check against cached rates list to confirm Wi-Fi status
         for wifi_name, rate_str in wifi_rates.items():
             if wifi_name.lower() in name.lower() or name.lower() in wifi_name.lower():
                 display_speed = rate_str
@@ -1963,6 +2176,7 @@ def get_adapters():
             "type": "Wi-Fi" if is_wifi else "Ethernet"
         })
 
+    # Failsafe: if the active adapter lacks a gateway, pull the first valid one available
     if primary_gw == "Unknown" or ":" in primary_gw:
         primary_gw = "-"
         for v in ext_info.values():
@@ -1984,7 +2198,11 @@ def get_adapters():
 
 @app.route('/api/adapter_settings', methods=['POST'])
 def save_adapter_settings():
-    """Updates custom name, visibility, and primary (pinned) status."""
+    """
+    Updates the custom name, visibility, and primary (pinned) status of a network adapter.
+    Implements a crucial safety net to ensure a user cannot 'hide' the very last active 
+    adapter on their system, which would break the dashboard entirely.
+    """
     data = request.json
     mac = data.get('mac')
     # --- FIXED: Apply string limit ---
@@ -2004,7 +2222,7 @@ def save_adapter_settings():
         interfaces = psutil.net_if_addrs()
         valid_keys = []
         
-# 1. Gather all actual usable adapters on the system
+        # 1. Gather all actual usable physical adapters on the system
         for iface_name, addrs in interfaces.items():
             if "Loopback" in iface_name or "vEthernet" in iface_name or iface_name == "lo": 
                 continue
@@ -2037,7 +2255,7 @@ def save_adapter_settings():
         if primary == 1:
             conn.execute("UPDATE adapter_settings SET is_primary = 0")
             
-        # Update or Insert the new settings
+        # Update or Insert the new settings (Upsert)
         conn.execute("""
             INSERT INTO adapter_settings (mac_address, custom_name, is_visible, is_primary)
             VALUES (?, ?, ?, ?)
@@ -2052,14 +2270,14 @@ def save_adapter_settings():
 
 @app.route('/api/adapters/update', methods=['POST'])
 def update_adapter_settings():
-    """Updates custom name and visibility for a specific adapter."""
+    """Simplified endpoint to update custom name and visibility for a specific adapter."""
     d = request.json
     mac = d.get('mac')
     # --- FIXED: Apply string limit ---
     name = str(d.get('name', '')).strip()[:50]
     visible = 1 if d.get('visible') else 0
     
-    # If the adapter has no MAC (virtual interface), we can't reliably save settings
+    # If the adapter has no MAC (e.g. a virtual interface), we can't reliably save settings to it
     if not mac or mac == '-':
         return jsonify({"status": "error", "message": "Cannot configure adapter without MAC address"})
 
@@ -2079,11 +2297,16 @@ def update_adapter_settings():
 # --- Audit Logging Middleware ---
 @app.after_request
 def audit_logger(response):
-    """Automatically logs configuration changes, deletions, and exports."""
-    # Only track successful state-changing or export requests
+    """
+    Security Middleware: Automatically intercepts and logs critical configuration changes, 
+    deletions, and data exports.
+    Provides an internal audit trail within the daily log files for security analysis.
+    """
+    # Only track successful state-changing or export requests (200/201 HTTP Status)
     if response.status_code in [200, 201] and (request.method in ['POST', 'DELETE'] or 'export' in request.path or 'download' in request.path):
         
-        # Ignore background polling and raw tool execution (we already log Ping, DNS, etc. manually)
+        # Ignore background polling and raw tool execution to prevent log spam 
+        # (Ping, DNS, Speedtest, etc. are already logged manually)
         ignore_paths = ['/api/speedtest', '/api/scan_network', '/api/dns/lookup', '/api/ping/run', '/api/vendor/lookup', '/api/wifi/save', '/api/live_bandwidth']
         if any(p in request.path for p in ignore_paths) and 'export' not in request.path:
             return response
@@ -2091,19 +2314,20 @@ def audit_logger(response):
         action = "System Action"
         path = request.path
         
+        # Categorize the action
         if 'export' in path or 'download' in path: action = "Data Export"
         elif 'delete' in path or 'clear' in path or 'cleanup' in path: action = "Data Deletion"
         elif 'update' in path or 'rename' in path or 'settings' in path or 'bulk_hide' in path: action = "Configuration Change"
         elif 'toggle_protection' in path: action = "Record Protection Toggled"
         elif 'import' in path: action = "Database Merged"
         
-        # Capture the payload context if it's a small JSON request
+        # Capture the payload context safely if it's a small JSON request
         context = ""
         if request.is_json:
             try:
                 data = request.get_json()
                 if data:
-                    # Mask sensitive or huge data in the log
+                    # Mask sensitive payloads or collapse massive arrays
                     if 'password' in data: data['password'] = '******'
                     if 'results' in data: data.pop('results') 
                     if 'rows' in data: data['rows'] = f"[{len(data['rows'])} items]"
@@ -2117,11 +2341,13 @@ def audit_logger(response):
 # --- Network & Device Management Routes ---
 @app.route('/api/networks')
 def list_networks():
+    """Fetches all saved network profiles and calculates their total historical device count."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         networks = conn.execute("SELECT * FROM networks ORDER BY last_scan DESC").fetchall()
         result = []
         for net in networks:
+            # Dynamically count how many devices belong to this specific network
             count = conn.execute("SELECT COUNT(*) FROM devices WHERE network_id=?", (net['id'],)).fetchone()[0]
             net_dict = dict(net)
             result.append({
@@ -2129,13 +2355,17 @@ def list_networks():
                 "gateway_ip": net_dict['gateway_ip'], "last_scan": net_dict['last_scan'], "device_count": count,
                 "is_protected": net_dict.get('is_protected', 0),
                 "allow_matching": net_dict.get('allow_matching', 1),
-                "comments": net_dict.get('comments', '') # NEW
+                "comments": net_dict.get('comments', '') 
             })
         return jsonify(result)
 
 @app.route('/api/system/toggle_matching', methods=['POST'])
 def toggle_matching():
-    """Toggles whether a network profile can be merged with future scans. Checks for conflicts."""
+    """
+    Toggles whether a network profile automatically merges with future scans (Auto-Match).
+    Implements conflict resolution: Only ONE network can claim a specific Gateway MAC & IP combo
+    at a time to prevent future scans from duplicating or splitting data.
+    """
     d = request.json
     item_id = d.get('id')
     state = 1 if d.get('state') else 0
@@ -2147,7 +2377,7 @@ def toggle_matching():
             cursor = conn.cursor()
             
             if state == 1:
-                # 1. Check if another network with the same MAC & IP is already matching
+                # 1. Check if another network with the EXACT same MAC & IP is already set to Auto-Match
                 net = cursor.execute("SELECT gateway_mac, gateway_ip FROM networks WHERE id=?", (item_id,)).fetchone()
                 if net:
                     mac = net['gateway_mac']
@@ -2155,12 +2385,13 @@ def toggle_matching():
                     conflict = cursor.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 AND id!=?", (mac, ip, item_id)).fetchone()
                     
                     if conflict and not force:
+                        # Alert the frontend so it can ask the user if they want to override the conflict
                         return jsonify({
                             "status": "conflict", 
                             "message": f"Another network ('{conflict['name']}') is already set to Auto-Match with this Gateway.\n\nEnabling Auto-Match for this scan will disable it for the older one."
                         })
                     elif conflict and force:
-                        # 2. User confirmed the overwrite: Disable matching on all others for this Gateway
+                        # 2. User confirmed the overwrite: Disable matching on all conflicting networks globally
                         cursor.execute("UPDATE networks SET allow_matching=0 WHERE gateway_mac=? AND gateway_ip=? AND id!=?", (mac, ip, item_id))
             
             # Apply the requested state to the target network
@@ -2172,6 +2403,7 @@ def toggle_matching():
 
 @app.route('/api/networks/delete', methods=['POST'])
 def delete_network():
+    """Deletes a network profile. Associated devices are CASCADE deleted automatically by SQLite schema."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM networks WHERE id=?", (request.json.get('id'),))
         conn.commit()
@@ -2180,8 +2412,9 @@ def delete_network():
 @app.route('/api/networks/merge', methods=['POST'])
 def merge_networks():
     """
-    Merges multiple old networks into a single target network.
-    Resolves device conflicts by keeping the newest data and updates historical logs.
+    Merges multiple fragmented network profiles into a single target network.
+    Safely resolves device MAC collisions (if a device existed on both the old and new network)
+    by preserving the most recent 'last_seen' timestamp and keeping user-defined metadata.
     """
     d = request.json
     target_id = d.get('target_id')
@@ -2202,7 +2435,7 @@ def merge_networks():
             for src_id in source_ids:
                 if str(src_id) == str(target_id): continue
                 
-                # 1. Migrate all historical device_scans logs to the new Target Network
+                # 1. Migrate all historical snapshot logs (device_scans) to the new Target Network
                 cursor.execute("UPDATE device_scans SET network_id=?, network_name=? WHERE network_id=?", (target_id, target_name, src_id))
                 
                 # 2. Safely merge devices, handling duplicates if a device existed on both networks
@@ -2212,7 +2445,7 @@ def merge_networks():
                     target_dev = cursor.execute("SELECT * FROM devices WHERE mac_address=? AND network_id=?", (mac, target_id)).fetchone()
                     
                     if target_dev:
-                        # Conflict: Device exists in both. Keep Target row, but update metadata if Target is missing it
+                        # CONFLICT: Device exists in both. Keep Target row, but update metadata if Target is missing it
                         new_last_seen = max(dev['last_seen'] or "", target_dev['last_seen'] or "")
                         c_name = target_dev['custom_name'] or dev['custom_name']
                         c_vend = target_dev['custom_vendor'] or dev['custom_vendor']
@@ -2223,13 +2456,13 @@ def merge_networks():
                             WHERE mac_address=? AND network_id=?
                         """, (new_last_seen, c_name, c_vend, target_name, mac, target_id))
                         
-                        # Delete the duplicate source row
+                        # Delete the duplicate source row to prevent Primary Key constraint errors
                         cursor.execute("DELETE FROM devices WHERE mac_address=? AND network_id=?", (mac, src_id))
                     else:
-                        # No Conflict: Safely migrate device to target network
+                        # NO CONFLICT: Safely migrate device to target network directly
                         cursor.execute("UPDATE devices SET network_id=?, last_network_name=? WHERE mac_address=? AND network_id=?", (target_id, target_name, mac, src_id))
                         
-                # 3. Delete the ghost source network
+                # 3. Delete the ghost source network now that it is empty
                 cursor.execute("DELETE FROM networks WHERE id=?", (src_id,))
                 
             conn.commit()
@@ -2239,6 +2472,7 @@ def merge_networks():
 
 @app.route('/api/networks/update', methods=['POST'])
 def update_network():
+    """Updates a network name/comment and cascades the new name to all historical device logs."""
     d = request.json
     name = str(d.get('name', '')).strip()[:50] 
     comment = str(d.get('comment', '')).strip()[:200] 
@@ -2247,7 +2481,7 @@ def update_network():
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("UPDATE networks SET name=?, comments=? WHERE id=?", (name, comment, net_id))
         
-        # Propagate the custom name to the history tables
+        # Propagate the custom name to the history tables so UI tags don't break
         try: 
             conn.execute("UPDATE devices SET last_network_name=? WHERE network_id=?", (name, net_id))
         except sqlite3.OperationalError: pass
@@ -2261,8 +2495,9 @@ def update_network():
 
 @app.route('/api/networks/rename', methods=['POST'])
 def rename_network():
+    """Legacy endpoint specifically for quick renames."""
     d = request.json
-    name = str(d.get('name', '')).strip()[:50] # Safely sliced
+    name = str(d.get('name', '')).strip()[:50] # Safely sliced to prevent buffer abuse
     net_id = d.get('id')
     
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
@@ -2280,9 +2515,13 @@ def rename_network():
         conn.commit()
     return jsonify({"status": "success"})
 
-
 @app.route('/api/networks/<int:net_id>/devices')
 def get_network_devices(net_id):
+    """
+    Fetches all devices mapped to a specific network.
+    Dynamically joins 'global_device_names' and 'global_device_vendors' to ensure 
+    devices consistently display their user-defined names across completely different Wi-Fi networks.
+    """
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         query = "SELECT mac_address, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, custom_vendor, is_protected FROM devices WHERE network_id=?"
@@ -2290,6 +2529,7 @@ def get_network_devices(net_id):
         
         dev_list = [dict(d) for d in devices]
         for dev in dev_list:
+            # Overlay Global Name / Comments
             g_data = conn.execute("SELECT custom_name, comments FROM global_device_names WHERE mac_address=?", (dev['mac_address'],)).fetchone()
             if g_data:
                 if g_data[0]: dev['custom_name'] = g_data[0]
@@ -2297,17 +2537,28 @@ def get_network_devices(net_id):
             else:
                 dev['comments'] = ""
                 
+            # Overlay Global Vendor overrides
             g_vendor = conn.execute("SELECT custom_vendor FROM global_device_vendors WHERE mac_address=?", (dev['mac_address'],)).fetchone()
             if g_vendor and g_vendor[0]: dev['custom_vendor'] = g_vendor[0]
 
+        # Attempt to sort the final list numerically by IP address (e.g. 192.168.1.2 before 192.168.1.10)
         try: dev_list.sort(key=lambda x: ipaddress.IPv4Address(x['ip_address']))
         except: pass
         return jsonify(dev_list)
 
+# ==========================================
+# NETWORK SCANNING ENGINES
+# ==========================================
+
 @app.route('/api/scan_network')
 def scan_network():
     """
-    Robust Pinned-First Network Scan for Windows/macOS/Linux.
+    Robust Pinned-First Network Scanner (Standard JSON Response Mode).
+    1. Locks onto a specific physical adapter if pinned by the user.
+    2. Performs a rapid Scapy ARP sweep.
+    3. Triggers an OS-level Ping Sweep fallback if Scapy fails (due to strict firewalls or missing Npcap).
+    4. Threads out hostname resolution and port scanning concurrently.
+    5. Saves a historical snapshot of the results.
     """
     worker_cfg = get_worker_config()
     pinned_mac = None
@@ -2315,6 +2566,7 @@ def scan_network():
     target_ip_val = None
     target_mac_val = None
 
+    # Determine if an adapter is pinned in the DB
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
         if row: pinned_mac = row[0]
@@ -2330,6 +2582,7 @@ def scan_network():
                 target_iface, target_ip_val, target_mac_val = name, current_ip, current_mac
                 break
 
+    # If no pin exists, fall back to the active internet-facing adapter
     if not target_iface or not target_ip_val:
         target_iface = get_active_interface_name()
         target_ip_val = get_local_ip()
@@ -2345,13 +2598,14 @@ def scan_network():
     if target_iface: conf.iface = target_iface
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # --- NEW: Fetch Gateway IP early to pass to the resolver ---
+    # Fetch Gateway IP early so we can pass it into the DNS Hostname resolver threads
     ext_info = get_extended_iface_info()
     gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
 
-    # --- 1. PERFORM SCAN FIRST ---
+    # --- 1. PERFORM SCAPY ARP SCAN ---
     ans = []
     try:
+        # 'srp' sends out Layer 2 ARP requests targeting the entire subnet
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
                      timeout=3, retry=2, verbose=0, inter=0.02, 
                      iface=target_iface, promisc=False)
@@ -2363,38 +2617,45 @@ def scan_network():
         except: pass
 
     scanned_results = []
+    
+    # Process Scapy results concurrently (DNS lookups + Port Scans)
     with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-        # Pass the gateway_ip into the worker thread
         futures = [executor.submit(process_device_info, received, gateway_ip) for _, received in ans]
         for future in futures: scanned_results.append(future.result())
 
     # --- 2. OS-AGNOSTIC PING SWEEP FALLBACK ---
+    # If Scapy fails (common on Windows without Npcap, or WSL), it will only find 0-2 devices.
+    # We fall back to standard OS pings and read the OS-level ARP table.
     if len(scanned_results) <= 2:
         print("[*] Scapy scan found few devices. Initiating OS Ping Sweep...")
         def fast_ping(ip_str):
             sys_plat = platform.system().lower()
             if sys_plat == 'windows':
-                cmd = ['ping', '-n', '1', '-w', '500', ip_str]
+                cmd = ['ping', '-n', '1', '-w', '500', ip_str] # Windows: 500ms timeout
             elif sys_plat == 'darwin':
-                cmd = ['ping', '-c', '1', '-W', '500', ip_str]
+                cmd = ['ping', '-c', '1', '-W', '500', ip_str] # macOS: 500ms timeout
             else:
-                cmd = ['ping', '-c', '1', '-W', '1', ip_str]
+                cmd = ['ping', '-c', '1', '-W', '1', ip_str]   # Linux: 1 sec timeout
             try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except: pass
 
         network = ipaddress.IPv4Network(target_subnet, strict=False)
+        # Blast the subnet with pings to force devices to populate the host ARP table
         with ThreadPoolExecutor(max_workers=worker_cfg['ping_workers']) as executor:
             for ip in network.hosts(): executor.submit(fast_ping, str(ip))
         
         try:
+            # Read and parse the local ARP table populated by the ping blast
             arp_out = subprocess.check_output(["arp", "-a"], text=True)
             found_ips = [d['ip'] for d in scanned_results]
             arp_devices = []
             
+            # Regex to extract IPs and MAC addresses safely across all OS formats
             for match in re.finditer(r'(\d{1,3}(?:\.\d{1,3}){3}).*?([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})', arp_out):
                 ip_found, raw_mac = match.groups()
                 mac_found = ':'.join([p.zfill(2) for p in raw_mac.replace('-', ':').split(':')]).lower()
                 
+                # Filter out multicast/broadcast garbage (ff:ff / 01:00:5e)
                 if ip_found not in found_ips and not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and ipaddress.IPv4Address(ip_found) in network:
                     class MockReceived:
                         ip = ip_found
@@ -2405,8 +2666,8 @@ def scan_network():
                     found_ips.append(ip_found)
 
             if arp_devices:
+                # Process the fallback devices identically to the Scapy ones
                 with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-                    # Pass the gateway_ip into the ping sweep fallback workers
                     futures = [executor.submit(process_device_info, dev, gateway_ip) for dev in arp_devices]
                     for future in futures: scanned_results.append(future.result())
         except: pass
@@ -2416,7 +2677,7 @@ def scan_network():
 
     found_ips = [d["ip"] for d in scanned_results]
     
-    # Try to find router in the scan results first
+    # Identify the router so we can label it in the UI and use its MAC as the unique Database Network ID
     for device in scanned_results:
         if device["ip"] == gateway_ip:
             gateway_mac = device["mac"]
@@ -2424,7 +2685,7 @@ def scan_network():
                 device["hostname"] = f"{device['hostname']} (Router)"
             break
 
-    # If missing, try direct targeted ARP, otherwise NO_MAC fallback
+    # If missing entirely, force a direct targeted ARP, otherwise fallback to a fake NO_MAC block
     if not gateway_mac and gateway_ip != "-" and gateway_ip != "Unknown":
         gateway_mac = get_gateway_mac(gateway_ip)
         if not gateway_mac:
@@ -2438,7 +2699,7 @@ def scan_network():
     elif not gateway_mac:
         gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
 
-    # Inject localhost if missing
+    # Inject localhost (this machine) if the scan missed it
     if target_ip_val not in found_ips and target_mac_val and target_ip_val != "127.0.0.1":
         scanned_results.append({
             "ip": target_ip_val, "mac": target_mac_val,
@@ -2452,7 +2713,7 @@ def scan_network():
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
             
-            # VLAN Safe Check (MAC + IP)
+            # VLAN Safe Check: Ensure we group by both physical MAC and IP address
             cursor.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
             row = cursor.fetchone()
             
@@ -2466,18 +2727,22 @@ def scan_network():
                                (gateway_mac, final_network_name, current_time, gateway_ip))
                 network_id = cursor.lastrowid
 
+            # Mark all known devices as offline temporarily. They will be marked back to online (1) as they are inserted.
             cursor.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
 
             for device in scanned_results:
+                # Check for existing custom names so we don't accidentally overwrite user input
                 cursor.execute("SELECT custom_name FROM devices WHERE mac_address=? AND network_id=?", (device["mac"], network_id))
                 existing = cursor.fetchone()
                 final_name = existing[0] if existing and existing[0] else ""
                 
+                # Check global names if network-specific name is blank
                 if not final_name:
                     cursor.execute("SELECT custom_name FROM global_device_names WHERE mac_address=?", (device["mac"],))
                     glob = cursor.fetchone()
                     if glob: final_name = glob[0]
 
+                # Main Device Upsert Logic (Tracks previous IPs and calculates Discovery Status logic)
                 cursor.execute("""
                     INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, last_network_name)
                     VALUES (?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?, ?)
@@ -2497,6 +2762,7 @@ def scan_network():
                     last_network_name=excluded.last_network_name
                 """, (device["mac"], network_id, device["hostname"], final_name, device["ip"], current_time, device["services"], device["vendor"], final_network_name, final_name))
 
+                # Snapshot the device into the raw history log for the CSV exporter
                 cursor.execute("""
                     INSERT INTO device_scans (mac_address, network_id, ip_address, hostname, services, timestamp, network_name)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -2510,6 +2776,11 @@ def scan_network():
 
 @app.route('/api/scan_network_stream')
 def scan_network_stream():
+    """
+    Server-Sent Events (SSE) Streaming Network Scanner.
+    Optimized for instant UI rendering while implementing a deferred post-scan 
+    fallback to ensure the router's real MAC address is captured even if missed initially.
+    """
     is_continue = request.args.get('mode') == 'continue'
     force_merge = request.args.get('force_merge') == 'true'
     expected_net_id = request.args.get('network_id')
@@ -2558,11 +2829,9 @@ def scan_network_stream():
                         db_mac, db_ip = db_net[0], db_net[1]
                         
                         mismatch = False
-                        # 1. Check if Subnets/Gateway IPs definitively differ
                         if gateway_ip != "-" and db_ip != "-" and gateway_ip != db_ip:
                             mismatch = True
                         else:
-                            # 2. Check if Gateway Hardware MAC differs
                             gw_mac = get_gateway_mac(gateway_ip) if gateway_ip != "-" else None
                             if gw_mac and db_mac and gw_mac != db_mac and not db_mac.startswith("NO_MAC"):
                                 mismatch = True
@@ -2571,17 +2840,91 @@ def scan_network_stream():
                             yield f"data: {json.dumps({'type': 'mismatch', 'message': 'Network change detected.'})}\n\n"
                             return
 
-            # --- 1. PERFORM SCAN FIRST ---
+            # --- 1. INSTANT UI INITIALIZATION ---
+            # Try to grab the gateway MAC immediately for the fast UI draw
+            gateway_mac = None
+            if gateway_ip != "-" and gateway_ip != "Unknown":
+                gateway_mac = get_gateway_mac(gateway_ip)
+
+            # If it's not ready yet, use a provisional temporary placeholder so the UI draws instantly
+            initial_was_placeholder = False
+            if not gateway_mac:
+                gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
+                initial_was_placeholder = True
+
+            is_isolation = request.args.get('mode') == 'isolation'
+            is_split = request.args.get('mode') == 'split'
+            
+            existing_states = {}
+            final_network_comment = ""
+            
+            with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                c = conn.cursor()
+                
+                if is_isolation or is_split:
+                    final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip}) - {'Isolated' if is_isolation else 'Split'}"
+                    c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, 0, '')", 
+                              (gateway_mac, final_network_name, current_time, gateway_ip))
+                    network_id = c.lastrowid
+                else:
+                    if is_continue and expected_net_id:
+                        if force_merge:
+                            c.execute("SELECT id, name, comments FROM networks WHERE id=?", (expected_net_id,))
+                            row = c.fetchone()
+                            if row:
+                                network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
+                                c.execute("UPDATE networks SET last_scan=?, gateway_mac=?, gateway_ip=? WHERE id=?", (current_time, gateway_mac, gateway_ip, network_id))
+                            else:
+                                network_id = expected_net_id
+                                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                        else:
+                            c.execute("SELECT id, name, comments FROM networks WHERE id=?", (expected_net_id,))
+                            row = c.fetchone()
+                            if row:
+                                network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
+                                c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
+                            else:
+                                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                                c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, 1, '')", 
+                                          (gateway_mac, final_network_name, current_time, gateway_ip))
+                                network_id = c.lastrowid
+                    else:
+                        c.execute("SELECT id, name, comments FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC", (gateway_mac, gateway_ip))
+                        row = c.fetchone()
+                        if row:
+                            network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
+                            c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
+                        else:
+                            c.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
+                            existing = c.fetchone()
+                            allow_match_val = 0 if existing else 1
+                            
+                            final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                            c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, ?, '')", 
+                                      (gateway_mac, final_network_name, current_time, gateway_ip, allow_match_val))
+                            network_id = c.lastrowid
+                
+                c.execute("SELECT mac_address, is_online, services FROM devices WHERE network_id=?", (network_id,))
+                for r in c.fetchall():
+                    existing_states[r[0]] = {'online': r[1], 'services': r[2]}
+                    
+                c.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
+                conn.commit()
+
+            # YIELD INIT TO FRONTEND INSTANTLY
+            yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment})}\n\n"
+
+            # --- 2. PERFORM SCAPY SCAN ---
             ans = []
             try:
                 ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                             timeout=2, retry=1, verbose=0, inter=0.01, 
+                             timeout=1.5, retry=0, verbose=0, inter=0.01, 
                              iface=target_iface, promisc=False)
             except Exception as e:
                 print(f"[*] Scapy targeted bind failed on {target_iface}: {e}. Retrying globally...")
                 try:
                     ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                                 timeout=2, retry=1, verbose=0, inter=0.01, promisc=False)
+                                 timeout=1.5, retry=0, verbose=0, inter=0.01, promisc=False)
                 except Exception as e2:
                     print(f"[*] Scapy global bind failed: {e2}")
 
@@ -2592,7 +2935,7 @@ def scan_network_stream():
                     self.ip, self.mac = ip, mac
                     self.psrc, self.hwsrc = ip, mac
 
-            # --- 2. OS-AGNOSTIC PING SWEEP FALLBACK ---
+            # --- 3. OS-AGNOSTIC PING SWEEP FALLBACK ---
             if len(raw_candidates) <= 1:
                 print("[*] Scapy scan found few devices. Initiating OS Ping Sweep...")
                 def fast_ping(ip_str):
@@ -2622,96 +2965,40 @@ def scan_network_stream():
                 except Exception as e:
                     print(f"[*] OS Ping Sweep Parsing Failed: {e}")
 
-            # --- 3. EXTRACT GATEWAY MAC FROM RESULTS ---
-            gateway_mac = None
-            found_ips = []
-            
-            for d in raw_candidates:
-                d_ip = getattr(d, 'psrc', getattr(d, 'ip', ''))
-                found_ips.append(d_ip)
-                if d_ip == gateway_ip:
-                    gateway_mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
+            # --- DEFERRED ROUTER MAC RESOLUTION ("TRY LATER") ---
+            # If we started with a provisional placeholder, check if the scan successfully discovered the router now that the network has been swept!
+            if initial_was_placeholder and gateway_ip != "-" and gateway_ip != "Unknown":
+                resolved_mac = None
+                # Check raw candidates first
+                for d in raw_candidates:
+                    if getattr(d, 'psrc', getattr(d, 'ip', '')) == gateway_ip:
+                        resolved_mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
+                        break
+                # If still missing, query ARP table explicitly one more time
+                if not resolved_mac:
+                    resolved_mac = get_gateway_mac(gateway_ip)
 
-            if not gateway_mac and gateway_ip != "-" and gateway_ip != "Unknown":
-                gateway_mac = get_gateway_mac(gateway_ip)
-                if not gateway_mac:
-                    gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
+                if resolved_mac and not resolved_mac.startswith("NO_MAC"):
+                    gateway_mac = resolved_mac
+                    final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
+                    # Update the database record with the real router MAC and proper name
+                    with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                        conn.execute("UPDATE networks SET gateway_mac=?, name=? WHERE id=?", (gateway_mac, final_network_name, network_id))
+                        conn.commit()
+                    # Notify frontend so it updates its header display dynamically
+                    yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment})}\n\n"
+
+            # Guarantee Gateway and Localhost are in the processing list
+            found_ips = [getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates]
+            
+            if gateway_ip not in found_ips and gateway_ip != "-" and gateway_ip != "Unknown":
                 raw_candidates.append(MockDev(gateway_ip, gateway_mac))
                 found_ips.append(gateway_ip)
-            elif not gateway_mac:
-                gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
 
             if target_ip_val not in found_ips and target_mac_val:
                 raw_candidates.append(MockDev(target_ip_val, target_mac_val))
 
-            # --- 4. DB NETWORK CREATION / LOOKUP ---
-            is_isolation = request.args.get('mode') == 'isolation'
-            is_split = request.args.get('mode') == 'split'
-            
-            existing_states = {}
-            final_network_comment = ""
-            
-            with sqlite3.connect(DB_NAME, timeout=10) as conn:
-                c = conn.cursor()
-                
-                # 1. SPLIT or ISOLATION (Forced New Network)
-                if is_isolation or is_split:
-                    final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip}) - {'Isolated' if is_isolation else 'Split'}"
-                    c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, 0, '')", 
-                              (gateway_mac, final_network_name, current_time, gateway_ip))
-                    network_id = c.lastrowid
-                else:
-                    # 2. CONTINUE SCAN (Expected to map to a loaded UI network)
-                    if is_continue and expected_net_id:
-                        if force_merge:
-                            c.execute("SELECT id, name, comments FROM networks WHERE id=?", (expected_net_id,))
-                            row = c.fetchone()
-                            if row:
-                                network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
-                                c.execute("UPDATE networks SET last_scan=?, gateway_mac=?, gateway_ip=? WHERE id=?", (current_time, gateway_mac, gateway_ip, network_id))
-                            else:
-                                network_id = expected_net_id
-                                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-                        else:
-                            c.execute("SELECT id, name, comments FROM networks WHERE id=?", (expected_net_id,))
-                            row = c.fetchone()
-                            if row:
-                                network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
-                                c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
-                            else:
-                                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-                                c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, 1, '')", 
-                                          (gateway_mac, final_network_name, current_time, gateway_ip))
-                                network_id = c.lastrowid
-                    else:
-                        # 3. STANDARD SCAN (Search for allow_matching = 1)
-                        c.execute("SELECT id, name, comments FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC", (gateway_mac, gateway_ip))
-                        row = c.fetchone()
-                        if row:
-                            network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
-                            c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, network_id))
-                        else:
-                            # 4. DEFAULT FALLBACK: Create new. Ensure it doesn't pollute if it hits a known blocked MAC/IP.
-                            c.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
-                            existing = c.fetchone()
-                            allow_match_val = 0 if existing else 1
-                            
-                            final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-                            c.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, ?, '')", 
-                                      (gateway_mac, final_network_name, current_time, gateway_ip, allow_match_val))
-                            network_id = c.lastrowid
-                
-                c.execute("SELECT mac_address, is_online, services FROM devices WHERE network_id=?", (network_id,))
-                for r in c.fetchall():
-                    existing_states[r[0]] = {'online': r[1], 'services': r[2]}
-                    
-                c.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
-                conn.commit()
-
-            # --- 5. YIELD INIT TO FRONTEND ---
-            yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment})}\n\n"
-
-            # --- 6. PROCESS DEVICES STREAM ---
+            # --- 4. PROCESS DEVICES STREAM ---
             tasks = []
             for d in raw_candidates:
                 mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
@@ -2720,7 +3007,6 @@ def scan_network_stream():
                 if is_continue and mac in existing_states and existing_states[mac]['online'] == 0:
                     skip_services = True
                 
-                # Pass gateway_ip to the task tuple
                 tasks.append((d, skip_services, gateway_ip))
 
             with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
@@ -2795,10 +3081,12 @@ def scan_network_stream():
                             conn.commit()
 
                         print(f"[*] Active Device Found: {dev['mac']} ({dev['ip']}) - {dev['hostname']}")
+                        
+                        # Streaming Payload
                         yield f"data: {json.dumps({'type': 'device', 'device': dev})}\n\n"
                     except Exception: pass
 
-            # --- 7. APPEND OFFLINE DEVICES ---
+            # --- 5. APPEND OFFLINE DEVICES ---
             offline_devices = []
             with sqlite3.connect(DB_NAME, timeout=10) as conn:
                 conn.row_factory = sqlite3.Row
@@ -2819,12 +3107,14 @@ def scan_network_stream():
                         if g_vend: dev['custom_vendor'] = g_vend[0]
                     offline_devices.append(dev)
 
+            # Final payload containing all offline stragglers
             yield f"data: {json.dumps({'type': 'complete', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment, 'offline_devices': offline_devices})}\n\n"     
 
         except Exception as critical_err:
             print(f"[!!!] CRITICAL SCAN ERROR: {critical_err}")
             yield f"data: {json.dumps({'type': 'error', 'message': f'Server Error: {str(critical_err)}'})}\n\n"
 
+    # Encapsulate the generator inside a Flask Response stream
     return Response(stream_with_context(generate()), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no'
@@ -2832,16 +3122,22 @@ def scan_network_stream():
 
 @app.route('/api/dns/lookup', methods=['POST'])
 def dns_lookup():
-    """Performs DNS lookup and logs with network context."""
+    """
+    Executes a DNS A-Record lookup for a provided domain name.
+    Logs the result in the database alongside the active Network Context (Router IP, LAN IP, Network Name)
+    so the user knows exactly which environment the resolution occurred in.
+    """
     domain = request.json.get('domain', '').strip()
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lan_ip, router_ip, net_name = get_current_network_context()
 
-    # --- NEW: Strict Validation ---
+    # --- STRICT VALIDATION ---
+    # Prevents command injection or database pollution from empty/malformed inputs
     if not domain or domain.startswith('-') or not re.match(r'^[\w\.-]+$', domain):
         return jsonify({"timestamp": ts, "domain": domain or "Invalid", "ip": "-", "status": "Failed"})
 
     try:
+        # Uses the host OS's native DNS resolver to find the IP
         ip = socket.gethostbyname(domain)
         status = "Resolved"
     except:
@@ -2860,7 +3156,7 @@ def dns_lookup():
 
 @app.route('/api/dns/logs')
 def get_dns_logs():
-    """Fetches the last 100 DNS lookup records."""
+    """Fetches the DNS lookup history. Limits to the 100 most recent records to prevent UI lag."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         logs = conn.execute("SELECT * FROM dns_logs ORDER BY id DESC LIMIT 100").fetchall()
@@ -2868,7 +3164,7 @@ def get_dns_logs():
 
 @app.route('/api/dns/clear', methods=['POST'])
 def clear_dns_logs():
-    """Clears the DNS history log."""
+    """Wipes the entire DNS history log from the database."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM dns_logs")
         conn.commit()
@@ -2876,7 +3172,10 @@ def clear_dns_logs():
 
 @app.route('/api/tool_logs/update', methods=['POST'])
 def update_tool_log():
-    """Updates the network name and comments of a DNS or Ping log entry."""
+    """
+    Shared endpoint to update user-defined metadata (network name and comments) 
+    for a specific DNS or Ping log entry.
+    """
     d = request.json or {}
     log_type = d.get('type')
     item_id = d.get('id')
@@ -2899,12 +3198,14 @@ def update_tool_log():
 @app.route('/api/ping/run', methods=['POST'])
 def run_ping():
     """
-    Executes a system ping (4 packets) and logs latency/loss.
-    Now includes Network Context (Router IP, Name, LAN IP).
+    Executes a native OS ICMP Ping (4 packets) against a target IP or domain.
+    Parses the terminal output using OS-specific Regex to extract Latency and Packet Loss.
+    Logs the result with the active Network Context (Router IP, LAN IP, Network Name).
     """
     target = request.json.get('target', '').strip()
     
-    # --- NEW: Strict Validation ---
+    # --- STRICT VALIDATION ---
+    # Highly critical to prevent OS command injection since the target is passed to a subprocess shell
     if not target or target.startswith('-') or not re.match(r'^[\w\.-]+$', target):
         return jsonify({
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2915,9 +3216,9 @@ def run_ping():
             "error": "Invalid target format"
         })
     
-    # Determine OS-specific ping command
-    # Windows uses '-n', Unix/Mac uses '-c'
-    param = '-n' if platform.system().lower()=='windows' else '-c'
+    # Determine OS-specific ping command arguments
+    # Windows uses '-n' for packet count, Unix/Mac uses '-c'
+    param = '-n' if platform.system().lower() == 'windows' else '-c'
     cmd = ['ping', param, '4', target]
     
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2926,33 +3227,31 @@ def run_ping():
     status = "Failed"
     
     # --- GET CONTEXT (Router, Network Name, LAN IP) ---
-    # This calls the helper function we added earlier
     lan_ip, router_ip, net_name = get_current_network_context()
 
     try:
         # Run the ping command and capture output
-        # stderr=subprocess.STDOUT ensures we capture errors like "Host unreachable"
+        # stderr=subprocess.STDOUT ensures we capture terminal errors like "Host unreachable" in the main output block
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
         
-        # Parse output for Latency and Packet Loss
+        # Parse output for Latency and Packet Loss based on OS formatting
         if platform.system().lower() == 'windows':
-            # Windows Output: "Average = 24ms", "Lost = 0 (0% loss)"
+            # Windows Output format: "Average = 24ms", "Lost = 0 (0% loss)"
             if "Average =" in output:
                 latency = output.split("Average =")[1].strip().replace("ms", "").strip() + " ms"
             if "Lost =" in output:
                 loss_part = output.split("Lost =")[1].split("(")[1]
-                loss = loss_part.split(")")[0] # e.g., "0% loss"
+                loss = loss_part.split(")")[0] # Extracts just the percentage, e.g., "0% loss"
         else:
-            # Linux / macOS Output: "min/avg/max = ...", "0% packet loss"
+            # Linux / macOS Output format: "min/avg/max = ...", "0% packet loss"
             if "avg" in output: 
-                # Output format: min/avg/max/mdev = ...
                 latency = output.split(" = ")[1].split("/")[1] + " ms"
             if "packet loss" in output:
                 loss_match = re.search(r'(\d+(?:\.\d+)?)% packet loss', output)
                 if loss_match: 
                     loss = loss_match.group(1) + "%"
         
-        # Determine simple Status
+        # Determine simple Status indicator for the UI
         if "0%" in loss or "0.0%" in loss: 
             status = "Success"
         elif "100%" in loss: 
@@ -2961,9 +3260,9 @@ def run_ping():
             status = "Partial"
 
     except subprocess.CalledProcessError:
-        pass # Ping command returned non-zero exit code (Host Unreachable)
+        pass # Ping command returned non-zero exit code (e.g., Host Unreachable / Timeout)
     
-    # Log to Database with the new columns
+    # Log to Database
     with sqlite3.connect(DB_NAME, timeout=5) as conn:
         conn.execute("""
             INSERT INTO ping_logs (
@@ -2985,7 +3284,7 @@ def run_ping():
 
 @app.route('/api/ping/logs')
 def get_ping_logs():
-    """Fetches the last 100 Ping records."""
+    """Fetches the Ping history. Limits to the 100 most recent records to prevent UI lag."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         logs = conn.execute("SELECT * FROM ping_logs ORDER BY id DESC LIMIT 100").fetchall()
@@ -2993,7 +3292,7 @@ def get_ping_logs():
 
 @app.route('/api/ping/clear', methods=['POST'])
 def clear_ping_logs():
-    """Clears the Ping history log."""
+    """Wipes the entire Ping history log from the database."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM ping_logs")
         conn.commit()
@@ -3001,7 +3300,10 @@ def clear_ping_logs():
 
 @app.route('/api/export/tool_logs', methods=['POST'])
 def export_tool_logs():
-    """Exports DNS or Ping logs to CSV including new columns and comments."""
+    """
+    Exports DNS or Ping logs to a downloadable CSV file.
+    Uses io.StringIO to generate the CSV entirely in RAM, skipping disk writes.
+    """
     log_type = request.json.get('type')
     out = io.StringIO()
     writer = csv.writer(out)
@@ -3023,6 +3325,10 @@ def export_tool_logs():
 
 @app.route('/api/system/alerts', methods=['GET'])
 def get_system_alerts():
+    """
+    Retrieves active system alerts (e.g., Disk Space Low, Update Failed) from the JSON file.
+    These are rendered as persistent red banner warnings at the top of the UI.
+    """
     try:
         if os.path.exists(ALERTS_FILE):
             with open(ALERTS_FILE, "r") as f:
@@ -3032,6 +3338,9 @@ def get_system_alerts():
 
 @app.route('/api/system/alerts/dismiss', methods=['POST'])
 def dismiss_system_alert():
+    """
+    Dismisses a specific system alert by removing its exact string from the JSON file array.
+    """
     msg = request.json.get('message')
     try:
         if os.path.exists(ALERTS_FILE):
@@ -3045,8 +3354,16 @@ def dismiss_system_alert():
     return jsonify({"status": "success"})
 
 # --- Misc (WiFi, Speedtest, History, Update) ---
+
 def get_visible_wifi_interfaces():
-    """Helper function to fetch Wi-Fi interfaces while applying database visibility rules."""
+    """
+    Identifies all physical Wi-Fi adapters available on the host machine.
+    - Employs OS-specific commands because standard Python socket libraries cannot easily 
+      differentiate Wi-Fi from Ethernet.
+    - Caches the raw interface list globally to prevent the UI dropdown from lagging.
+    - Cross-references the detected hardware against the SQLite database to explicitly 
+      filter out any adapters the user has marked as 'hidden' in the settings.
+    """
     global OS_CACHE
     raw_ifaces = []
     sys_plat = platform.system()
@@ -3056,17 +3373,20 @@ def get_visible_wifi_interfaces():
     else:
         try:
             if sys_plat == "Windows":
+                # Windows: 'netsh' is the most reliable native utility for Wi-Fi hardware
                 out = subprocess.check_output("netsh wlan show interfaces", shell=True, text=True, encoding='cp437', errors='ignore')
                 for line in out.split('\n'):
                     if "Name" in line and ":" in line:
                         raw_ifaces.append(line.split(":", 1)[1].strip())
             elif sys_plat == "Linux":
+                # Linux: NetworkManager CLI provides a clean interface listing
                 out = subprocess.check_output(["nmcli", "-t", "-f", "DEVICE,TYPE", "dev"], text=True)
                 for line in out.strip().split('\n'):
                     parts = line.split(':')
                     if len(parts) >= 2 and parts[1] == "wifi":
                         raw_ifaces.append(parts[0])
             elif sys_plat == "Darwin":
+                # macOS: CoreWLAN natively exposes Wi-Fi interfaces directly to Python via pyobjc
                 import CoreWLAN
                 client = CoreWLAN.CWWiFiClient.sharedWiFiClient()
                 interfaces = client.interfaces()
@@ -3082,6 +3402,8 @@ def get_visible_wifi_interfaces():
     final_ifaces = []
     settings_by_mac = {}
     settings_by_name = {}
+    
+    # Load user visibility preferences from the database
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             for row in conn.execute("SELECT mac_address, custom_name, is_visible FROM adapter_settings"):
@@ -3094,6 +3416,7 @@ def get_visible_wifi_interfaces():
 
     for iface in raw_ifaces:
         mac = "-"
+        # Map the OS interface string back to its physical MAC address
         if iface in net_ifaces:
             for a in net_ifaces[iface]:
                 if a.family == psutil.AF_LINK:
@@ -3103,6 +3426,7 @@ def get_visible_wifi_interfaces():
         custom_name = iface
         is_visible = 1
         
+        # Apply the user's custom name and check if they hid it
         if mac != "-" and mac in settings_by_mac:
             if settings_by_mac[mac]["name"]: custom_name = settings_by_mac[mac]["name"]
             is_visible = settings_by_mac[mac]["visible"]
@@ -3110,7 +3434,7 @@ def get_visible_wifi_interfaces():
             if settings_by_name[iface]["name"]: custom_name = settings_by_name[iface]["name"]
             is_visible = settings_by_name[iface]["visible"]
             
-        # Only append it if it hasn't been hidden!
+        # Only append it to the dropdown list if it hasn't been hidden!
         if is_visible:
             final_ifaces.append({"id": iface, "name": custom_name})
             
@@ -3118,18 +3442,22 @@ def get_visible_wifi_interfaces():
 
 @app.route('/api/wifi/interfaces')
 def api_wifi_interfaces():
-    """Returns the visible interfaces to the dashboard dropdown."""
+    """Returns the visible interfaces to populate the dashboard's Wi-Fi scanner dropdown."""
     return jsonify(get_visible_wifi_interfaces())
 
 def merge_wifi_results(existing_list, new_list):
-    """Deep merges two Wi-Fi scan results, prioritizing stronger signal strengths."""
+    """
+    Deep merges two Wi-Fi scan results for the 'Continue Scan' feature.
+    - Consolidates multiple hardware MACs (BSSIDs) under a single Network Name (SSID) to support Mesh Wi-Fi.
+    - If a BSSID appears in both scans, it preserves the strongest signal strength (dBm) found.
+    """
     merged = {}
     for net in existing_list + new_list:
         ssid = net.get('ssid', 'Unknown')
         if ssid not in merged:
             merged[ssid] = {"ssid": ssid, "auth": net.get('auth', 'Unknown'), "bssids": {}}
         
-        # Update auth if new one is better/known
+        # Update Authentication string if the new scan provides a better/known format
         if net.get('auth') and net.get('auth') != 'Unknown':
             merged[ssid]['auth'] = net.get('auth')
             
@@ -3139,7 +3467,7 @@ def merge_wifi_results(existing_list, new_list):
                 merged[ssid]['bssids'][mac] = b
             else:
                 existing_b = merged[ssid]['bssids'][mac]
-                # Compare and merge DBms (Keep the strongest signal)
+                # Compare and merge DBms (Keep the strongest signal detected across both scans)
                 new_dbm = b.get('dbm')
                 old_dbm = existing_b.get('dbm')
                 if new_dbm is not None:
@@ -3153,7 +3481,7 @@ def merge_wifi_results(existing_list, new_list):
                 if b.get('band') and b.get('band') not in ['Unknown', '', '-']:
                     existing_b['band'] = b['band']
                     
-    # Rebuild the final list formatted for the UI
+    # Rebuild the final list formatted exactly as the UI expects it
     result = []
     for ssid, data in merged.items():
         raw_b = list(data['bssids'].values())
@@ -3161,7 +3489,7 @@ def merge_wifi_results(existing_list, new_list):
         for b in raw_b:
             if b.get('channel') and str(b['channel']) not in ['0', '', '-']:
                 best_ch = b['channel']
-                break # Just grab the first valid channel for the summary tag
+                break # Just grab the first valid channel for the summary UI tag
         result.append({
             "ssid": ssid,
             "auth": data['auth'],
@@ -3173,9 +3501,10 @@ def merge_wifi_results(existing_list, new_list):
 @app.route('/api/wifi')
 def get_wifi_networks():
     """
-    Returns detailed Wi-Fi data grouped by SSID.
-    Allows targeting a specific Wi-Fi adapter or intelligently scanning ALL visible adapters.
-    Supports 'continue' mode to merge new results into an existing scan.
+    Cross-Platform Wi-Fi Discovery Engine.
+    Returns detailed Wi-Fi data grouped by SSID. 
+    Because Wi-Fi APIs are deeply rooted in OS drivers, this requires three completely different 
+    strategies depending on the host machine.
     """
     networks_dict = {}
     sys_plat = platform.system()
@@ -3199,6 +3528,7 @@ def get_wifi_networks():
         if sys_plat == "Darwin":
             try:
                 try:
+                    # In modern macOS, Location Services must explicitly be requested right before scanning
                     import CoreLocation
                     loc_manager = CoreLocation.CLLocationManager.alloc().init()
                     loc_manager.requestWhenInUseAuthorization()
@@ -3211,6 +3541,7 @@ def get_wifi_networks():
                     wifi_interface = CoreWLAN.CWInterface.interfaceWithName_(target_iface)
                     if not wifi_interface: continue
                     
+                    # Force an active scan and merge with the OS cache
                     active_networks, error = wifi_interface.scanForNetworksWithName_error_(None, None)
                     cached_networks = wifi_interface.cachedScanResults()
                     
@@ -3227,12 +3558,14 @@ def get_wifi_networks():
                             mac_val = i.bssid()
                             mac = str(mac_val) if mac_val else f"Unknown_MAC_{id(i)}"
                             
+                            # Extract hardware signal strength metrics
                             dbm_val = int(i.rssiValue()) if i.rssiValue() else None
                             pct_val = max(0, min(100, int((dbm_val + 100) * 2))) if dbm_val is not None else None
                             
                             ch_obj = i.wlanChannel()
                             ch = str(ch_obj.channelNumber()) if ch_obj else "0"
                             
+                            # Determine Frequency Band (2.4/5/6 GHz) based on Apple's native ENUM or the raw channel ID
                             band_val = ch_obj.channelBand() if ch_obj else 0
                             if band_val == 1: b = "2.4GHz"
                             elif band_val == 2: b = "5GHz"
@@ -3273,13 +3606,16 @@ def get_wifi_networks():
         # 2. Windows Implementation (netsh)
         # ==========================================
         elif sys_plat == "Windows":
+            # Force the physical adapter to restart its internal cache before scanning
             iface_list_str = ",".join([f"'{i}'" for i in target_ifaces])
             subprocess.run(["powershell", "-Command", f"Get-NetAdapter -Name {iface_list_str} | Restart-NetAdapter"], capture_output=True)
             time.sleep(4) 
             
             for target_iface in target_ifaces:
+                # Mode=bssid requests hardware-level details for Mesh Networks rather than a simple summarized list
                 cmd = f'netsh wlan show networks interface="{target_iface}" mode=bssid'
 
+                # Retry loop: Netsh sometimes fails to print the 'Signal' percentage on the first pass
                 for attempt in range(2):
                     process = subprocess.Popen(
                         cmd, 
@@ -3290,6 +3626,7 @@ def get_wifi_networks():
                     try:
                         stdout = out_bytes.decode('utf-8')
                     except UnicodeDecodeError:
+                        # Windows terminal defaults to CP437 on older systems, which throws decode errors
                         stdout = out_bytes.decode('cp437', errors='ignore')
 
                     current_ssid = None
@@ -3339,11 +3676,13 @@ def get_wifi_networks():
                                                 networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
                                             except ValueError: pass
                             
+                            # Parse legacy signal percentage outputs
                             elif current_mac and "signal" in line.lower():
                                 raw_sig = line.split(":", 1)[1].strip()
                                 try:
                                     pct_val = int(''.join(filter(str.isdigit, raw_sig)))
                                     networks_dict[current_ssid]["bssids"][current_mac]["percent"] = pct_val
+                                    # Convert Windows Signal % to rough standard dBm approximation
                                     networks_dict[current_ssid]["bssids"][current_mac]["dbm"] = int((pct_val / 2) - 100)
                                 except ValueError: pass
                             
@@ -3360,6 +3699,7 @@ def get_wifi_networks():
                                 else: b = raw_band
                                 networks_dict[current_ssid]["bssids"][current_mac]["band"] = b
 
+                    # If Netsh failed to supply signal strengths, we loop and try the terminal command one more time.
                     missing_signals = any(
                         b_data["percent"] is None 
                         for net in networks_dict.values() 
@@ -3373,15 +3713,18 @@ def get_wifi_networks():
         # 3. Linux Implementation (nmcli)
         # ==========================================
         elif sys_plat == "Linux":
+            # Force NetworkManager to actively rescan the physical environment
             for target_iface in target_ifaces:
                 subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", target_iface], capture_output=True)
             time.sleep(2) 
             
             for target_iface in target_ifaces:
+                # Provides a highly structured colon-separated output
                 cmd = ["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,SECURITY", "dev", "wifi", "list", "ifname", target_iface]
                 try:
                     output = subprocess.check_output(cmd, text=True)
                     for line in output.strip().split('\n'):
+                        # Safely split by colons, ignoring any colons that were escaped with backslashes
                         parts = re.split(r'(?<!\\):', line)
                         parts = [p.replace('\\:', ':') for p in parts]
                         
@@ -3402,6 +3745,7 @@ def get_wifi_networks():
                             freq_digits = ''.join(filter(str.isdigit, parts[4]))
                             freq = int(freq_digits) if freq_digits else 0
                             
+                            # Calculate the Band based on the exact frequency range (MHz)
                             if 2400 <= freq <= 2500: b = "2.4GHz"
                             elif 5150 <= freq <= 5895: b = "5GHz"
                             elif freq >= 5925: b = "6GHz"
@@ -3419,6 +3763,7 @@ def get_wifi_networks():
         # ==========================================
         # 4. Final Formatting & Merge Logic
         # ==========================================
+        # Converts the nested python dictionaries into a flat list structure expected by the frontend
         final_networks = []
         for ssid, net_data in networks_dict.items():
             raw_b = []
@@ -3429,6 +3774,7 @@ def get_wifi_networks():
                     "mac": mac, "dbm": b_data["dbm"], "percent": b_data["percent"],
                     "channel": b_data["channel"], "band": b_data["band"]
                 })
+                # Determine which specific access point has the strongest signal to represent the whole Mesh
                 curr_dbm = b_data["dbm"] if b_data["dbm"] is not None else -1000
                 if curr_dbm > best_dbm:
                     best_dbm = curr_dbm
@@ -3438,12 +3784,12 @@ def get_wifi_networks():
                 "ssid": ssid, "auth": net_data["auth"], "channel": best_ch, "raw_bssids": raw_b
             })
 
-        # Save to Database with Continue Support
+        # Save the finalized scan to Database, providing Support for the 'Continue Scan' UI feature
         try:
             with sqlite3.connect(DB_NAME, timeout=10) as conn:
                 c = conn.cursor()
                 
-                # If continuing an existing scan, merge the data first
+                # If continuing an existing scan, pull the old JSON out, merge it, and push it back in
                 if mode == 'continue' and scan_id:
                     c.execute("SELECT results_json, scan_name, comments FROM wifi_history WHERE id=?", (scan_id,))
                     row = c.fetchone()
@@ -3454,7 +3800,7 @@ def get_wifi_networks():
                         c.execute("UPDATE wifi_history SET results_json=? WHERE id=?", (json.dumps(final_networks), scan_id))
                         conn.commit()
                         
-                        # Attach Global Comments to the UI Data
+                        # Attach Global Comments to the UI Data dynamically so they persist across sessions
                         for net in final_networks:
                             try:
                                 g_com = c.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net['ssid'],)).fetchone()
@@ -3464,7 +3810,7 @@ def get_wifi_networks():
                             
                         return jsonify({"scan_id": scan_id, "scan_name": row[1], "scan_comment": row[2] or "", "networks": final_networks})
                         
-                # Fallback or New Scan: Create a fresh entry
+                # Fallback or New Scan: Create a completely fresh database entry
                 scan_name = f"Scan {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 scan_comment = ""
                 c.execute("INSERT INTO wifi_history (scan_name, comments, results_json) VALUES (?, ?, ?)", 
@@ -3490,7 +3836,10 @@ def get_wifi_networks():
 
 @app.route('/api/wifi/merge', methods=['POST'])
 def merge_wifi_scans():
-    """Merges multiple Wi-Fi scans into a single target scan, deleting the old ones."""
+    """
+    Management Tool: Merges multiple separate Wi-Fi history scans into a single target scan.
+    Soft deletes the old scans by setting is_deleted=1, preserving the database integrity.
+    """
     d = request.json
     target_id = d.get('target_id')
     source_ids = d.get('source_ids', [])
@@ -3526,6 +3875,10 @@ def merge_wifi_scans():
 
 @app.route('/api/wifi/history/<int:scan_id>', methods=['GET'])
 def load_wifi_scan(scan_id):
+    """
+    Loads a specific Wi-Fi scan from the database history, parses its JSON structure,
+    and dynamically overlays the user's global SSID comments.
+    """
     try:
         conn = sqlite3.connect(DB_NAME, timeout=10.0)
         c = conn.cursor()
@@ -3535,7 +3888,7 @@ def load_wifi_scan(scan_id):
         if row:
             results = json.loads(row[0])
             
-            # Attach Global Comments to the UI Data
+            # Attach Global Comments to the UI Data dynamically
             for net in results:
                 try:
                     g_com = c.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net['ssid'],)).fetchone()
@@ -3554,25 +3907,26 @@ def load_wifi_scan(scan_id):
 @app.route('/api/speedtest', methods=['POST'])
 def run_speedtest():
     """
-    Executes an Ookla Speedtest.
-    - Windows: Uses --ip with the local IP.
-    - macOS/Linux: Uses --interface with the hardware name (e.g., en0).
-    Provides a pure-Python fallback (limited to ~1Gbps) if the official CLI fails, 
-    and notifies the user via the System Alerts UI.
+    Executes an Ookla Speedtest via the command-line interface.
+    - Windows: Uses --ip bound to the specific local interface IP.
+    - macOS/Linux: Uses --interface bound to the hardware name (e.g., en0).
+    - Robustness: If the official C++ CLI binary fails (due to OS driver permission blocks or missing libraries), 
+      it automatically falls back to a pure-Python library implementation (limited to ~1Gbps) 
+      and notifies the user via the UI Alert banner.
     """
     d = request.json
     target_iface_name = None
     device_ip = "-" 
     pinned_mac = None
 
-    # 1. Identify the Adapter and its IP
+    # 1. Identify the Target Adapter and its IP
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
             if row:
                 pinned_mac = row[0]
             
-            # Fetch hidden interfaces
+            # Fetch hidden interfaces so we don't accidentally test on an adapter the user disabled
             hidden_rows = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_visible = 0").fetchall()
             hidden_macs = [r[0] for r in hidden_rows]
             
@@ -3588,7 +3942,7 @@ def run_speedtest():
                 if temp_mac in hidden_macs:
                     continue
                 
-                # If pinned, match by MAC; otherwise, find the active one
+                # If pinned, match by MAC; otherwise, find the active one serving the default route
                 if pinned_mac and temp_mac == pinned_mac:
                     target_iface_name = name
                     device_ip = temp_ip
@@ -3599,16 +3953,22 @@ def run_speedtest():
     except Exception as e:
         print(f"[*] Speedtest adapter lookup failed: {e}")
 
-    # Block the speedtest if no visible interface is found
+    # Block the speedtest if no visible interface is found to prevent it from testing standard loopbacks
     if not target_iface_name and not pinned_mac:
         return jsonify({"error": "No usable or visible network adapter found."})
 
     # --- ENHANCED HELPER TO PARSE OOKLA OUTPUT ---
     def parse_ookla(raw_text):
+        """
+        Safely extracts JSON from the CLI output. 
+        Occasionally, Ookla's binary prints plain-text connection warnings *before* 
+        printing the final JSON response, which crashes standard json.loads().
+        """
         try:
             return json.loads(raw_text)
         except json.JSONDecodeError as parse_err:
             print(f"\n[!] OOKLA JSON PARSE WARNING: {parse_err}")
+            # Scan backwards line-by-line looking for the valid JSON object
             for line in reversed(raw_text.strip().split('\n')):
                 line = line.strip()
                 if line.startswith('{') and line.endswith('}'):
@@ -3622,6 +3982,10 @@ def run_speedtest():
 
     # --- PURE PYTHON FALLBACK MECHANISM ---
     def execute_fallback_speedtest():
+        """
+        Triggered if the official CLI is missing, lacks execution rights, or is blocked by an OS-level firewall.
+        Downloads and runs the 'speedtest-cli' python module directly into RAM.
+        """
         print("[*] Initiating Python fallback speedtest (Note: Speeds may be limited to ~1Gbps)...")
         try:
             import speedtest
@@ -3632,7 +3996,7 @@ def run_speedtest():
             import speedtest
             
         try:
-            # Bind to specific IP if pinned
+            # Bind to specific IP if pinned in the UI
             if device_ip and device_ip != "-" and device_ip != "127.0.0.1":
                 st = speedtest.Speedtest(source_address=device_ip)
             else:
@@ -3655,16 +4019,16 @@ def run_speedtest():
             raise e
 
     try:
-        # 2. Path to the CLI Binary
+        # 2. Identify the Path to the officially downloaded CLI Binary
         base_dir = app.root_path 
         st_path = os.path.join(base_dir, "venv", "Scripts", "speedtest.exe") if platform.system() == "Windows" else os.path.join(base_dir, "venv", "bin", "speedtest")
         cmd_path = st_path if os.path.exists(st_path) else "speedtest"
         
-        # 3. Build Command
+        # 3. Build base execution command
         base_cmd = [cmd_path, "--format=json", "--accept-license", "--accept-gdpr"]
         cmd = list(base_cmd)
         
-        # 4. Apply OS-Specific Binding
+        # 4. Apply OS-Specific Interface Binding
         if platform.system() == "Windows":
             if device_ip and device_ip != "-":
                 cmd.extend(["--ip", device_ip])
@@ -3672,24 +4036,26 @@ def run_speedtest():
             if target_iface_name:
                 cmd.extend(["--interface", target_iface_name])
         
-        # 5. Execute with Fallback Logic
+        # 5. Execute with Global Routing Fallback Logic
         try:
             raw_out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
             res = parse_ookla(raw_out)
         except subprocess.CalledProcessError as e:
+            # If the user pinned an adapter, we MUST respect it. Jump straight to the Python fallback.
             if pinned_mac:
-                raise e # Pin enforced: Jump straight to the Python fallback
+                raise e 
                 
+            # If no pin is set, try removing the strict interface bindings and letting the OS route the traffic naturally
             print(f"[*] Speedtest strict bind failed (Exit {e.returncode}). Retrying globally...")
             raw_out = subprocess.check_output(base_cmd, stderr=subprocess.STDOUT, text=True)
             res = parse_ookla(raw_out)
             device_ip = get_local_ip()
             
-        # 6. Check for internal Ookla JSON errors
+        # 6. Check for internal JSON errors generated by the Ookla binary
         if "error" in res:
             raise Exception(f"Ookla Internal Error: {res.get('error')}")
         
-        # 7. Format Results
+        # 7. Format Results (Converting raw bytes to Mbps)
         down = f"{(res['download']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         up = f"{(res['upload']['bandwidth'] * 8) / 1_000_000:.2f} Mbps"
         ping = f"{res['ping']['latency']:.2f} ms"
@@ -3700,7 +4066,7 @@ def run_speedtest():
         print(f"\n[!] OFFICIAL OOKLA CLI FAILED: {str(e)}")
         print("[*] Attempting to fall back to alternative speed test...")
         
-        # --- DETERMINE EXACT CAUSE FOR USER NOTIFICATION ---
+        # --- DETERMINE EXACT CAUSE FOR USER UI NOTIFICATION ---
         err_str = str(e).lower()
         fallback_reason = "Official Speedtest CLI encountered an unexpected error."
         
@@ -3723,7 +4089,7 @@ def run_speedtest():
             # 8. Trigger Alternative Python Speedtest
             down, up, ping, isp, wan = execute_fallback_speedtest()
             
-            # Trigger the UI Alert Warning safely using the built-in system
+            # Trigger the UI Alert Warning safely using the built-in JSON alert system
             warning_msg = f"Speedtest Fallback Active: {fallback_reason} Using secondary tester. Note: Maximum detected speeds may be limited to ~1Gbps."
             add_system_alert(warning_msg)
             print(f"[*] {warning_msg}")
@@ -3734,7 +4100,7 @@ def run_speedtest():
                 return jsonify({"error": "Speed Test not able to complete via pinned adapter. Either unpin adapter or try again later."})
             return jsonify({"error": "Speedtest Failed. Check internet connection or retry later."})
             
-    # 9. Save Results to DB
+    # 9. Save Results to Database
     name = d.get('network_name') or "Unnamed Network"
     conn_type = d.get('connection_type') or "Ethernet"
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -3751,7 +4117,11 @@ def run_speedtest():
 
 @app.route('/api/get_last_name')
 def get_last_name():
-    """Gets the most recent network label for the current location."""
+    """
+    Quality-of-Life feature for Speedtests.
+    Checks the user's current Public WAN IP against the history database. 
+    If they have tested here before, it auto-fills the 'Network Name' input box with their previous label.
+    """
     info = get_isp_info()
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         row = conn.execute("SELECT network_name FROM history WHERE wan_ip = ? ORDER BY id DESC LIMIT 1", (info['ip'],)).fetchone()
@@ -3759,42 +4129,50 @@ def get_last_name():
 
 @app.route('/api/history')
 def get_history():
+    """Fetches the Speedtest history. Uses sqlite3.Row to automatically map columns to JSON dictionaries."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        conn.row_factory = sqlite3.Row  # THIS IS KEY
+        conn.row_factory = sqlite3.Row  # THIS IS KEY: Allows dict(row) conversion
         cursor = conn.execute("SELECT * FROM history ORDER BY timestamp DESC")
         rows = cursor.fetchall()
-        # Convert sqlite objects to a list of dictionaries for JSON
         return jsonify([dict(ix) for ix in rows])
 
 @app.route('/api/history/update', methods=['POST'])
 def update_history():
-    """Renames a history entry and updates its connection type."""
+    """Renames a history entry and updates its connection type (e.g., Wi-Fi vs Ethernet)."""
     d = request.json
     name = str(d.get('name', '')).strip()[:50]
     c_type = str(d.get('type', '')).strip()[:50]
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("UPDATE history SET network_name = ?, connection_type = ? WHERE id = ?", 
-                     (name, c_type, d.get('id'))) # Use variables
+                     (name, c_type, d.get('id'))) 
         conn.commit()
     return jsonify({"status": "success"})
 
 @app.route('/api/bulk_delete', methods=['POST'])
 def bulk_delete():
+    """
+    Dynamic Bulk Deletion Engine.
+    Takes an array of IDs and a target table type from the UI, and deletes them all in a single 
+    query using an IN clause. This is significantly faster than looping through individual DELETE queries.
+    """
     d = request.json
     table_map = {'networks': 'networks', 'wifi': 'wifi_history', 'history': 'history', 'dns': 'dns_logs', 'ping': 'ping_logs', 'devices': 'devices'}
     table = table_map.get(d.get('type'))
     ids = d.get('ids', [])
     
     if not table or not ids: return jsonify({"error": "Invalid parameters"}), 400
+    
+    # Generate the appropriate number of '?' placeholders for the SQL statement safely
     placeholders = ','.join(['?'] * len(ids))
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         if table == 'devices':
+            # Purge the device entirely from the system, including user-defined global overrides
             conn.execute(f"DELETE FROM devices WHERE mac_address IN ({placeholders})", ids)
             conn.execute(f"DELETE FROM global_device_names WHERE mac_address IN ({placeholders})", ids)
             conn.execute(f"DELETE FROM global_device_vendors WHERE mac_address IN ({placeholders})", ids)
             conn.execute(f"DELETE FROM device_scans WHERE mac_address IN ({placeholders})", ids)
         elif table == 'wifi_history':
-            # Soft-delete for Wi-Fi scans
+            # Soft-delete for Wi-Fi scans so the data isn't permanently lost until maintenance is run
             conn.execute(f"UPDATE wifi_history SET is_deleted=1 WHERE id IN ({placeholders})", ids)
         else:
             conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", ids)
@@ -3803,7 +4181,11 @@ def bulk_delete():
 
 @app.route('/api/networks/bulk_export', methods=['POST'])
 def bulk_export_networks():
-    """Generates a ZIP file containing multiple CSVs for selected Networks."""
+    """
+    Generates a ZIP file containing multiple CSVs for selected Network Profiles.
+    Uses io.BytesIO to generate the ZIP file entirely in RAM, preventing the need to clutter 
+    the local disk with temporary files.
+    """
     ids = request.json.get('ids', [])
     if not ids: return jsonify({"error": "No IDs provided"}), 400
     
@@ -3841,6 +4223,7 @@ def bulk_export_networks():
                     
                     writer.writerow([d['hostname'], d['custom_name'], d['ip_address'], d['mac_address'], 'Online' if d['is_online'] else 'Offline', port_str, history_text, d['comments'] or ""])
 
+                # Write the CSV buffer as a physical file entry into the virtual RAM ZIP file
                 zf.writestr(f"network_{net_id}_{net_name}.csv", csv_out.getvalue())
     
     memory_file.seek(0)
@@ -3857,8 +4240,9 @@ def clear_history():
 @app.route('/api/history/export', methods=['POST'])
 def export_history():
     """
-    Exports speed test history to CSV.
-    Includes the new Device IP column and renames WAN IP.
+    Exports Speedtest history to CSV.
+    Can selectively export specific rows passed from the UI, or export the entire table
+    if no specific rows are provided.
     """
     d = request.json
     rows = d.get('rows', [])
@@ -3872,7 +4256,7 @@ def export_history():
     out = io.StringIO()
     writer = csv.writer(out)
     
-    # Updated Header Row with Device IP and WAN IP
+    # Write Header Row
     writer.writerow(['Timestamp', 'Network Name', 'Type', 'Download', 'Upload', 'Ping', 'Device IP', 'WAN IP', 'ISP'])
     
     # Write Data Rows
@@ -3884,8 +4268,8 @@ def export_history():
             r.get('download'), 
             r.get('upload'), 
             r.get('ping'), 
-            r.get('device_ip', '-'), # New Device IP field
-            r.get('wan_ip', '-'),    # Maps to WAN IP header
+            r.get('device_ip', '-'), 
+            r.get('wan_ip', '-'),    
             r.get('isp', '-')
         ])
     
@@ -3897,7 +4281,10 @@ def export_history():
 
 @app.route('/api/devices/export', methods=['POST'])
 def export_devices():
-    """Exports current device list to CSV dynamically."""
+    """
+    Highly generic CSV exporter. Takes the raw JSON dictionary passed from the frontend UI
+    table, extracts the keys to build the header, and maps the values dynamically.
+    """
     d = request.json
     rows = d.get('rows', [])
     out = io.StringIO()
@@ -3909,7 +4296,7 @@ def export_devices():
         headers = list(rows[0].keys())
         writer.writerow(headers)
         
-        # 2. Write Data Rows (mapping values to the headers)
+        # 2. Write Data Rows (mapping values strictly to the headers)
         for r in rows: 
             writer.writerow([r.get(h) for h in headers])
             
@@ -3917,14 +4304,18 @@ def export_devices():
 
 @app.route('/api/system/export_db')
 def export_database():
-    """Downloads the entire database file."""
+    """Downloads the entire raw SQLite database file directly."""
     return send_file(DB_NAME, as_attachment=True)
 
 @app.route('/api/system/import_db', methods=['POST'])
 def import_database():
     """
-    Imports data from another database file and merges it.
-    Validates file integrity before performing a backup and merge.
+    Complex Database Merge Engine.
+    Allows users to import a database from another machine and merge it into their active one.
+    - Validates file integrity to prevent server crashes from uploaded malware/images.
+    - Maps Foreign Network IDs to Local Network IDs so devices don't get mixed up.
+    - Updates 'last_seen' dates without overwriting local custom names.
+    - Safely appends missing tool logs (Speedtest/Ping/DNS).
     """
     if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
@@ -3948,7 +4339,7 @@ def import_database():
                 os.remove(tmp_path)
                 return jsonify({"error": "Uploaded file is corrupted or is not a valid SQLite database."}), 400
                 
-            # B. Check if it's OUR database by looking for a core table
+            # B. Check if it's OUR database by looking for a core application table
             cursor_r.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='networks';")
             if not cursor_r.fetchone():
                 conn_remote.close()
@@ -3972,7 +4363,9 @@ def import_database():
         conn_local = sqlite3.connect(DB_NAME, timeout=10.0)
         cursor_l = conn_local.cursor()
 
-        # 3. Merge Networks (ID Mapping)
+        # --- 3. Merge Networks (ID Mapping) ---
+        # We cannot just insert Networks, because their IDs will conflict. 
+        # We must map the remote ID to either an existing local ID, or a newly generated local ID.
         network_map = {} 
         remote_networks = cursor_r.execute("SELECT * FROM networks").fetchall()
         for net in remote_networks:
@@ -3986,11 +4379,12 @@ def import_database():
                                  (net['gateway_mac'], net['name'], net['last_scan'], net['gateway_ip']))
                 network_map[net['id']] = cursor_l.lastrowid
 
-        # 4. Merge Devices (Updating metadata)
+        # --- 4. Merge Devices (Updating metadata) ---
         remote_devices = cursor_r.execute("SELECT * FROM devices").fetchall()
         for dev in remote_devices:
             new_net_id = network_map.get(dev['network_id'])
             if new_net_id:
+                # Upsert device: Keep the newest 'last_seen' date, and prioritize local custom names over remote ones.
                 cursor_l.execute("""
                     INSERT INTO devices (mac_address, network_id, hostname, custom_name, ip_address, last_seen, services, is_online)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -4005,7 +4399,7 @@ def import_database():
                 """, (dev['mac_address'], new_net_id, dev['hostname'], dev['custom_name'], 
                       dev['ip_address'], dev['last_seen'], dev['services'], dev['is_online']))
 
-        # 5. Merge Logs (History, Ping, DNS)
+        # --- 5. Merge Logs (History, Ping, DNS, Wi-Fi) ---
         tables_to_append = {
             'history': ['timestamp', 'network_name', 'connection_type', 'download', 'upload', 'ping', 'wan_ip', 'device_ip', 'isp'],
             'dns_logs': ['timestamp', 'domain', 'result_ip', 'record_type', 'status', 'router_ip', 'network_name', 'lan_ip'],
@@ -4016,6 +4410,7 @@ def import_database():
         for table, cols in tables_to_append.items():
             remote_data = cursor_r.execute(f"SELECT * FROM {table}").fetchall()
             for row in remote_data:
+                # Ensure we don't insert a log that completely matches an existing local log
                 placeholders = " AND ".join([f"{c} IS ?" for c in cols])
                 cursor_l.execute(f"SELECT 1 FROM {table} WHERE {placeholders}", [row[c] for c in cols])
                 if not cursor_l.fetchone():
@@ -4023,7 +4418,7 @@ def import_database():
                     val_placeholders = ", ".join(["?" for _ in cols])
                     cursor_l.execute(f"INSERT INTO {table} ({col_str}) VALUES ({val_placeholders})", [row[c] for c in cols])
 
-        # 6. Global Settings
+        # --- 6. Global Settings ---
         remote_global = cursor_r.execute("SELECT * FROM global_device_names").fetchall()
         for g in remote_global:
             cursor_l.execute("INSERT OR REPLACE INTO global_device_names (mac_address, custom_name) VALUES (?, ?)", 
@@ -4039,7 +4434,9 @@ def import_database():
         if os.path.exists(tmp_path): os.remove(tmp_path)
         return jsonify({"error": str(e)}), 500
 
-# --- Updater (GitHub Integration) ---
+# ==========================================
+# UPDATER (GITHUB INTEGRATION)
+# ==========================================
 
 def get_update_channel():
     """Helper to fetch the current update channel from DB."""
@@ -4071,7 +4468,7 @@ def get_all_github_settings():
     return {}
 
 def get_github_settings():
-    """Routes updates to the active channel's settings."""
+    """Routes updates to the active channel's specific GitHub parameters (Repo/Branch/Token)."""
     channel = get_update_channel()
     all_settings = get_all_github_settings()
     
@@ -4098,7 +4495,7 @@ def get_channels():
 
 @app.route('/api/settings/channel', methods=['POST'])
 def handle_update_channel():
-    """API endpoint to switch the update channel."""
+    """API endpoint to switch the active update channel."""
     channel = (request.json or {}).get('channel', 'stable')
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('update_channel', ?)", (channel,))
@@ -4106,10 +4503,13 @@ def handle_update_channel():
     return jsonify({"status": "success", "channel": channel})
 
 def fetch_github_file(filename):
-    """Fetches raw file content from GitHub, bypassing API rate limits for public repos."""
+    """
+    Fetches raw file content directly from GitHub.
+    Uses native urllib instead of heavy git modules to bypass standard API rate limits.
+    """
     gh_set = get_github_settings()
     
-    # FIXED URL: Added 'refs/heads/' which is required for raw content routing on GitHub
+    # REQUIRED: 'refs/heads/' format ensures we hit the exact raw file without API wrappers
     url = f"https://raw.githubusercontent.com/{gh_set['owner']}/{gh_set['repo']}/refs/heads/{gh_set['branch']}/{filename}"
     req = urllib.request.Request(url)
     
@@ -4129,8 +4529,11 @@ def fetch_github_file(filename):
 @app.route('/api/update/check')
 def check_update():
     """
-    Checks the version of SPECIFIC core files against GitHub.
-    Returns a list of mismatches so the frontend knows exactly what is outdated.
+    Intelligent Update Checker.
+    Instead of downloading the whole repo, it fetches 3 specific files and uses Regex 
+    to extract their hardcoded version strings. This is highly secure as it never actually 
+    executes the remote python code.
+    Returns a list of mismatches so the frontend UI can list exactly what is outdated.
     """
     # Map friendly names to their Repo Paths and Regex Patterns
     targets = {
@@ -4159,7 +4562,7 @@ def check_update():
             content = fetch_github_file(config["path"])
             if not content: return None
             
-            # Parse Remote Version
+            # Parse Remote Version using the provided Regex
             match = re.search(config["regex"], content)
             if match:
                 remote_ver = match.group(1)
@@ -4179,14 +4582,14 @@ def check_update():
         except: pass
         return None
 
-    # Run checks in parallel to keep dashboard load time fast
+    # Run checks concurrently to keep the dashboard settings page load time extremely fast
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(check_file, name, cfg) for name, cfg in targets.items()]
         for f in futures:
             res = f.result()
             if res: mismatches.append(res)
             
-    # Fetch the global tag for the footer
+    # Fetch the global tag for the frontend footer (e.g. 1.0.4)
     global_remote = "0.0.0"
     try:
         c = fetch_github_file("version.json")
@@ -4199,13 +4602,13 @@ def check_update():
         "status": "success",
         "update_available": len(mismatches) > 0,
         "mismatches": mismatches,
-        "remote_version": global_remote,      # Key used by dashboard.html footer
-        "global_local": get_global_version()   # Current local version.json
+        "remote_version": global_remote,      
+        "global_local": get_global_version()   
     })
 
 @app.route('/api/update/changelog')
 def get_changelog():
-    """Fetches Release Notes from the GitHub repository."""
+    """Fetches the latest Release Notes from the GitHub repository."""
     content = fetch_github_file("Changelog") 
     return jsonify({"status": "success", "changelog": content}) if content else jsonify({"status": "error"})
 
@@ -4216,8 +4619,12 @@ def backup_for_update():
 @app.route('/api/update/apply', methods=['POST'])
 def update_software():
     """
-    Cross-Platform Update Mechanism with Rollback Support.
-    Sets full Read/Write/Execute (777) permissions for all users.
+    Cross-Platform GitHub Update Engine.
+    - Takes a DB snapshot.
+    - Generates a 'rollback.zip' of the CURRENT app state. If the new update crashes 5 times 
+      on boot, the supervisor will automatically extract this zip to revert the damage.
+    - Downloads the new zipped code from GitHub and extracts it over the active files.
+    - Handles Windows Execution Locks dynamically.
     """
     try:
         gh_set = get_github_settings()
@@ -4251,7 +4658,8 @@ def update_software():
         except Exception as e:
             print(f"[!] Rollback backup warning: {e}")
         
-       # 3. Download from GitHub (Using standard web archive to bypass API limits)
+       # --- 3. Download from GitHub ---
+       # Using standard web archive zip format to entirely bypass standard GitHub API limits
         zip_url = f"https://github.com/{gh_set['owner']}/{gh_set['repo']}/archive/refs/heads/{gh_set['branch']}.zip"
         req = urllib.request.Request(zip_url)
         
@@ -4264,7 +4672,7 @@ def update_software():
             with urllib.request.urlopen(req) as response: zip_data = io.BytesIO(response.read())
         except Exception as e: return jsonify({"error": f"Download failed: {e}"}), 500
 
-        # 4. Extract & Install
+        # --- 4. Extract & Install ---
         import tempfile
         with tempfile.TemporaryDirectory() as temp_dir:
             with zipfile.ZipFile(zip_data) as zip_ref:
@@ -4272,6 +4680,7 @@ def update_software():
                 zip_ref.extractall(temp_dir)
                 source_root = os.path.join(temp_dir, root_name)
                 
+                # Walk through the extracted files and move them into the active directory
                 for root, dirs, files in os.walk(source_root):
                     rel_path = os.path.relpath(root, source_root)
                     dest_dir = os.path.join(base_dir, rel_path)
@@ -4284,6 +4693,7 @@ def update_software():
                         src_file = os.path.join(root, file)
                         dest_file = os.path.join(dest_dir, file)
                         
+                        # Never overwrite the database or the python environment during an update!
                         if file == DB_NAME or file.endswith(".db") or "venv" in dest_file: continue
 
                         try:
@@ -4291,14 +4701,16 @@ def update_software():
                                 try: 
                                     os.replace(src_file, dest_file)
                                 except OSError:
-                                    # --- CRITICAL FIX: Handle Linux Cross-Device Links & Windows Locks ---
+                                    # --- CRITICAL FIX: OS File Lock Handling ---
+                                    # Windows rigidly locks files (like app.py) while they are running.
+                                    # We bypass this by renaming the running file to '.old', which Windows allows.
                                     if platform.system() == "Windows":
                                         backup = dest_file + f".old_{int(time.time())}"
                                         if os.path.exists(backup): os.remove(backup)
                                         os.rename(dest_file, backup)
                                         shutil.move(src_file, dest_file)
                                     else:
-                                        # Delete the old file first, then safely move the new one from RAM to SD
+                                        # Linux throws cross-device link errors, so we unlink first
                                         os.remove(dest_file)
                                         shutil.move(src_file, dest_file)
                             else: 
@@ -4309,6 +4721,7 @@ def update_software():
                             print(f"[!] Update copy failed for {file}: {e}")
 
         print("[✓] Update applied. Permissions set to Read/Write/Execute for all.")
+        # Trigger the supervisor to restart the new application code natively
         threading.Thread(target=restart_server).start()
         return jsonify({"status": "success", "message": "Update successful. All files set to R/W/X."})
 
@@ -4316,28 +4729,12 @@ def update_software():
         print(f"[X] Update Error: {e}")
         return jsonify({"error": str(e)}), 500
 
-def fix_permissions(path):
-    """
-    Sets path to full Read/Write/Execute for all users.
-    Linux/Mac: chmod 777
-    Windows: icacls grant Everyone:FullControl
-    """
-    try:
-        if platform.system() == "Windows":
-            # Grant 'Everyone' group Full Control (F)
-            # /t and /c are avoided here as we are walking the tree manually in the loop above
-            subprocess.run(['icacls', str(path), '/grant', 'Everyone:(F)'], capture_output=True)
-        else:
-            # Linux/Mac: 0o777 is rwxrwxrwx
-            os.chmod(path, 0o777)
-    except Exception as e:
-        print(f"[!] Permission fix failed for {path}: {e}")
-
 @app.route('/api/wifi/history', methods=['GET'])
 def get_wifi_history():
+    """Fetches all undeleted Wi-Fi scans to populate the history table."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         c = conn.cursor()
-        # Only fetch scans that haven't been deleted
+        # Filter out soft-deleted scans (is_deleted=0)
         c.execute("SELECT id, timestamp, scan_name, comments, is_protected FROM wifi_history WHERE is_deleted=0 ORDER BY timestamp DESC")
         rows = c.fetchall()
         history = [{"id": r[0], "timestamp": r[1], "name": r[2], "comments": r[3], "is_protected": r[4] or 0} for r in rows]
@@ -4346,8 +4743,13 @@ def get_wifi_history():
 # --- NEW: Endpoint to lock/unlock records ---
 @app.route('/api/system/toggle_protection', methods=['POST'])
 def toggle_protection():
+    """
+    Security Feature: Toggles the 'is_protected' flag on a specific record.
+    Protected records are immune to the automated Database Cleanup tools.
+    """
     d = request.json
     
+    # Map frontend types to actual database table names
     table_map = {
         'history': 'history', 
         'wifi': 'wifi_history', 
@@ -4355,7 +4757,7 @@ def toggle_protection():
         'networks': 'networks',
         'dns': 'dns_logs',
         'ping': 'ping_logs',
-        'wifi_ssid': 'protected_wifi_ssids' # NEW
+        'wifi_ssid': 'protected_wifi_ssids' 
     }
     
     table = table_map.get(d.get('type'))
@@ -4365,13 +4767,16 @@ def toggle_protection():
     if table and item_id is not None:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             if table == 'devices':
+                # Devices use MAC addresses as primary identifiers
                 conn.execute("UPDATE devices SET is_protected = ? WHERE mac_address = ?", (state, item_id))
             elif table == 'protected_wifi_ssids':
+                # Wi-Fi SSIDs use a separate lookup table to ensure the lock persists across multiple scans
                 if state:
                     conn.execute("INSERT OR IGNORE INTO protected_wifi_ssids (ssid) VALUES (?)", (item_id,))
                 else:
                     conn.execute("DELETE FROM protected_wifi_ssids WHERE ssid = ?", (item_id,))
             else:
+                # Standard ID-based tables
                 conn.execute(f"UPDATE {table} SET is_protected = ? WHERE id = ?", (state, item_id))
             conn.commit()
         return jsonify({"status": "success"})
@@ -4379,6 +4784,7 @@ def toggle_protection():
 
 @app.route('/api/wifi/delete', methods=['POST'])
 def delete_wifi_scan():
+    """Soft deletes a specific Wi-Fi scan by flipping its visibility flag."""
     scan_id = request.json.get('id')
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("UPDATE wifi_history SET is_deleted=1 WHERE id = ?", (scan_id,))
@@ -4407,6 +4813,7 @@ def bulk_export_wifi():
                 writer.writerow(["SSID", "MAC", "Signal (dBm)", "Signal (%)", "Channel", "Band", "Authentication", "Comments"])
                 
                 for net in results:
+                    # Dynamically inject global comments for each SSID into the export
                     try:
                         g_com = conn.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (net.get('ssid',''),)).fetchone()
                         comment_str = g_com['comments'] if g_com else ""
@@ -4429,6 +4836,7 @@ def bulk_export_wifi():
 
 @app.route('/api/wifi/export/<int:scan_id>')
 def export_wifi_csv(scan_id):
+    """Exports a single Wi-Fi scan to CSV."""
     try:
         conn = sqlite3.connect(DB_NAME, timeout=10.0)
         conn.row_factory = sqlite3.Row
@@ -4475,6 +4883,7 @@ def export_wifi_csv(scan_id):
 
 @app.route('/api/wifi/history/clear_all', methods=['POST'])
 def clear_all_wifi_history():
+    """Soft deletes all Wi-Fi history."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("UPDATE wifi_history SET is_deleted=1")
         conn.commit()
@@ -4482,7 +4891,7 @@ def clear_all_wifi_history():
 
 @app.route('/api/wifi/export_active', methods=['POST'])
 def export_active_wifi_csv():
-    """Exports the current active scan results to CSV."""
+    """Exports the current LIVE active scan results directly from the UI payload."""
     try:
         data = request.json
         results = data.get('results', [])
@@ -4534,7 +4943,7 @@ def update_wifi_history():
 
 @app.route('/api/settings/connection_types', methods=['GET'])
 def get_connection_types():
-    """Fetches all connection types for dropdowns and settings."""
+    """Fetches all connection types (Ethernet/Wi-Fi/Mobile) for dropdowns."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM connection_types ORDER BY id").fetchall()
@@ -4542,8 +4951,7 @@ def get_connection_types():
 
 @app.route('/api/settings/connection_types/add', methods=['POST'])
 def add_connection_type():
-    """Adds a new custom connection type."""
-    # --- FIXED: Apply strip and limit ---
+    """Adds a new custom connection type (e.g. Starlink, VPN)."""
     name = str(request.json.get('name', '')).strip()[:50]
     if not name: return jsonify({"error": "Name required"}), 400
     try:
@@ -4556,7 +4964,7 @@ def add_connection_type():
 
 @app.route('/api/settings/connection_types/delete', methods=['POST'])
 def delete_connection_type():
-    """Removes a connection type from the list."""
+    """Removes a custom connection type."""
     type_id = request.json.get('id')
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.execute("DELETE FROM connection_types WHERE id=?", (type_id,))
@@ -4565,17 +4973,16 @@ def delete_connection_type():
 
 @app.route('/api/device_history')
 def api_device_history():
-    """Returns the latest state of all unique devices across all networks."""
+    """
+    Returns the absolute latest state of all unique devices across all networks.
+    Crucial Optimization: In SQLite, using MAX(last_seen) in a GROUP BY query 
+    automatically guarantees it returns the corresponding row's data. 
+    This turns an O(N^2) heavy subquery into a lightning-fast O(N) query, preventing UI lockups.
+    """
     try:
-        #print("\n[-->] API /device_history called. Connecting to DB...")
-        
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
-            #print("[*] DB connected. Executing optimized query...")
             
-            # OPTIMIZED QUERY: Removed the nested SELECT MAX() subquery.
-            # In SQLite, using MAX(last_seen) in a GROUP BY automatically returns the corresponding row's data.
-            # This turns an O(N^2) query (which freezes the app) into a lightning-fast O(N) query.
             query = """
                 SELECT d.mac_address, d.hostname, COALESCE(g.custom_name, d.custom_name) as custom_name,
                      g.comments, d.ip_address, MAX(d.last_seen) as last_seen, COALESCE(n.name, d.last_network_name, 'Deleted Network') as network_name, d.vendor, d.is_protected
@@ -4586,12 +4993,7 @@ def api_device_history():
                 ORDER BY last_seen DESC
             """
             
-            # Start timer to log database performance
-            start_time = time.time()
             rows = conn.execute(query).fetchall()
-            elapsed = time.time() - start_time
-            
-        #    print(f"[*] Query executed in {elapsed:.4f} seconds. Returned {len(rows)} unique devices.")
             
             result = []
             for r in rows:
@@ -4603,7 +5005,7 @@ def api_device_history():
                 if vendor and f"({vendor})" in clean_host:
                     clean_host = clean_host.replace(f"({vendor})", "").strip()
                 else:
-                    # Failsafe for legacy devices scanned before the vendor column existed
+                    # Failsafe for legacy devices scanned before the vendor column officially existed
                     match = re.search(r'\(([^)]+)\)$', clean_host)
                     if match and match.group(1) not in ["This device", "Router"]:
                         if not vendor: vendor = match.group(1)
@@ -4613,7 +5015,6 @@ def api_device_history():
                 dev['clean_hostname'] = clean_host
                 result.append(dev)
                 
-           # print(f"[<--] Processing complete. Sending JSON back to frontend.")
             return jsonify(result)
             
     except Exception as e:
@@ -4622,7 +5023,10 @@ def api_device_history():
     
 @app.route('/api/wifi_networks_history/delete_ssid', methods=['POST'])
 def delete_wifi_ssid():
-    """Removes a specific SSID from all historical JSON scans."""
+    """
+    Targeted JSON Deletion Tool.
+    Loops through every single historical Wi-Fi scan and removes a specific SSID from its payload.
+    """
     ssid = request.json.get('ssid')
     if not ssid: return jsonify({"error": "SSID required"}), 400
     
@@ -4650,7 +5054,7 @@ def delete_wifi_ssid():
 
 @app.route('/api/device_history/<mac>')
 def api_device_history_detail(mac):
-    """Returns all historical scan records for a specific MAC address across all scans."""
+    """Returns all historical scan records ('device_scans') for a specific MAC address."""
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         conn.row_factory = sqlite3.Row
         query = """
@@ -4665,15 +5069,15 @@ def api_device_history_detail(mac):
 
 @app.route('/api/vendor/lookup', methods=['POST'])
 def api_vendor_lookup():
-    """Background task to fetch vendor info and save it to the DB permanently."""
+    """Background task to fetch vendor info from the web API and save it to the DB permanently."""
     mac = request.json.get('mac')
     if not mac: 
         return jsonify({"vendor": "Unknown"})
         
-    # Force the internet lookup
+    # Force the internet lookup bypassing the local cache check
     vendor = get_mac_vendor(mac, fetch_online=True)
     
-    # Save the result to the DB so we never look it up again
+    # Save the result to the DB so we never need to look it up online again
     if vendor:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.execute("UPDATE devices SET vendor=? WHERE mac_address=?", (vendor, mac))
@@ -4683,7 +5087,11 @@ def api_vendor_lookup():
 
 @app.route('/api/wifi_networks_history')
 def api_wifi_networks_history():
-    """Aggregates all unique Wi-Fi SSIDs seen across all historical scans."""
+    """
+    Heavy Aggregation Endpoint.
+    Loops through every stored Wi-Fi scan and aggregates every unique SSID seen, 
+    calculating its first/last seen dates and how many unique physical access points (MACs) it has.
+    """
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
@@ -4695,7 +5103,7 @@ def api_wifi_networks_history():
             except:
                 protected_ssids = set()
             
-            # Fetch all scans sorted oldest to newest to track first/last seen dates
+            # Fetch all scans sorted oldest to newest to properly track first/last seen dates natively
             rows = conn.execute("SELECT timestamp, results_json FROM wifi_history ORDER BY timestamp ASC").fetchall()
             
             networks = {}
@@ -4720,7 +5128,7 @@ def api_wifi_networks_history():
                         networks[ssid]["last_seen"] = scan_ts
                         networks[ssid]["scan_count"] += 1
                         
-                        # Extract unique MACs
+                        # Extract unique physical MACs bridging a mesh network
                         if "raw_bssids" in net:
                             for b in net["raw_bssids"]:
                                 mac = b.get("mac")
@@ -4729,14 +5137,14 @@ def api_wifi_networks_history():
                 except:
                     continue
             
-            # Format the output
+            # Format the output for the UI
             result = []
             for v in networks.values():
                 v["mac_count"] = len(v["macs"])
-                v.pop("macs") # Remove the set so it converts to JSON cleanly
-                v["is_protected"] = 1 if v["ssid"] in protected_ssids else 0 # Add protection status
+                v.pop("macs") # Remove the Python Set so it can convert to JSON cleanly
+                v["is_protected"] = 1 if v["ssid"] in protected_ssids else 0 # Apply protection lock status
                 
-                # Fetch the global comment for this specific SSID
+                # Overlay the global comment for this specific SSID
                 try:
                     g_com = conn.execute("SELECT comments FROM global_wifi_comments WHERE ssid=?", (v["ssid"],)).fetchone()
                     v["comments"] = g_com['comments'] if g_com else ""
@@ -4754,6 +5162,7 @@ def api_wifi_networks_history():
     
 @app.route('/api/wifi_networks_history/details', methods=['POST'])
 def api_wifi_network_details():
+    """Drill-down API that returns all instances where a specific SSID was seen."""
     ssid = request.json.get('ssid')
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
@@ -4783,7 +5192,10 @@ def api_wifi_network_details():
 
 @app.route('/api/system/cleanup_orphaned_wifi', methods=['POST'])
 def cleanup_orphaned_wifi():
-    """Removes Wi-Fi networks that ONLY exist in deleted scans, respecting SSID locks."""
+    """
+    Maintenance Tool: Physically removes Wi-Fi networks that ONLY exist in soft-deleted scans.
+    Crucially respects SSID locks to prevent deleting user-favorited historical items.
+    """
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             conn.row_factory = sqlite3.Row
@@ -4798,13 +5210,13 @@ def cleanup_orphaned_wifi():
                         if net.get('ssid'): active_ssids.add(net['ssid'])
                 except: pass
                 
-            # NEW: Add all protected SSIDs to the "active" list so they are never deleted
+            # NEW: Add all protected SSIDs to the "active" list so they are never permanently deleted
             try:
                 prot_rows = c.execute("SELECT ssid FROM protected_wifi_ssids").fetchall()
                 for pr in prot_rows: active_ssids.add(pr['ssid'])
             except: pass
             
-            # Step 2: Extract JSON from deleted scans and prune them
+            # Step 2: Extract JSON from deleted scans and prune them based on the active lists
             c.execute("SELECT id, results_json FROM wifi_history WHERE is_deleted=1")
             deleted_scans = c.fetchall()
             
@@ -4833,18 +5245,20 @@ AUTOSTART_FILE = "autostart"
 
 @app.route('/api/settings/autostart', methods=['GET'])
 def get_autostart():
+    """Reads the 'autostart' flat file used by the Desktop OS installers to track startup state."""
     if not os.path.exists(AUTOSTART_FILE):
         with open(AUTOSTART_FILE, "w") as f:
             f.write("1")
         return jsonify({"autostart": True})
     try:
         with open(AUTOSTART_FILE, "r") as f:
-            return jsonify({"autostart": f.read(10).strip() == "1"}) # Limit read
+            return jsonify({"autostart": f.read(10).strip() == "1"}) # Limit read for security
     except:
         return jsonify({"autostart": True})
 
 @app.route('/api/settings/autostart', methods=['POST'])
 def set_autostart():
+    """Toggles the 'autostart' flat file state."""
     enable = request.json.get('enable', True)
     try:
         with open(AUTOSTART_FILE, "w") as f:
@@ -4855,6 +5269,7 @@ def set_autostart():
 
 @app.route('/api/settings/workers', methods=['GET'])
 def get_workers_endpoint():
+    """Returns the active thread configuration alongside the hardware defaults."""
     return jsonify({
         "config": get_worker_config(),
         "hardware": detect_hardware(),
@@ -4863,12 +5278,18 @@ def get_workers_endpoint():
 
 @app.route('/api/settings/workers', methods=['POST'])
 def save_workers_endpoint():
+    """
+    Saves a new thread configuration to the 'workers.json' file.
+    Creates a `.bak` copy of the previous working configuration so that the crash-loop
+    failsafe can automatically restore it if these new settings trigger an Out-Of-Memory error.
+    """
     data = request.json or {}
     defaults = get_default_workers_for_hardware()
     new_config = {}
     
     for key in ["server_threads", "scan_workers", "ping_workers"]:
         val = data.get(key)
+        # Apply sanity boundaries (1 to 100) to prevent OS thread exhaustions
         if val is not None and str(val).isdigit() and 1 <= int(val) <= 100:
             new_config[key] = int(val)
         else:
@@ -4877,22 +5298,19 @@ def save_workers_endpoint():
     file_path = os.path.join(app.root_path, WORKERS_FILE)
     backup_path = os.path.join(app.root_path, f"{WORKERS_FILE}.bak")
     try:
-        # --- NEW: Create a backup of the previous working config before saving ---
+        # Create a backup of the previously proven working config before saving the new one
         if os.path.exists(file_path):
             shutil.copy2(file_path, backup_path)
             
         with open(file_path, "w") as f:
             json.dump(new_config, f, indent=4)
             
-        # Trigger server restart in the background
+        # Trigger server restart in the background to apply the new ThreadPoolExecutor limits
         threading.Thread(target=restart_server).start()
         
         return jsonify({"status": "success", "config": new_config})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
-
-from flask import stream_with_context
-from concurrent.futures import as_completed
 
 @app.route('/api/devices/update_metadata', methods=['POST'])
 def update_device_metadata():
@@ -4912,13 +5330,14 @@ def update_device_metadata():
         else:
             conn.execute("UPDATE devices SET custom_name=?, custom_vendor=? WHERE mac_address=?", (name, vendor, mac))
         
-        # Save globally so it persists across different network scans
+        # Save globally so the name and comment persist across different network scans
         conn.execute("""
             INSERT INTO global_device_names (mac_address, custom_name, comments) 
             VALUES (?, ?, ?) 
             ON CONFLICT(mac_address) DO UPDATE SET custom_name=excluded.custom_name, comments=excluded.comments
         """, (mac, name, comment))
         
+        # Save custom vendor globally
         conn.execute("INSERT OR REPLACE INTO global_device_vendors (mac_address, custom_vendor) VALUES (?, ?)", (mac, vendor))
         conn.commit()
 
@@ -4926,7 +5345,7 @@ def update_device_metadata():
 
 @app.route('/api/wifi/update_ssid_comment', methods=['POST'])
 def update_ssid_comment():
-    """Saves a global comment for a specific Wi-Fi SSID."""
+    """Saves a global user-defined comment for a specific Wi-Fi SSID."""
     d = request.json
     ssid = d.get('ssid')
     comment = str(d.get('comment', '')).strip()[:200]
@@ -4939,7 +5358,10 @@ def update_ssid_comment():
     return jsonify({"status": "success"})
 
 def process_device_quick(args):
-    """Processes device network info with smart caching for continued scans."""
+    """
+    Lightning-fast threaded wrapper specifically designed for the SSE 'Continue Scan' stream.
+    Re-uses cached port scanning data if a device was already marked online, cutting scan times in half.
+    """
     received, skip_services, gateway_ip = args
     ip = getattr(received, 'psrc', getattr(received, 'ip', None))
     mac = getattr(received, 'hwsrc', getattr(received, 'mac', None))
@@ -4950,10 +5372,13 @@ def process_device_quick(args):
         "services": "None" if skip_services else check_open_ports(ip)['services']
     }
 
-
 @app.route('/api/adapters/bulk_hide', methods=['POST'])
 def bulk_hide_adapters():
-    """Hides multiple adapters at once, ensuring safety constraints are met."""
+    """
+    Hides multiple adapters at once from the UI tables.
+    Implements the same strict safety checks as the individual hide endpoint to guarantee
+    the user cannot hide their pinned adapter or their very last visible adapter.
+    """
     macs = request.json.get('macs', [])
     if not macs:
         return jsonify({"status": "error", "message": "No adapters provided."}), 400
@@ -4970,7 +5395,7 @@ def bulk_hide_adapters():
         if pinned:
             return jsonify({"status": "error", "message": "One or more selected adapters are pinned. Unpin them before hiding."}), 400
 
-# 2. Prevent hiding the last usable adapter
+        # 2. Prevent hiding the last usable physical adapter
         interfaces = psutil.net_if_addrs()
         valid_keys = []
         for iface_name, addrs in interfaces.items():
@@ -4981,7 +5406,6 @@ def bulk_hide_adapters():
                 if a.family == psutil.AF_LINK: 
                     temp_mac = a.address
             
-            # --- FIXED: Only count physical adapters with a real MAC address ---
             if temp_mac and temp_mac != "-":
                 valid_keys.append(temp_mac)
             
@@ -5009,12 +5433,11 @@ def bulk_hide_adapters():
 
 @app.route('/api/adapters/bulk_unhide', methods=['POST'])
 def bulk_unhide_adapters():
-    """Unhides multiple adapters at once."""
+    """Unhides multiple adapters at once, restoring them to the UI tables."""
     macs = request.json.get('macs', [])
     if not macs:
         return jsonify({"status": "error", "message": "No adapters provided."}), 400
 
-    # Remove any invalid/empty MACs (like virtual adapters that can't be saved)
     macs = [m for m in macs if m and m != '-']
     if not macs:
         return jsonify({"status": "error", "message": "Cannot configure adapters without MAC addresses."}), 400
@@ -5032,7 +5455,10 @@ def bulk_unhide_adapters():
 
 @app.route('/api/networks/devices/delete', methods=['POST'])
 def delete_network_devices():
-    """Deletes selected or offline devices from a specific network."""
+    """
+    Deletes specific devices from a network profile.
+    Supports two modes: deleting an explicit list of MACs, or blindly deleting ALL devices marked offline.
+    """
     d = request.json
     net_id = d.get('network_id')
     macs = d.get('macs', [])
@@ -5048,7 +5474,7 @@ def delete_network_devices():
         elif macs:
             # Delete specifically selected MACs from this network
             placeholders = ','.join(['?'] * len(macs))
-            # Safely pass net_id as the first parameter, followed by the MACs
+            # Safely pass net_id as the first parameter in the array, followed by the MACs
             conn.execute(f"DELETE FROM devices WHERE network_id=? AND mac_address IN ({placeholders})", [net_id] + macs)
         conn.commit()
         
@@ -5056,7 +5482,7 @@ def delete_network_devices():
 
 @app.route('/api/settings/logging', methods=['GET'])
 def get_logging_settings():
-    """Fetches the current logging preference and calculates total log size."""
+    """Fetches the current logging preference constraints and calculates total log folder size."""
     full_log = False
     disable_logs = False
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
@@ -5069,7 +5495,7 @@ def get_logging_settings():
         except sqlite3.OperationalError:
             pass
             
-    # Calculate log folder size
+    # Calculate physical log folder size
     log_dir = os.path.join(app.root_path, 'logs')
     total_size = 0
     if os.path.exists(log_dir):
@@ -5087,7 +5513,10 @@ def get_logging_settings():
 
 @app.route('/api/settings/logging', methods=['POST'])
 def set_logging_settings():
-    """Saves the logging preferences and immediately updates the live environment variables."""
+    """
+    Saves logging preferences to the database and IMMEDIATELY updates the active os.environ flags.
+    Enforces logical exclusivity (you can't enable full logging while simultaneously disabling all logs).
+    """
     d = request.json
     enable_full = '1' if d.get('full_logging') else '0'
     disable_all = '1' if d.get('disable_all_logs') else '0'
@@ -5108,7 +5537,7 @@ def set_logging_settings():
 
 @app.route('/api/system/logs/download')
 def download_logs():
-    """Packages all available diagnostic logs into a zip file and downloads them."""
+    """Generates a compressed ZIP archive containing all .log files and serves it for download."""
     log_dir = os.path.join(app.root_path, 'logs')
     if not os.path.exists(log_dir):
         return "No logs found.", 404
@@ -5127,7 +5556,13 @@ def download_logs():
 
 @app.route('/api/system/logs/delete', methods=['POST'])
 def delete_system_logs():
-    """Deletes all system diagnostic log files. Safely handles locked files on Windows."""
+    """
+    Deletes all .log files from the server.
+    Implements a critical failsafe for Windows: If the active log file is locked by the OS, 
+    it forcefully truncates it to 0 bytes instead of trying to delete it.
+    It also resets Python's stdout/stderr internal stream pointers to 0 to prevent 
+    allocating a massive blank space blob in the newly truncated file.
+    """
     log_dir = os.path.join(app.root_path, 'logs')
     if not os.path.exists(log_dir):
         return jsonify({"status": "success", "message": "No logs to delete."})
@@ -5137,12 +5572,13 @@ def delete_system_logs():
             try:
                 file_path.unlink()
             except PermissionError:
+                # Windows Lock Failsafe: Truncate instead of delete
                 with open(file_path, 'w') as f:
                     f.truncate(0)
             except Exception as e:
                 pass
         
-        # IMPORTANT: Reset the active file pointer to zero so we don't create a massive file filled with blank space!
+        # IMPORTANT: Reset the active file pointers to zero
         if hasattr(sys.stdout, 'file') and sys.stdout.file:
             try: sys.stdout.file.seek(0)
             except: pass
@@ -5150,14 +5586,14 @@ def delete_system_logs():
             try: sys.stderr.file.seek(0)
             except: pass
             
-        # The Audit Middleware will automatically trigger right after this return statement!
+        # The Audit Middleware will automatically record this action right after this return statement!
         return jsonify({"status": "success", "message": "System logs deleted successfully."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/system/backups/info', methods=['GET'])
 def get_backups_info():
-    """Returns the total size and file count of the local backups folder."""
+    """Returns the total size (MB) and physical file count of the local SQLite backups folder."""
     backup_dir = os.path.join(app.root_path, 'backups')
     total_size = 0
     count = 0
@@ -5172,7 +5608,7 @@ def get_backups_info():
 
 @app.route('/api/system/backups/create', methods=['POST'])
 def create_manual_backup():
-    """Generates a manual snapshot of the database (Max 5). Skips if no new data."""
+    """Generates a manual snapshot of the database using the engine (Max 5 quota). Skips if identical."""
     try:
         res = execute_backup("manual_good", 5, force=False)
         if res:
@@ -5184,7 +5620,7 @@ def create_manual_backup():
 
 @app.route('/api/system/backups/delete', methods=['POST'])
 def delete_backups():
-    """Deletes backups based on the selected mode (all vs keep_latest)."""
+    """Deletes backups based on the selected mode ('all' vs 'keep_latest')."""
     mode = (request.json or {}).get('mode', 'all')
     backup_dir = os.path.join(app.root_path, 'backups')
     
@@ -5197,6 +5633,7 @@ def delete_backups():
         if mode == 'keep_latest':
             safe_files = [f for f in files if "_good_" in f]
             if safe_files:
+                # Find the newest valid backup and exclude it from the deletion array
                 latest_safe = max(safe_files, key=os.path.getmtime)
                 files.remove(latest_safe) 
         
@@ -5213,22 +5650,22 @@ def delete_backups():
 
 @app.route('/api/system/restart_app', methods=['POST'])
 def api_restart_app():
-    """Triggers a clean restart via the supervisor."""
+    """Signals the server to gracefully restart via the supervisor loop."""
     threading.Thread(target=restart_server).start()
     return jsonify({"status": "success", "message": "Application is restarting. Please wait..."})
 
 @app.route('/api/system/shutdown_app', methods=['POST'])
 def api_shutdown_app():
-    """Gracefully shuts down the application and tells the supervisor to stop."""
+    """Gracefully shuts down the web server and signals the supervisor bash script to exit completely."""
     def trigger_shutdown():
-        time.sleep(1) # Give the HTTP response time to reach the browser
+        time.sleep(1) # Give the HTTP response time to reach the browser UI
         try:
-            # Create a signal file for the supervisor
+            # Create a signal file that the bash supervisor reads to know it shouldn't auto-respawn
             with open(os.path.join(app.root_path, "shutdown_signal"), "w") as f:
                 f.write("shutdown")
         except: pass
         
-        # Kill the Waitress/Flask process
+        # Kill the Waitress/Flask process natively
         os._exit(0)
         
     threading.Thread(target=trigger_shutdown).start()
@@ -5236,15 +5673,19 @@ def api_shutdown_app():
 
 @app.route('/api/system/os_action', methods=['POST'])
 def api_os_action():
-    """Executes a full cross-platform OS reboot or shutdown if standalone is active."""
+    """
+    Executes a full cross-platform OS reboot or shutdown.
+    Security: Strictly protected. Will refuse to execute unless the application was configured
+    as a Dedicated Headless Server ('standalone' file exists).
+    """
     action = request.json.get('action')
     
-    # Hard backend security check
+    # Hard backend security check to prevent users from accidentally shutting down their personal PCs
     if not os.path.exists(os.path.join(app.root_path, 'standalone')):
         return jsonify({"error": "Dedicated Server Mode is not enabled."}), 403
         
     def execute_os_action():
-        time.sleep(2) # Give the HTTP response time to reach the browser
+        time.sleep(2) 
         sys_plat = platform.system().lower()
         try:
             if action == 'reboot':
@@ -5261,12 +5702,12 @@ def api_os_action():
 
 def manage_boot_counter():
     """
-    Crash loop protection engine.
-    Increments a physical counter file on the disk every time the application boots.
-    If the application crashes 5 times rapidly, it engages emergency failsafes:
-    1. Extracts 'rollback.zip' to revert a failed GitHub update.
-    2. Restores 'workers.json' to hardware defaults in case thread pools caused an Out-of-Memory crash.
-    3. Reverts the web port to the last known successful binding to fix port conflicts.
+    Core Crash Loop Protection Engine.
+    Increments a physical counter file on the disk every single time the application boots.
+    If the application crashes 5 times in rapid succession, it engages emergency failsafes:
+    1. Extracts 'rollback.zip' to revert a corrupted GitHub update.
+    2. Restores 'workers.json' to hardware defaults in case bad thread pools caused an OOM crash.
+    3. Reverts the web port to the last known successful binding to fix port locking conflicts.
     """
     base_dir = app.root_path
     counter_file = os.path.join(base_dir, "boot_attempts.txt")
@@ -5328,7 +5769,7 @@ def manage_boot_counter():
         except Exception as e:
             print(f"[!] Could not restore default port: {e}")
 
-        # Clear the counter so it can boot normally
+        # Clear the counter so it can attempt a fresh boot
         if os.path.exists(counter_file):
             try: os.remove(counter_file)
             except: pass
@@ -5341,11 +5782,12 @@ def manage_boot_counter():
 
 def clear_boot_counter():
     """
-    Executed 5 seconds after a successful server boot.
+    Timer function executed 5 seconds AFTER a successful server boot.
+    - If this fires, it means the application is stable and didn't instantly crash.
     - Deletes the crash-loop counter file.
-    - Clears the update rollback archive (meaning the update was successful).
-    - Saves the current port as the 'last known good' port.
-    - Triggers the automated SQLite database backup routine.
+    - Clears the update rollback archive (confirming the new update was completely successful).
+    - Saves the current port as the 'last known good' port in the database.
+    - Triggers the automated SQLite database backup routine safely in the background.
     """
     base_dir = app.root_path
     counter_file = os.path.join(base_dir, "boot_attempts.txt")
@@ -5373,13 +5815,18 @@ def clear_boot_counter():
 def create_tray_icon():
     """
     Initializes and runs the cross-platform system tray icon using 'pystray'.
-    - Skips execution if running in headless/daemon mode (like systemd).
+    - Skips execution if running in headless/daemon mode ONLY on Linux or unknown OS.
     - Provides a native context menu allowing the user to seamlessly Restart or Shutdown the Python server.
     - macOS Fix: Integrates with the native NSApplication runloop to prevent locking up the OS dock.
     """
-    if is_headless_mode():
-        print("[*] Headless/Daemon mode detected. Skipping system tray icon.")
-        return
+    sys_plat = platform.system()
+    
+    # On Windows and macOS, the user is always logged in based on the installer configuration.
+    # We only check for headless/daemon environments on Linux or unknown OS.
+    if sys_plat not in ["Windows", "Darwin"]:
+        if is_headless_mode():
+            print("[*] Headless/Daemon mode detected. Skipping system tray icon.")
+            return
 
     try:
         import pystray
@@ -5389,7 +5836,7 @@ def create_tray_icon():
         return
 
     # Select the correct icon format based on OS capabilities
-    if platform.system() == "Darwin":
+    if sys_plat == "Darwin":
         icon_path = os.path.join(app.root_path, 'static', 'Logo.png')
     else:
         icon_path = os.path.join(app.root_path, 'static', 'favicon.ico')
@@ -5437,12 +5884,14 @@ def create_tray_icon():
         icon.run(setup=setup_action)
         
     except Exception as e:
+        # Failsafe: If the UI cannot be drawn for any reason, print the error and let the function finish.
+        # This allows the main thread to proceed to `server_thread.join()` so the web server stays active.
         print(f"[!] System tray icon failed to initialize (GUI may be inaccessible): {e}")
 
 def get_available_port(start_port):
     """
-    Checks for an available port starting from start_port up to 90.
-    Explicitly skips known browser-restricted ports.
+    Scans for an available TCP port starting from the user's requested port, scanning upwards (Max +9).
+    Explicitly skips known browser-restricted ports (like port 87 or 6000) that would block UI access.
     """
     max_port = max(start_port + 9, 90)
     for port in range(start_port, max_port + 1):
@@ -5451,7 +5900,7 @@ def get_available_port(start_port):
             continue
             
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            # Tell the OS we are allowed to test ports that are in a TIME_WAIT state
+            # Tell the OS we are allowed to test bind to ports that are temporarily stuck in a TIME_WAIT state
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(('0.0.0.0', port))
@@ -5462,7 +5911,10 @@ def get_available_port(start_port):
     return None
 
 def check_disk_space():
-    """Checks if available disk space is below 250MB on startup."""
+    """
+    Checks if available hard drive disk space is critically low (Below 250MB).
+    If true, triggers a persistent UI alert so the user knows why SQLite might fail to write logs.
+    """
     try:
         root_path = os.path.splitdrive(os.getcwd())[0] or '/'
         usage = psutil.disk_usage(root_path if platform.system() == "Windows" else '/')
@@ -5476,23 +5928,30 @@ def check_disk_space():
     return True
 
 def is_headless_mode():
-    """Detects if the application is running in a headless or background daemon environment."""
-    # 1. Explicit standalone configuration file trigger
+    """
+    Detects if the application is running in a headless (no monitor) or background daemon environment.
+    Used primarily to determine if the Tray Icon should be skipped on Linux servers.
+    """
+    # 1. Explicit standalone configuration file trigger (User created)
     if os.path.exists(os.path.join(app.root_path, "standalone")):
         return True
         
-    # 2. Linux-specific: No graphical display server available
+    # 2. Linux-specific: No X11 graphical display server is available in the environment vars
     if platform.system() == "Linux":
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
             return True
             
     return False
 
+# ==========================================
+# APPLICATION BOOTSTRAP SEQUENCE
+# ==========================================
 if __name__ == '__main__':
-    # --- 1. Catch boot loops before doing anything else ---
+    # 1. Engage crash-loop protection before anything else
     manage_boot_counter()
 
-    # Disable Wi-Fi Power Management on Linux/Raspberry Pi for stable scanning
+    # 2. Disable Wi-Fi Power Management on Linux/Raspberry Pi 
+    # (Prevents the Wi-Fi card from going to sleep, which ruins continuous network scanning)
     if platform.system() == "Linux":
         try:
             if shutil.which("iw"):
@@ -5507,9 +5966,10 @@ if __name__ == '__main__':
         except Exception as e:
             pass
 
+    # 3. Clean up Windows Update artifacts
     cleanup_old_files()
     
-    # --- Startup Sequence ---
+    # 4. Core System Initializations
     check_clear_database()
     init_db()
     check_password_reset()
@@ -5520,7 +5980,7 @@ if __name__ == '__main__':
     
     current_port = get_current_port()
 
-    # --- Port Conflict Fallback ---
+    # 5. Port Conflict Fallback
     available_port = get_available_port(current_port)
     
     if not available_port:
@@ -5554,11 +6014,15 @@ if __name__ == '__main__':
         except: pass
         current_port = available_port
                 
-    # Start a timer to clear the boot counter if the app stays alive for 5 seconds
+    # 6. Start the 5-second stabilization timer to clear the boot crash-loop counter
     threading.Timer(5.0, clear_boot_counter).start()
 
-    # --- Web Server Function (to run in background thread) ---
     def run_web_server():
+        """
+        Inner wrapper function that spins up the active web server.
+        Prioritizes the high-performance 'Waitress' WSGI server for production, 
+        and falls back to Flask's basic development server if waitress is missing.
+        """
         try:
             from waitress import serve
             lan_ip = get_local_ip()
@@ -5586,18 +6050,19 @@ if __name__ == '__main__':
             print(f"   Versions: Global: {v_glob} | App: {APP_VERSION} | Setup: {get_setup_version()} | HTML: {get_html_version()}")
             print("="*60 + "\n")
             
-            # Disable reloader because it conflicts with threading
+            # Disable reloader because it conflicts with custom threading and the supervisor
             app.run(debug=False, host='0.0.0.0', port=current_port, use_reloader=False)
 
-    # 1. Start the web server in a background daemon thread
+    # 7. Start the web server in a background daemon thread
     server_thread = threading.Thread(target=run_web_server, daemon=True)
     server_thread.start()
 
-    # 2. Start the System Tray icon on the main OS thread
-    # If successful, this blocks the main thread permanently while the icon exists.
+    # 8. Start the System Tray icon on the main OS thread
+    # If successful, this completely blocks the main thread permanently while the OS icon UI exists.
     create_tray_icon()
     
-    # 3. Fallback failsafe
-    # If the tray icon is skipped (headless) or crashes, the main thread reaches here.
-    # We join the server thread so the application stays alive indefinitely!
+    # 9. Fallback Failsafe
+    # If the tray icon is intentionally skipped (headless Linux server) or crashes internally, 
+    # the main thread drops down to here. We use .join() to lock the main thread to the server thread,
+    # ensuring the background web application stays alive indefinitely!
     server_thread.join()

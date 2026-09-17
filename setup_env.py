@@ -1,3 +1,11 @@
+"""
+Network Diagnostics - Setup & Supervisor Engine
+This script acts as the master bootloader for the application. 
+It handles downloading the code, building the isolated Python environment, installing OS-specific 
+dependencies (like Npcap and Ookla Speedtest), and running the "Supervisor Loop" that ensures 
+the web dashboard stays alive and restarts cleanly.
+"""
+
 import os
 import sys
 import subprocess
@@ -18,6 +26,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 # --- NEW: Fix for SSL Certificate Verify Errors ---
+# Prevents urllib from crashing on operating systems with outdated or missing root certificate stores.
 import ssl
 try:
     ssl._create_default_https_context = ssl._create_unverified_context
@@ -26,12 +35,13 @@ except AttributeError:
 # ------------------------------------------------
 
 # --- Configuration ---
-SETUP_VERSION = "1.0.2"
+SETUP_VERSION = "1.0.3"
 VENV_DIR_NAME = "venv"
 
+# Core Python dependencies required for the dashboard to function
 BASE_REQUIREMENTS = ["flask", "psutil", "scapy", "waitress", "pystray", "Pillow"]
 
-# macOS-specific requirement for CoreWLAN Wi-Fi scanning
+# macOS-specific requirements for the CoreWLAN native Wi-Fi scanning engine
 if platform.system() == "Darwin":
     BASE_REQUIREMENTS.extend([
         "pyobjc-framework-CoreWLAN",
@@ -43,7 +53,9 @@ REQUIREMENTS = BASE_REQUIREMENTS
 APP_FILENAME = "app.py"
 
 # --- MASTER FILE LIST ---
-# Protects these files from the Isolation/Self-Containment security checks.
+# A strict whitelist of files that belong to this application.
+# The isolation engine uses this list to detect if the user accidentally extracted the script 
+# into a messy folder (like 'Downloads'), allowing it to move itself to a clean directory.
 KNOWN_APP_ITEMS = {
     "setup_env.py", "app.py", "version.json", "github_settings.json", 
     "README.md", "Changelog", "templates", "static", "logs", "backups", 
@@ -56,7 +68,8 @@ KNOWN_APP_ITEMS = {
     "Linux-Installer.sh", "MacOS-Installer.sh", "Install scripts"
 }
 
-# GITHUB DEFAULT FALLBACK CONFIGURATION
+# --- GITHUB DEFAULT FALLBACK CONFIGURATION ---
+# Used if the local github_settings.json file is missing or corrupted.
 DEFAULT_GITHUB_CONFIG = {
     "stable": {
         "display_name": "Production (Stable)",
@@ -76,34 +89,33 @@ DEFAULT_GITHUB_CONFIG = {
 
 def get_foreign_items(base_dir):
     """
-    Scans the application directory and identifies files that do not belong to the core software[cite: 23].
-    It explicitly ignores hidden files, python caches, known application files, and dynamically generated backups[cite: 23].
-    Returns a list of foreign item names[cite: 23].
+    Scans the application directory and identifies files that do not belong to the core software.
+    Explicitly ignores hidden files, python caches, known app files, and dynamically generated backups.
+    Returns a list of foreign item names to trigger the Isolation Engine.
     """
     current_items = set(os.listdir(base_dir))
     foreign = []
     
     for item in current_items:
-        # 1. Ignore hidden files and python caches
+        # 1. Ignore hidden OS files and python compiled caches
         if item.startswith('.') or item == "__pycache__":
             continue
         # 2. Ignore explicitly known app files/folders
         if item in KNOWN_APP_ITEMS:
             continue
-        # 3. Ignore dynamically generated backups/old files
+        # 3. Ignore dynamically generated backups or update artifacts
         if item.endswith('.old') or item.endswith('.bak') or item.endswith('.back'):
             continue
             
-        # If it reaches here, it's genuinely a foreign file
+        # If it reaches here, it is a foreign file cluttering the workspace
         foreign.append(item)
         
     return foreign
 
 def is_dev_build(base_dir):
     """
-    Determines if the system is currently set to the Development (DEV) channel[cite: 23].
-    It checks for a manual 'dev' override file or parses the 'version.json' file[cite: 23].
-    Returns True if on the dev channel, False otherwise[cite: 23].
+    Determines if the system is currently set to the Development (DEV) update channel.
+    Checks for a manual 'dev' override file, or parses the local 'version.json' file.
     """
     if (base_dir / "dev").exists():
         return True
@@ -119,8 +131,8 @@ def is_dev_build(base_dir):
 
 def ensure_github_settings(base_dir):
     """
-    Ensures that the 'github_settings.json' configuration file exists[cite: 23].
-    If missing, it creates it using the default stable and dev channel repository configurations[cite: 23].
+    Ensures that the 'github_settings.json' configuration file exists on disk.
+    If missing, it automatically creates it using the hardcoded default configurations.
     """
     settings_file = base_dir / "github_settings.json"
     if not settings_file.exists():
@@ -133,8 +145,8 @@ def ensure_github_settings(base_dir):
 
 def get_active_github_settings(base_dir):
     """
-    Reads the active repository settings from 'github_settings.json' based on the current update channel[cite: 23].
-    Falls back to the hardcoded default configuration if the file is unreadable[cite: 23].
+    Reads the active repository settings (repo name, branch, token) based on the current update channel.
+    Falls back to the hardcoded stable configuration if the file is unreadable.
     """
     ensure_github_settings(base_dir)
     settings_file = base_dir / "github_settings.json"
@@ -153,17 +165,17 @@ def get_active_github_settings(base_dir):
 
 def setup_supervisor_logging(base_dir):
     """
-    Initializes a dual-logging system that prints output to the terminal while simultaneously writing it to a file[cite: 23].
-    It automatically cleans up old log files exceeding 7 days and checks the SQLite database for the user's logging preferences[cite: 23].
+    Initializes a dual-logging system that prints output to the terminal while simultaneously writing it to a file.
+    Automatically cleans up old log files exceeding 7 days and checks the SQLite database for user logging preferences.
     """
     log_dir = base_dir / 'logs'
     try:
         log_dir.mkdir(exist_ok=True)
         os.chmod(log_dir, 0o777) # Ensure normal users can access the folder
-        fix_permissions(log_dir) # Force permissions on the log folder via OS
+        fix_permissions(log_dir) # Force permissions on the log folder via OS utilities
     except: pass
 
-    # 1. Clean up old logs (older than 7 days)
+    # 1. Clean up old logs (older than 7 days) to prevent disk bloat
     cutoff_date = datetime.now() - timedelta(days=7)
     for log_file in log_dir.glob('*.log'):
         try:
@@ -182,12 +194,12 @@ def setup_supervisor_logging(base_dir):
     except: pass
     os.environ["APP_FULL_LOGGING"] = "1" if full_log else "0"
 
-    # 3. Generate synchronized timestamp
+    # 3. Generate synchronized timestamp for the current boot session
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     os.environ["APP_LOG_TIME"] = timestamp
     log_path = log_dir / f"system_run_{timestamp}.log"
 
-    # 4. TeeLogger to print to terminal AND unconditionally write to file
+    # 4. TeeLogger custom class to print to terminal AND unconditionally write to file
     class TeeLogger:
         def __init__(self, filename, terminal, is_stderr=False):
             self.terminal = terminal
@@ -198,7 +210,7 @@ def setup_supervisor_logging(base_dir):
                 os.chmod(filename, 0o666) # Ensure everyone can read/write to the log
                 fix_permissions(filename) # Force R/W/X for all users on the new log
             except PermissionError:
-                pass # If owned by root, silently skip file logging for setup script
+                pass # If owned by root on macOS/Linux, silently skip file logging for setup script
             except Exception:
                 pass
             
@@ -209,7 +221,7 @@ def setup_supervisor_logging(base_dir):
                 self.terminal.flush()
             except: pass
             
-            # Unconditionally log all setup script actions
+            # Unconditionally log all setup script actions to disk
             if self.file:
                 try:
                     self.file.write(text)
@@ -228,8 +240,8 @@ def setup_supervisor_logging(base_dir):
 
 def is_admin():
     """
-    Checks if the script is running with elevated administrative privileges[cite: 23].
-    On Windows, it checks the shell32 library; on Unix, it checks for a root UID of 0[cite: 23].
+    Checks if the script is running with elevated administrative privileges (UAC/sudo).
+    On Windows, it queries the shell32 library; on Unix, it checks for a root UID of 0.
     """
     try:
         if platform.system() == "Windows":
@@ -241,8 +253,8 @@ def is_admin():
 
 def get_autostart_setting(base_dir):
     """
-    Reads the 'autostart' configuration file to determine if the web browser should launch on boot[cite: 23].
-    Defaults to True (1) if the file is missing[cite: 23].
+    Reads the 'autostart' configuration file to determine if the web browser should launch on boot.
+    Defaults to True (1) if the file is missing.
     """
     autostart_file = base_dir / "autostart"
     if not autostart_file.exists():
@@ -251,14 +263,14 @@ def get_autostart_setting(base_dir):
         return True
     try:
         with open(autostart_file, "r") as f:
-            return f.read(10).strip() == "1" # Limit read
+            return f.read(10).strip() == "1" # Limit read size for safety
     except:
         return True
 
 def ensure_linux_prerequisites():
     """
-    Ensures Linux systems have the necessary Python build tools, venv modules, and network utilities installed before setup[cite: 23].
-    Dynamically identifies the Linux package manager (APT, DNF, Pacman, or Zypper) to install dependencies automatically[cite: 23].
+    Ensures Linux systems have the necessary Python build tools, venv modules, and network utilities.
+    Dynamically identifies the Linux package manager (APT, DNF, Pacman, or Zypper) to install dependencies automatically.
     """
     if platform.system() == "Linux":
         print("[*] Checking Linux system prerequisites...")
@@ -289,7 +301,7 @@ def ensure_linux_prerequisites():
 def fetch_latest_from_github(base_dir):
     """
     Downloads the latest zipped release directly from GitHub and extracts it.
-    Uses standard archive links to bypass API rate limits for public repositories.
+    Uses standard web archive links to safely bypass API rate limits for public repositories.
     """
     print(f"[*] '{APP_FILENAME}' not found. Initializing download from GitHub...")
     
@@ -329,8 +341,8 @@ def fetch_latest_from_github(base_dir):
 
 def create_venv(base_dir):
     """
-    Generates an isolated Python Virtual Environment (venv) for the application dependencies[cite: 23].
-    Contains a specific macOS fix to manually link shared libraries required for standalone execution[cite: 23].
+    Generates an isolated Python Virtual Environment (venv) for the application dependencies.
+    Contains a specific macOS fix to manually link shared libraries required for standalone execution.
     """
     venv_path = base_dir / VENV_DIR_NAME
     if not venv_path.exists():
@@ -360,8 +372,8 @@ def create_venv(base_dir):
 
 def get_venv_paths(venv_path):
     """
-    Resolves the correct internal file paths for the Python executable and binaries within the virtual environment[cite: 23].
-    Accounts for the structural differences between Windows (Scripts folder) and Unix (bin folder)[cite: 23].
+    Resolves the correct internal file paths for the Python executable and binaries within the virtual environment.
+    Accounts for the structural differences between Windows (Scripts folder) and Unix (bin folder).
     """
     if platform.system() == "Windows":
         return {
@@ -380,8 +392,8 @@ def get_venv_paths(venv_path):
 
 def install_requirements(python_path):
     """
-    Executes pip within the virtual environment to install all defined module dependencies[cite: 23].
-    Automatically manages OS-specific frameworks, like CoreWLAN for macOS[cite: 23].
+    Executes pip within the virtual environment to install all defined module dependencies.
+    Automatically manages OS-specific frameworks, like CoreWLAN for macOS.
     """
     print("[*] Installing Python dependencies...")
     try:
@@ -401,9 +413,9 @@ def install_requirements(python_path):
 
 def install_speedtest_cli(bin_dir):
     """
-    Downloads and extracts the official Ookla Speedtest CLI binary tailored for the host operating system and architecture[cite: 23].
-    Supports Windows, macOS (Universal), and Linux (x86_64, ARM32, ARM64) seamlessly[cite: 23].
-    Ensures the binary receives full executable permissions upon extraction[cite: 23].
+    Downloads and extracts the official Ookla Speedtest CLI binary tailored for the host operating system and architecture.
+    Supports Windows, macOS (Universal), and Linux (x86_64, ARM32, ARM64) seamlessly.
+    Ensures the binary receives full executable permissions upon extraction.
     """
     system = platform.system()
     machine = platform.machine().lower()
@@ -462,7 +474,7 @@ def install_speedtest_cli(bin_dir):
                 tar.extract("speedtest", path=bin_dir)
             os.remove(tgz_path)
 
-        # --- THE MISSING PERMISSION FIX ---
+        # --- APPLY PERMISSIONS ---
         if target_path.exists():
             fix_permissions(target_path)  # Sets R/W/X for all users
             print("[✓] Speedtest CLI installed successfully with full permissions.")
@@ -483,29 +495,55 @@ def install_speedtest_cli(bin_dir):
 
 def install_npcap_windows():
     """
-    Checks for the presence of Npcap on Windows systems[cite: 23].
-    If missing, it attempts an automated installation using Chocolatey to satisfy Scapy requirements[cite: 23].
+    Checks for the presence of Npcap on Windows systems.
+    If missing, downloads the official installer directly from npcap.com and prompts the user to complete it.
+    Npcap is strictly required for Scapy to perform low-level network sniffing on Windows.
     """
     if platform.system() != "Windows": return
     
     sys_root = os.environ.get('SystemRoot', 'C:\\Windows')
     if not os.path.exists(os.path.join(sys_root, "System32", "Npcap")):
-        print("[*] Npcap missing. Attempting installation via Chocolatey...")
+        print("\n[!] Npcap missing. Npcap is required for network scanning on Windows.")
+        print("[*] Downloading the official Npcap installer...")
         
-        # Call our new Chocolatey installer
-        if install_chocolatey():
+        npcap_url = "https://npcap.com/dist/npcap-1.88.exe"
+        
+        # Save to the user's temporary directory
+        temp_dir = Path(os.environ.get('TEMP', 'C:\\Windows\\Temp'))
+        installer_path = temp_dir / "npcap_installer.exe"
+        
+        try:
+            # Download the installer (User-Agent added to prevent 403 Forbidden errors)
+            req = urllib.request.Request(npcap_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response, open(installer_path, 'wb') as out_file:
+                shutil.copyfileobj(response, out_file)
+                
+            print("[*] Launching Npcap installer. PLEASE COMPLETE THE INSTALLATION WINDOW THAT POPS UP.")
+            print("    (Leave the default installation settings as they are).")
+            
+            # Launch the installer and wait for the user to finish clicking through it
+            subprocess.run([str(installer_path)], check=False)
+            
+            # Clean up the installer file safely
             try:
-                subprocess.run(["choco", "install", "npcap", "-y"], check=True)
-                print("[✓] Npcap successfully installed.")
-            except Exception as e: 
-                print(f"[!] Npcap install failed: {e}")
-        else:
+                os.remove(installer_path)
+            except OSError: 
+                pass
+                
+            # Verify if the user actually completed the installation
+            if os.path.exists(os.path.join(sys_root, "System32", "Npcap")):
+                print("[✓] Npcap installed successfully.")
+            else:
+                print("[X] Npcap installation was cancelled or failed.")
+                
+        except Exception as e:
+            print(f"[X] Failed to download or run Npcap installer: {e}")
             print("[!] Please manually install Npcap from https://npcap.com/")
 
 def run_application(base_dir, venv_python):
     """
     The main supervisor loop that handles launching the dashboard application.
-    It automatically forces the cleanup of stale processes blocking the web port, opens the browser upon successful boot, 
+    Automatically forces the cleanup of stale processes blocking the web port, opens the browser upon successful boot, 
     catches application crashes, and safely handles intentional shutdown signals from the UI.
     """
     app_path = base_dir / APP_FILENAME
@@ -514,6 +552,8 @@ def run_application(base_dir, venv_python):
     print("="*60)
     
     # --- NEW: Trigger macOS Permissions as Standard User BEFORE Sudo ---
+    # Triggering these native APIs as a standard user forces the OS to prompt for permission
+    # If run as sudo first, macOS silently denies the request without prompting the user.
     if platform.system() == "Darwin":
         print("[*] Probing macOS Network & Location permissions...")
         try:
@@ -544,7 +584,7 @@ def run_application(base_dir, venv_python):
 
     cmd = [str(venv_python), str(app_path)]
     
-    # Only use sudo on Linux, bypass for macOS to allow CoreLocation prompts
+    # Elevate to sudo on Linux for network scanning, bypass for macOS to allow CoreLocation prompts
     if platform.system() == "Linux" and not is_admin():
         print("[*] Elevating privileges for network scanning...")
         cmd = ["sudo"] + cmd
@@ -581,6 +621,7 @@ def run_application(base_dir, venv_python):
             for _ in range(30):
                 current_port = get_configured_port(base_dir)
                 try:
+                    # Continually probe the port until the Flask server successfully binds to it
                     with socket.create_connection(("127.0.0.1", current_port), timeout=1):
                         server_ready = True
                         break
@@ -597,7 +638,7 @@ def run_application(base_dir, venv_python):
             elif server_ready:
                 print(f"\n[*] Application successfully restarted on port {current_port}.\n")
             
-            # Wait for the application process to terminate or crash
+            # Suspend the supervisor thread and wait for the application process to terminate or crash
             process.wait()
             
             # --- Check for intentional shutdown signal ---
@@ -612,7 +653,7 @@ def run_application(base_dir, venv_python):
                         subprocess.run(["sudo", "rm", "-f", str(shutdown_file)], stderr=subprocess.DEVNULL)
                 sys.exit(0) # Exit the supervisor loop completely
             
-            # If we reach here and no signal exists, it was a legitimate crash
+            # If we reach here and no signal exists, it was an unexpected crash
             print(f"\n[!] WARNING: Main application stopped unexpectedly (Exit code: {process.returncode}).")
             print("[*] Restarting application loop in 3 seconds...\n")
             
@@ -629,9 +670,9 @@ def run_application(base_dir, venv_python):
 
 def fix_permissions(path):
     """
-    Grants comprehensive Read, Write, and Execute access permissions to a specified file or directory[cite: 23].
-    Utilizes 'icacls' to grant Full Control to 'Everyone' on Windows, or 'chmod 777' on Unix environments[cite: 23].
-    Returns True upon success, False otherwise[cite: 23].
+    Grants comprehensive Read, Write, and Execute access permissions to a specified file or directory.
+    Utilizes 'icacls' to grant Full Control to 'Everyone' on Windows, or 'chmod 777' on Unix environments.
+    Returns True upon success, False otherwise.
     """
     try:
         if platform.system() == "Windows":
@@ -654,18 +695,18 @@ def fix_permissions_bulk(base_path):
         if platform.system() == "Windows":
             subprocess.run(['icacls', str(base_path), '/grant', 'Everyone:(F)', '/T', '/C', '/Q'], capture_output=True)
         else:
-            # FIX: Removed 'sudo'. The standard user owns the folder, so this executes silently without a password!
+            # Executed naturally without sudo. The standard user owns the folder, so this executes silently.
             subprocess.run(['chmod', '-R', '777', str(base_path)], stderr=subprocess.DEVNULL)
     except:
         pass
 
 def has_internet():
     """
-    Tests for active internet connectivity by opening a socket connection to Google DNS (8.8.8.8) on port 53[cite: 23].
-    Utilizes a short 2-second timeout to prevent stalling during offline startup routines[cite: 23].
+    Tests for active internet connectivity by opening a socket connection to Google DNS (8.8.8.8) on port 53.
+    Utilizes a short 2-second timeout to prevent stalling during offline startup routines.
     """
     try:
-        # Timeout set to 2 seconds to avoid long hangs
+        # Timeout set to 2 seconds to avoid long hangs during boot
         socket.create_connection(("8.8.8.8", 53), timeout=2)
         return True
     except OSError:
@@ -673,16 +714,16 @@ def has_internet():
 
 def get_configured_port(base_dir):
     """
-    Retrieves the target port for the web dashboard[cite: 23].
-    It prioritizes checking the 'webport' configuration override file, then reads from the SQLite database[cite: 23].
-    Returns port 81 as a failsafe default[cite: 23].
+    Retrieves the target port for the web dashboard.
+    Prioritizes checking the 'webport' configuration override file, then reads from the SQLite database.
+    Returns port 81 as a failsafe default.
     """
     # Check if the override file is waiting to be processed
     port_file = base_dir / "webport"
     if port_file.exists():
         try:
             with open(port_file, "r") as f:
-                val = f.read(10).strip() # Limit read
+                val = f.read(10).strip() # Limit read length to prevent memory abuse
                 if val.isdigit() and 1 <= int(val) <= 65535: 
                     return int(val)
         except: pass
@@ -701,8 +742,8 @@ def get_configured_port(base_dir):
 
 def main():
     """
-    The master entry point for the setup and application execution pipeline[cite: 23].
-    It handles:
+    The master entry point for the setup and application execution pipeline.
+    Handles:
     1. Privilege escalation (UAC on Windows).
     2. Detecting destructive 'reinstall' signals or system isolation needs based on foreign files.
     3. Downloading application codebase from GitHub dynamically.
@@ -746,6 +787,7 @@ def main():
 
     if is_in_venv and (needs_factory_reset or needs_isolation):
         # Extremely robust debugger detection via active modules
+        # Prevents developers from accidentally nuking their debug instances
         is_debugging = sys.gettrace() is not None or 'debugpy' in sys.modules or 'pydevd' in sys.modules
         if is_debugging:
             print("\n[!] DEBUGGER DETECTED DURING A DESTRUCTIVE BOOT!")
