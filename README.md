@@ -15,16 +15,15 @@ This is a basic network troubleshooting tool I built with AI for my own use, now
 * **Support:** Please log bugs or suggestions on GitHub. I can't guarantee ongoing development, but since I use this tool myself, I'll try to push periodic bug fixes. I will be updating the dev branch first with fixes then pushing to main branch once tested.
 * **Forks:** Feel free to copy the code and create your own versions, but please credit me as the original author.
 
-> [!IMPORTANT]  
-> A robust, fault-tolerant network diagnostic dashboard designed for troubleshooting network issues across home, office, and managed environments. Built using Python, Flask, SQLite, and Scapy. Internet access is strictly required for a first-time installation to download dependencies and fetch the latest updates from GitHub.
-
 ---
 
 ## ✨ Core Features & Support
 
+A robust, fault-tolerant network diagnostic dashboard designed for troubleshooting network issues across home, office, and managed environments. Built using Python, Flask, SQLite, and Scapy. **Internet access is strictly required for a first-time installation** to download dependencies and fetch the latest updates from GitHub.
+
 * **Dedicated Test Device Mode:** Instantly configure the software to run headlessly. Creates persistent configuration triggers and automatically broadcasts a Wi-Fi Mobile Hotspot (Windows/Linux) so you can connect and control the dashboard from your phone.
 * **Advanced Device Discovery:** Deep-scans subnets via Scapy (with a multi-threaded OS ping sweep fallback) to list hostnames, open ports/services, and automatically resolves device manufacturers.
-* **Smart Network Mapping:** Supports Isolated Scans, Split Scans, and Auto-Matching to intelligently bundle devices under the correct router MAC and IP subnets.
+* **Smart Network Mapping:** Supports Isolated Scans, Split Scans, and strict Auto-Matching (verifying both Router MAC and IP) to safely handle complex VLANs without merging conflicts.
 * **Wi-Fi Scanning:** Scans across 2.4GHz, 5GHz, and 6GHz bands with signal strength metrics (dBm/%), channel details, and security types.
 * **Speed Tests:** Integrates the native Ookla Speedtest CLI for accurate high-bandwidth connections (>1Gbps), with a seamless pure-Python fallback (limited to ~1Gbps) if the official CLI fails or is blocked by the OS.
 * **Database Management:** Export your database natively through the UI, or import and merge external database backups seamlessly.
@@ -33,7 +32,7 @@ This is a basic network troubleshooting tool I built with AI for my own use, now
 ### Platform OS Support
 
 * <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="16" alt="Windows" /> **Windows 10/11:** Fully supported. Performing a Wi-Fi scan temporarily resets the Wi-Fi adapter via PowerShell to retrieve the available network list. Supports native Windows Mobile Hotspot creation.
-* <img src="https://cdn.simpleicons.org/apple/999999" width="16" alt="macOS" /> **macOS:** Fully supported. Requires admin and Location permissions for scanning. Automatically compiles into a native `.app` bundle in your Applications folder.
+* <img src="https://cdn.simpleicons.org/apple/ffffff" width="16" alt="macOS" /> **macOS:** Fully supported. Requires admin and Location permissions for scanning. Installs the core files cleanly in your user folder and generates a native `.app` launcher in your Applications folder for easy access.
 * <img src="https://cdn.simpleicons.org/linux/FCC624" width="16" alt="Linux" /> **Linux & Raspberry Pi:** Fully supported across all major distributions. Automatically detects and utilizes `apt`, `dnf`, `pacman`, or `zypper` package managers. Supports NetworkManager Wi-Fi hotspots and `systemd` background services.
 
 ---
@@ -43,15 +42,15 @@ This is a basic network troubleshooting tool I built with AI for my own use, now
 The repository includes a suite of powerful, cross-platform deployment scripts. These scripts completely automate environment setup, GitHub syncing, background execution, and uninstallation. *Note: You can run these scripts again at any time to cleanly uninstall the application and remove background services.*
 
 ### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="20" alt="Windows" /> Windows Automated Setup
-The `Windows-Installer.ps1` script requests Administrator privileges, downloads and installs Python 3 natively if missing, and syncs project files. It prompts the user to install Npcap, creates Desktop/Start Menu shortcuts with the custom app logo, and automatically unlocks folder permissions.
+The `Windows-Installer.ps1` script requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. It downloads and prompts the user to install Npcap directly from the official website, automatically unlocks folder permissions, and creates Desktop/Start Menu shortcuts **with an option to bypass UAC prompts for seamless, passwordless launching.**
 
 Open **PowerShell** and paste the following command to begin:
 ```powershell
 & ([scriptblock]::Create((irm "https://chris94.uk/install-scripts/Windows-Installer.ps1")))
 ```
 
-### <img src="https://cdn.simpleicons.org/apple/999999" width="20" alt="macOS" /> macOS Automated Setup
-The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 3 if missing), downloads project files natively, and asks whether you prefer a visible terminal or a background `launchd` boot agent. It builds a native macOS `.app` bundle in the Applications folder.
+### <img src="https://cdn.simpleicons.org/apple/ffffff" width="20" alt="macOS" /> macOS Automated Setup
+The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 3.14 natively if missing) and downloads the core project files securely to your home folder. It builds a native macOS `.app` shortcut in your Applications folder **and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.**
 
 Open the **Terminal** app and paste the following command:
 ```bash
@@ -59,7 +58,7 @@ curl -sSLq https://chris94.uk/install-scripts/MacOS-Installer.sh | sh
 ```
 
 ### <img src="https://cdn.simpleicons.org/linux/FCC624" width="20" alt="Linux" /> Linux Automated Setup
-The `Linux-Installer.sh` script dynamically detects your package manager to install Python 3, venv, network-manager, and GUI tray dependencies like GTK3. It supports NetworkManager Wi-Fi Hotspots and allows you to select between a desktop autostart or a `systemd` background boot service.
+The `Linux-Installer.sh` script dynamically detects your package manager to install Python 3, venv, network-manager, and GUI tray dependencies like GTK3. **For Raspberry Pi users, it automatically detects and configures your regional Wi-Fi Country Code.** It supports NetworkManager Wi-Fi Hotspots and allows you to select between a desktop autostart (which prompts for sudo in a terminal) or a `systemd` background boot service **(which runs silently as root without requiring passwords).**
 
 Open your **Terminal** and paste the following command:
 ```bash
@@ -74,7 +73,7 @@ Once the setup completes, the Waitress WSGI server will spin up. If you ran the 
 
 Open your web browser and navigate to your chosen port (e.g., port 81):
 ```text
-http://127.0.0.1:81
+[http://127.0.0.1:81](http://127.0.0.1:81)
 ```
 If you enabled the Wi-Fi hotspot during installation, connect your phone to the broadcasted SSID and navigate to the Gateway IP with your configured port (usually `http://10.42.0.1:81` on Linux or `http://192.168.137.1:81` on Windows).
 
@@ -85,7 +84,7 @@ If you enabled the Wi-Fi hotspot during installation, connect your phone to the 
 If you prefer to bypass the wrapper scripts, the core `setup_env.py` script can be executed manually to create the local virtual environment and install the required Python dependencies (`flask`, `psutil`, `scapy`, `waitress`, `pystray`, `Pillow`).
 
 ### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="16" alt="Windows" /> Windows Prerequisites
-* **Python 3.12+**, with the option to *add Python to PATH* enabled.
+* **Python 3.12+** (3.14+ recommended), with the option to *add Python to PATH* enabled.
 * **Npcap**, with *WinPcap API-compatible mode* enabled (required for Scapy packet discovery).
 
 From the project folder, open an **Administrator terminal** and run:
@@ -93,8 +92,8 @@ From the project folder, open an **Administrator terminal** and run:
 python setup_env.py
 ```
 
-### <img src="https://cdn.simpleicons.org/apple/999999" width="16" alt="macOS" /> macOS Prerequisites
-* **Python 3.12+**.
+### <img src="https://cdn.simpleicons.org/apple/ffffff" width="16" alt="macOS" /> macOS Prerequisites
+* **Python 3.12+** (3.14+ recommended).
 * **Administrator access** via `sudo` to allow Scapy to read ARP tables.
 * **Location Services** permissions granted to your Terminal. macOS strictly requires this for Wi-Fi scanning functions to return data.
 
@@ -104,9 +103,11 @@ sudo python3 setup_env.py
 ```
 
 ### <img src="https://cdn.simpleicons.org/linux/FCC624" width="16" alt="Linux" /> Linux Prerequisites
-For Debian, Ubuntu, and Raspberry Pi OS, you must manually install the native system build packages so Python can compile psutil and scapy:
+* **Raspberry Pi Wi-Fi:** On a fresh Raspberry Pi OS installation, the Wi-Fi radio is completely disabled until a regional country code is set. You must run `sudo raspi-config` (navigate to **Localisation Options -> WLAN Country**) to set your location, otherwise Wi-Fi scanning and hotspots will immediately fail.
+* **System Packages:** For Debian, Ubuntu, and Raspberry Pi OS, you must manually install the native system build packages so Python can compile dependencies (including the system tray GUI):
+
 ```bash
-sudo apt-get update && sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential net-tools libpcap-dev
+sudo apt-get update && sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential net-tools libpcap-dev unzip curl network-manager python3-gi gir1.2-gtk-3.0 libayatana-appindicator3-1 python3-xlib
 ```
 From the project folder, open your terminal and run:
 ```bash
@@ -118,6 +119,7 @@ sudo python3 setup_env.py
 ## 📖 Application Usage Guide
 
 ### Dashboard Basics
+* **Seamless Launching:** If you used the automated installers, you can configure your Desktop and Start Menu shortcuts to bypass UAC (Windows) or admin password prompts (macOS), allowing the dashboard to start instantly with a single click.
 * **System Tray Icon:** When launched on a desktop environment, the app adds an icon to your system tray. You can right-click this icon to instantly restart or shut down the dashboard. *Note: If running as a background daemon, without a display, or in Dedicated Server Mode, this icon hides automatically.*
 * **Table Sorting:** All data tables across the dashboard are dynamically sortable. Click any column header to toggle ascending/descending order.
 * **Touch Mode:** Click the Hand Icon to increase the size of buttons, checkboxes, and table rows for easier tapping on mobile devices.
@@ -138,6 +140,7 @@ sudo python3 setup_env.py
 * **Auto-Logging:** Every time you press Scan, results are automatically saved to the database. You can rename scans or add comments.
 * **Global Wi-Fi History:** View an aggregate list of every unique SSID ever seen, including detection counts and last-seen dates.
 * **macOS MAC Address Restriction:** By default, macOS restricts applications from viewing individual BSSID (MAC addresses) for nearby Wi-Fi networks due to privacy policies. However, if you use the automated installer script and launch the application from its native shortcut in the Applications folder (with proper Location and Accessibility permissions granted), it may successfully reveal the underlying network MAC addresses.
+* **Raspberry Pi Wi-Fi:** If Wi-Fi scans return completely empty on a Raspberry Pi, it means your WLAN Country Code has not been set. Run `sudo raspi-config` in a terminal to set it.
 
 ### Settings & Maintenance
 * **Access Control:** Secure your dashboard by enabling "Require Login" in the Settings tab. If you get locked out, create a blank `passwordreset` file in the app folder to clear your credentials.

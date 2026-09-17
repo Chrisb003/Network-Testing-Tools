@@ -1,4 +1,4 @@
-<!-- Version number 1.0.3 -->
+<!-- Version number 1.0.4 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -962,22 +962,25 @@
                         <p class="text-muted small">These same scripts can be used to fully remove the application as well.</p>
 
                         <div class="help-item">
-                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python 3.12 directly from python.org if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and asks to install Npcap (required for deep network discovery). Creates Desktop/Start Menu shortcuts with the custom app logo and automatically unlocks folder permissions using <code>icacls</code>. To begin the installation quickly, open <strong>PowerShell</strong> and paste:
-                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">&amp; ([scriptblock]::Create((irm "https://test.chris94.com/install-scripts/Windows-Installer.ps1")))</div>
+                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and asks to install Npcap directly from the official website. Creates Desktop/Start Menu shortcuts <strong>with an option to bypass UAC prompts for seamless, passwordless launching.</strong> To begin the installation quickly, open <strong>PowerShell</strong> and paste:
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">&amp; ([scriptblock]::Create((irm "https://chris94.uk/install-scripts/Windows-Installer.ps1")))</div>
                         </div>
                         <div class="help-item">
-                            <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, network-manager, and GUI tray dependencies like GTK3 and AppIndicator), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). It prompts the user to choose between a visible desktop startup or an invisible systemd background service, and handles desktop shortcuts with custom logo integration. To begin the installation quickly, open your <strong>Terminal</strong> and paste:
-                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://test.chris94.com/install-scripts/Linux-Installer.sh | sh</div>
+                            <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, network-manager, and GUI tray dependencies like GTK3 and AppIndicator), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). <strong>For Raspberry Pi users, it automatically detects and configures your regional Wi-Fi Country Code.</strong> It prompts the user to choose between a visible desktop startup (which prompts for sudo in a terminal) or a <code>systemd</code> background boot service <strong>(which runs silently as root without requiring passwords).</strong> To begin the installation quickly, open your <strong>Terminal</strong> and paste:
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://chris94.uk/install-scripts/Linux-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
-                            <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3 and Xcode tools if missing), downloads or updates project files from GitHub into the user's home folder, and offers dedicated test device options to write configuration triggers. It prompts the user to choose between a visible Terminal boot or a background <code>launchd</code> daemon, builds a native macOS <code>.app</code> bundle in the Applications folder with a high-resolution custom icon converted from the project logo, and ensures PyObjC frameworks like Quartz are available for the menu bar icon. To begin the installation quickly, open the <strong>Terminal</strong> app and paste:
-                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://test.chris94.com/install-scripts/MacOS-Installer.sh | sh</div>
+                            <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3.14 natively if missing), downloads the core project files securely to your home folder, and offers dedicated test device options to write configuration triggers. It prompts the user to choose between a visible Terminal boot or a background <code>launchd</code> daemon. It builds a native macOS <code>.app</code> shortcut in your Applications folder <strong>and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.</strong> To begin the installation quickly, open the <strong>Terminal</strong> app and paste:
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://chris94.uk/install-scripts/MacOS-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
                             <strong><code>setup_env.py</code>:</strong> The core supervisor script. Manages virtual environments, installs Python requirements (including system tray packages like <code>pystray</code> and <code>Pillow</code>), downloads/updates the Speedtest CLI, enforces file permissions across the OS, and monitors the main application for crashes.
                         </div>
 
                         <h5 class="text-primary border-bottom pb-2 mb-3 mt-4">Dashboard Basics</h5>
+                        <div class="help-item">
+                            <strong>Seamless Launching:</strong> If you used the automated installers, you can configure your Desktop and Start Menu shortcuts to bypass UAC (Windows) or admin password prompts (macOS), allowing the dashboard to start instantly with a single click.
+                        </div>
                         <div class="help-item">
                             <strong>System Tray Icon:</strong> When launched on a desktop environment, the app adds an icon to your system tray (or macOS menu bar). You can right-click this icon to instantly restart or shut down the dashboard. <em>Note: If running as a background daemon, without a display, or in Dedicated Server Mode, this icon hides automatically.</em>
                         </div>
@@ -1037,7 +1040,7 @@
                             <strong>Continue Scan:</strong> Resumes scanning the currently loaded network. To save time, this mode skips deep-port-checks on devices that were previously detected as offline.
                         </div>
                         <div class="help-item">
-                            <strong>Split & Isolated Scans:</strong> A <strong>Split Scan</strong> runs a scan but saves the result as a completely independent network profile. An <strong>Isolated Scan</strong> runs a fresh scan but intentionally blocks the system from attempting to merge or match the results with any past historical data.
+                            <strong>Split & Isolated Scans:</strong> A <strong>Split Scan</strong> runs a scan but saves the result as a completely independent network profile. An <strong>Isolated Scan</strong> runs a fresh scan but intentionally blocks the system from attempting to merge or match the results with any past historical data. The backend uses strict Auto-Matching (verifying both Router MAC and IP) to safely handle complex VLANs without merging conflicts.
                         </div>
                         <div class="help-item">
                             <strong>Global Device History:</strong> A dedicated directory showing the most recently known state of <em>every</em> unique device ever detected across all of your network scans. You can bulk-export this list, manually update device manufacturers, and track IP address changes over time.
@@ -1075,6 +1078,12 @@
                         </div>
                         <div class="help-item">
                             <strong>WiFi Scan History vs. Global Wi-Fi History:</strong> The "Scan History" tab shows individual point-in-time snapshots of your airwaves. The "Global Wi-Fi History" tab aggregates every unique SSID ever seen into a master directory, showing exactly how many times it was detected, when it was first/last seen, and allows you to apply global comments or lock (protect) the SSID from database cleanups.
+                        </div>
+                        <div class="help-item">
+                            <strong>macOS MAC Address Restriction:</strong> By default, macOS restricts applications from viewing individual BSSID (MAC addresses) for nearby Wi-Fi networks due to privacy policies. However, if you use the automated installer script and launch the application from its native shortcut in the Applications folder (with proper Location and Accessibility permissions granted), it may successfully reveal the underlying network MAC addresses.
+                        </div>
+                        <div class="help-item">
+                            <strong>Raspberry Pi Wi-Fi:</strong> If Wi-Fi scans return completely empty on a Raspberry Pi, it means your WLAN Country Code has not been set. Run <code>sudo raspi-config</code> in a terminal to set it.
                         </div>
                     </div>
                     
