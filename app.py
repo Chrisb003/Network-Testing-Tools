@@ -190,7 +190,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -2778,8 +2778,8 @@ def scan_network():
 def scan_network_stream():
     """
     Server-Sent Events (SSE) Streaming Network Scanner.
-    Optimized for instant UI rendering while implementing a deferred post-scan 
-    fallback to ensure the router's real MAC address is captured even if missed initially.
+    Ensures pre-scan gateway MAC resolution is prioritized to prevent breaking 
+    auto-matching against historical network profiles with identical IPs.
     """
     is_continue = request.args.get('mode') == 'continue'
     force_merge = request.args.get('force_merge') == 'true'
@@ -2818,10 +2818,10 @@ def scan_network_stream():
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             worker_cfg = get_worker_config() if 'get_worker_config' in globals() else {"scan_workers": 20, "ping_workers": 30}
 
-            # --- 0. SMART PRE-CHECK FOR CONTINUE SCAN MISMATCH ---
             ext_info = get_extended_iface_info()
             gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
-            
+
+            # --- 0. SMART PRE-CHECK FOR CONTINUE SCAN MISMATCH ---
             if is_continue and expected_net_id and not force_merge:
                 with sqlite3.connect(DB_NAME, timeout=10) as conn:
                     db_net = conn.execute("SELECT gateway_mac, gateway_ip FROM networks WHERE id=?", (expected_net_id,)).fetchone()
@@ -2840,13 +2840,25 @@ def scan_network_stream():
                             yield f"data: {json.dumps({'type': 'mismatch', 'message': 'Network change detected.'})}\n\n"
                             return
 
-            # --- 1. INSTANT UI INITIALIZATION ---
-            # Try to grab the gateway MAC immediately for the fast UI draw
+            # --- 1. ROBUST PRE-SCAN GATEWAY MAC RESOLUTION ---
+            # Attempt to check if an existing network with this gateway IP already exists in the database
+            # BEFORE generating a placeholder. This ensures seamless matching with previous scans.
             gateway_mac = None
             if gateway_ip != "-" and gateway_ip != "Unknown":
-                gateway_mac = get_gateway_mac(gateway_ip)
+                with sqlite3.connect(DB_NAME, timeout=10) as conn:
+                    # Check if we have a recorded network matching this gateway IP that allows matching
+                    existing_net_match = conn.execute(
+                        "SELECT gateway_mac FROM networks WHERE gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC LIMIT 1", 
+                        (gateway_ip,)
+                    ).fetchone()
+                    if existing_net_match and existing_net_match[0] and not existing_net_match[0].startswith("NO_MAC"):
+                        gateway_mac = existing_net_match[0]
 
-            # If it's not ready yet, use a provisional temporary placeholder so the UI draws instantly
+                # If no historical match found by IP, try resolving it actively via ARP
+                if not gateway_mac:
+                    gateway_mac = get_gateway_mac(gateway_ip)
+
+            # Final fallback to placeholder only if completely unreachable prior to scan
             initial_was_placeholder = False
             if not gateway_mac:
                 gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
@@ -2889,7 +2901,8 @@ def scan_network_stream():
                                           (gateway_mac, final_network_name, current_time, gateway_ip))
                                 network_id = c.lastrowid
                     else:
-                        c.execute("SELECT id, name, comments FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC", (gateway_mac, gateway_ip))
+                        # Match by Gateway MAC & IP first, then fallback to matching by Gateway IP alone if placeholder was used
+                        c.execute("SELECT id, name, comments FROM networks WHERE (gateway_mac=? OR gateway_ip=?) AND allow_matching=1 ORDER BY last_scan DESC", (gateway_mac, gateway_ip))
                         row = c.fetchone()
                         if row:
                             network_id, final_network_name, final_network_comment = row[0], row[1], row[2] or ""
@@ -2969,23 +2982,45 @@ def scan_network_stream():
             # If we started with a provisional placeholder, check if the scan successfully discovered the router now that the network has been swept!
             if initial_was_placeholder and gateway_ip != "-" and gateway_ip != "Unknown":
                 resolved_mac = None
-                # Check raw candidates first
                 for d in raw_candidates:
                     if getattr(d, 'psrc', getattr(d, 'ip', '')) == gateway_ip:
                         resolved_mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
                         break
-                # If still missing, query ARP table explicitly one more time
                 if not resolved_mac:
                     resolved_mac = get_gateway_mac(gateway_ip)
 
                 if resolved_mac and not resolved_mac.startswith("NO_MAC"):
                     gateway_mac = resolved_mac
                     final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
-                    # Update the database record with the real router MAC and proper name
+                    
                     with sqlite3.connect(DB_NAME, timeout=10) as conn:
-                        conn.execute("UPDATE networks SET gateway_mac=?, name=? WHERE id=?", (gateway_mac, final_network_name, network_id))
+                        c = conn.cursor()
+                        # Check if an older network profile with this real MAC already exists
+                        c.execute("SELECT id, name, comments FROM networks WHERE gateway_mac=? AND id!=?", (gateway_mac, network_id))
+                        existing_match = c.fetchone()
+                        
+                        if existing_match and not is_isolation and not is_split:
+                            # MERGE DUPLICATE: An older network exists! Move all devices/scans to the older network and delete the temporary placeholder network.
+                            matched_net_id = existing_match[0]
+                            final_network_name = existing_match[1]
+                            final_network_comment = existing_match[2] or ""
+                            
+                            # Update device_scans and devices to point to the historical matched network ID
+                            c.execute("UPDATE device_scans SET network_id=?, network_name=? WHERE network_id=?", (matched_net_id, final_network_name, network_id))
+                            c.execute("UPDATE devices SET network_id=?, last_network_name=? WHERE network_id=?", (matched_net_id, final_network_name, network_id))
+                            
+                            # Delete the temporary placeholder network record
+                            c.execute("DELETE FROM networks WHERE id=?", (network_id,))
+                            network_id = matched_net_id
+                            
+                            print(f"[*] Post-Scan Match: Merged temporary network into existing historical network ID {network_id}")
+                        else:
+                            # NO DUPLICATE FOUND: Simply update the placeholder record with the real resolved MAC and name
+                            c.execute("UPDATE networks SET gateway_mac=?, name=? WHERE id=?", (gateway_mac, final_network_name, network_id))
+                            
                         conn.commit()
-                    # Notify frontend so it updates its header display dynamically
+
+                    # Notify frontend so it updates its header display dynamically with the correct name/ID
                     yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment})}\n\n"
 
             # Guarantee Gateway and Localhost are in the processing list
