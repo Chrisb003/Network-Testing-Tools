@@ -137,6 +137,7 @@ sudo python3 setup_env.py
 * **Adapter Dropdown:** Choosing "Auto" instructs the system to intelligently scan across ALL un-hidden Wi-Fi adapters simultaneously to merge the most comprehensive signal data.
 * **Auto-Logging:** Every time you press Scan, results are automatically saved to the database. You can rename scans or add comments.
 * **Global Wi-Fi History:** View an aggregate list of every unique SSID ever seen, including detection counts and last-seen dates.
+* **macOS MAC Address Restriction:** By default, macOS restricts applications from viewing individual BSSID (MAC addresses) for nearby Wi-Fi networks due to privacy policies. However, if you use the automated installer script and launch the application from its native shortcut in the Applications folder (with proper Location and Accessibility permissions granted), it may successfully reveal the underlying network MAC addresses.
 
 ### Settings & Maintenance
 * **Access Control:** Secure your dashboard by enabling "Require Login" in the Settings tab. If you get locked out, create a blank `passwordreset` file in the app folder to clear your credentials.
