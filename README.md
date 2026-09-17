@@ -39,14 +39,14 @@ A robust, fault-tolerant network diagnostic dashboard designed for troubleshooti
 
 ## 🚀 Automated Quick Install
 
-The repository includes a suite of powerful, cross-platform deployment scripts. These scripts completely automate environment setup, GitHub syncing, background execution, and uninstallation. *Note: You can run these scripts again at any time to cleanly uninstall the application and remove background services.*
+Currently the scripts are hosted seperately to this app to reduce the number of extra files downloaded. They can be found here - https://github.com/Chrisb003/Network-Testing-Tools-Install-Scripts. These scripts completely automate environment setup, GitHub syncing, background execution, and uninstallation. *Note: You can run these scripts again at any time to cleanly uninstall the application and remove background services.*
 
 ### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="20" alt="Windows" /> Windows Automated Setup
 The `Windows-Installer.ps1` script requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. It downloads and prompts the user to install Npcap directly from the official website, automatically unlocks folder permissions, and creates Desktop/Start Menu shortcuts **with an option to bypass UAC prompts for seamless, passwordless launching.**
 
 Open **PowerShell** and paste the following command to begin:
 ```powershell
-& ([scriptblock]::Create((irm "https://chris94.uk/install-scripts/Windows-Installer.ps1")))
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/Windows-Installer.ps1")))
 ```
 
 ### <img src="https://cdn.simpleicons.org/apple/ffffff" width="20" alt="macOS" /> macOS Automated Setup
@@ -54,7 +54,7 @@ The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 
 
 Open the **Terminal** app and paste the following command:
 ```bash
-curl -sSLq https://chris94.uk/install-scripts/MacOS-Installer.sh | sh
+curl -sSLq https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/MacOS-Installer.sh | sh
 ```
 
 ### <img src="https://cdn.simpleicons.org/linux/FCC624" width="20" alt="Linux" /> Linux Automated Setup
@@ -62,7 +62,7 @@ The `Linux-Installer.sh` script dynamically detects your package manager to inst
 
 Open your **Terminal** and paste the following command:
 ```bash
-curl -sSLq https://chris94.uk/install-scripts/Linux-Installer.sh | sh
+curl -sSLq https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/Linux-Installer.sh | sh
 ```
 
 ---

@@ -954,6 +954,7 @@
                         <p>Should you have any issues or suggestions on improvements, please log them via github. I will try to get to them and respond to it.</p>
                         <div class="d-flex gap-2 mb-4">
                             <a href="https://github.com/Chrisb003/Network-Testing-Tools" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="bi bi-github"></i> GitHub Repository</a>
+                            <a href="https://chris94.uk/test.html" target="_blank" class="btn btn-sm btn-outline-secondary">For more information click here</a>
                         </div>
 
                        <h5 class="text-primary border-bottom pb-2 mb-3 mt-4">Setup & Launcher Scripts</h5>
@@ -963,15 +964,15 @@
 
                         <div class="help-item">
                             <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and asks to install Npcap directly from the official website. Creates Desktop/Start Menu shortcuts <strong>with an option to bypass UAC prompts for seamless, passwordless launching.</strong> To begin the installation quickly, open <strong>PowerShell</strong> and paste:
-                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">&amp; ([scriptblock]::Create((irm "https://chris94.uk/install-scripts/Windows-Installer.ps1")))</div>
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">&amp; ([scriptblock]::Create((irm "https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/Windows-Installer.ps1")))</div>
                         </div>
                         <div class="help-item">
                             <strong><code>Linux-Installer.sh</code>:</strong> Automatically detects the Linux distribution, installs required system packages (such as Python 3, venv, pip, git, network-manager, and GUI tray dependencies like GTK3 and AppIndicator), downloads or updates project files from GitHub into the user's home folder, and prompts for dedicated test device options (creating configuration triggers and setting up an optional Wi-Fi Hotspot via NetworkManager). <strong>For Raspberry Pi users, it automatically detects and configures your regional Wi-Fi Country Code.</strong> It prompts the user to choose between a visible desktop startup (which prompts for sudo in a terminal) or a <code>systemd</code> background boot service <strong>(which runs silently as root without requiring passwords).</strong> To begin the installation quickly, open your <strong>Terminal</strong> and paste:
-                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://chris94.uk/install-scripts/Linux-Installer.sh | sh</div>
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/Linux-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
                             <strong><code>MacOS-Installer.sh</code>:</strong> Verifies macOS prerequisites (installing Python 3.14 natively if missing), downloads the core project files securely to your home folder, and offers dedicated test device options to write configuration triggers. It prompts the user to choose between a visible Terminal boot or a background <code>launchd</code> daemon. It builds a native macOS <code>.app</code> shortcut in your Applications folder <strong>and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.</strong> To begin the installation quickly, open the <strong>Terminal</strong> app and paste:
-                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://chris94.uk/install-scripts/MacOS-Installer.sh | sh</div>
+                            <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">curl -sSLq https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/MacOS-Installer.sh | sh</div>
                         </div>
                         <div class="help-item">
                             <strong><code>setup_env.py</code>:</strong> The core supervisor script. Manages virtual environments, installs Python requirements (including system tray packages like <code>pystray</code> and <code>Pillow</code>), downloads/updates the Speedtest CLI, enforces file permissions across the OS, and monitors the main application for crashes.
