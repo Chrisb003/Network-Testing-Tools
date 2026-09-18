@@ -622,7 +622,6 @@ def run_application(base_dir, venv_python):
                             print(f"[*] Force-stopping stale process on port {current_port} (PID: {pid})...")
                             subprocess.run(f"kill -9 {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
-                passption:
                 pass
 
             print(f"[*] Starting main application instance...")
