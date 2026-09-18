@@ -2546,7 +2546,7 @@ function scanDevices(mode = 'new', forceMerge = false) {
     } else if (mode === 'isolation') {
         if (isoBtn) isoBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
         allDevices = []; 
-        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Isolated Scan...</h5></td></tr>`;
+        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Isolation Scan...</h5></td></tr>`;
     } else {
         b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
         allDevices = []; 
@@ -2610,7 +2610,10 @@ function scanDevices(mode = 'new', forceMerge = false) {
             document.getElementById('device-tab-title').innerText = `Devices in: ${data.network_name}`;
             document.getElementById('device-tab-comment').innerText = data.network_comment || "";
             const locationInput = document.getElementById('st-network-name');
-            if (locationInput) locationInput.value = data.network_name;
+            // FIX: Only update the Speed Test location name if this is NOT an isolated scan
+            if (locationInput && mode !== 'isolation') {
+                locationInput.value = data.network_name;
+            }
         } 
         // Individual device loaded
         else if (data.type === 'device') {
@@ -2649,7 +2652,7 @@ function scanDevices(mode = 'new', forceMerge = false) {
             if (isoBtn) {
                 isoBtn.disabled = false;
                 isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolated Scan';
-                isoBtn.classList.remove('hidden'); // Fixed: Ensure it stays visible after scan
+                isoBtn.classList.remove('hidden'); 
             }
             
             if (btnSel) btnSel.classList.remove('hidden');
