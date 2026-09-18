@@ -50,20 +50,14 @@ except AttributeError:
     pass
 # ------------------------------------------------
 
-# --- NEW: Fix for Windows Background Terminal Flashing ---
-# Intercepts all OS-level terminal commands (Ping, ARP, Netsh, Ookla)
-# and forces them to run completely hidden (CREATE_NO_WINDOW).
+# --- NEW: Safe Windows Background Terminal Suppression ---
+# Intercepts OS-level terminal commands (Ping, ARP, Netsh, Ookla) 
+# and forces them to run completely hidden without breaking process pipes.
 if platform.system() == "Windows":
     _original_popen = subprocess.Popen
     def _patched_popen(*args, **kwargs):
         if 'creationflags' not in kwargs:
             kwargs['creationflags'] = 0x08000000 # CREATE_NO_WINDOW
-            
-        # Give the background process a safe standard input pipe so it doesn't 
-        # crash trying to read from a missing Windows Console subsystem.
-        if kwargs.get('stdin') is None:
-            kwargs['stdin'] = subprocess.PIPE
-            
         return _original_popen(*args, **kwargs)
     subprocess.Popen = _patched_popen
 # ---------------------------------------------------------

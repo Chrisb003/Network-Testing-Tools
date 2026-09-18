@@ -557,7 +557,7 @@ def run_application(base_dir, venv_python):
     print(f"   LAUNCHING DASHBOARD SUPERVISOR (Setup v{SETUP_VERSION})")
     print("="*60)
     
-    # --- NEW: Trigger macOS Permissions as Standard User BEFORE Sudo ---
+    # --- Trigger macOS Permissions as Standard User BEFORE Sudo ---
     if platform.system() == "Darwin":
         print("[*] Probing macOS Network & Location permissions...")
         try:
@@ -581,7 +581,6 @@ def run_application(base_dir, venv_python):
         except: pass
         
         time.sleep(1.5) 
-    # -------------------------------------------------------------------
 
     cmd = [str(venv_python), str(app_path)]
     
@@ -591,12 +590,15 @@ def run_application(base_dir, venv_python):
             
     first_launch = True
     
-    # --- WINDOWS FIX: Z-Order & GUI Suppression ---
-    # We use CREATE_NO_WINDOW (0x08000000) to keep the terminal hidden.
-    # CRITICAL: We MUST NOT use DETACHED_PROCESS (0x00000008) here. Detaching the process 
-    # strips its OS rights to call 'SetForegroundWindow()', which causes the System Tray 
-    # menu to incorrectly render behind the Windows taskbar!
-    WIN_SILENT_FLAGS = 0x08000000 if platform.system() == "Windows" else 0
+    # --- WINDOWS NATIVE GUI SUPPRESSION ---
+    # Using STARTUPINFO to hide the window without breaking standard process pipes.
+    startupinfo = None
+    creationflags = 0
+    if platform.system() == "Windows":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0 # SW_HIDE (Completely hides the window)
+        creationflags = 0x08000000  # CREATE_NO_WINDOW
     
     try:
         while True:
@@ -605,12 +607,12 @@ def run_application(base_dir, venv_python):
             # --- FORCE STOP / CLEANUP: Kill any stale process blocking the port natively ---
             try:
                 if platform.system() == "Windows":
-                    out = subprocess.check_output(f"netstat -ano | findstr :{current_port}", shell=True, text=True, creationflags=WIN_SILENT_FLAGS)
+                    out = subprocess.check_output(f"netstat -ano | findstr :{current_port}", shell=True, text=True, creationflags=creationflags, startupinfo=startupinfo)
                     for line in out.strip().split('\n'):
                         if "LISTENING" in line and f":{current_port}" in line.split()[1]:
                             pid = line.strip().split()[-1]
                             print(f"[*] Force-stopping stale process on port {current_port} (PID: {pid})...")
-                            subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=WIN_SILENT_FLAGS)
+                            subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags, startupinfo=startupinfo)
                 else:
                     out = subprocess.check_output(f"lsof -t -i:{current_port}", shell=True, text=True)
                     for pid in out.strip().split('\n'):
@@ -622,9 +624,9 @@ def run_application(base_dir, venv_python):
 
             print(f"[*] Starting main application instance...")
             
-            # Apply the combined suppression flags to the main App process
+            # Launch the main application with native hidden startup info
             if platform.system() == "Windows":
-                process = subprocess.Popen(cmd, creationflags=WIN_SILENT_FLAGS)
+                process = subprocess.Popen(cmd, startupinfo=startupinfo, creationflags=creationflags)
             else:
                 process = subprocess.Popen(cmd)
             
@@ -673,7 +675,7 @@ def run_application(base_dir, venv_python):
             
     except KeyboardInterrupt:
         print("\n[*] Dashboard supervisor stopped by user.")
-        
+
 def fix_permissions(path):
     """
     Grants comprehensive Read, Write, and Execute access permissions to a specified file or directory.
