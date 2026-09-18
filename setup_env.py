@@ -35,7 +35,7 @@ except AttributeError:
 # ------------------------------------------------
 
 # --- Configuration ---
-SETUP_VERSION = "1.0.4"
+SETUP_VERSION = "1.0.5"
 VENV_DIR_NAME = "venv"
 
 # Core Python dependencies required for the dashboard to function
@@ -607,12 +607,14 @@ def run_application(base_dir, venv_python):
             # --- FORCE STOP / CLEANUP: Kill any stale process blocking the port natively ---
             try:
                 if platform.system() == "Windows":
-                    out = subprocess.check_output(f"netstat -ano | findstr :{current_port}", shell=True, text=True, creationflags=creationflags, startupinfo=startupinfo)
+                    # ADDED DEVNULL to stdin/stderr to prevent WinError 6 crashes in windowless mode
+                    out = subprocess.check_output(f"netstat -ano | findstr :{current_port}", shell=True, text=True, creationflags=creationflags, startupinfo=startupinfo, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     for line in out.strip().split('\n'):
                         if "LISTENING" in line and f":{current_port}" in line.split()[1]:
                             pid = line.strip().split()[-1]
                             print(f"[*] Force-stopping stale process on port {current_port} (PID: {pid})...")
-                            subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags, startupinfo=startupinfo)
+                            # ADDED DEVNULL to stdin
+                            subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, creationflags=creationflags, startupinfo=startupinfo)
                 else:
                     out = subprocess.check_output(f"lsof -t -i:{current_port}", shell=True, text=True)
                     for pid in out.strip().split('\n'):
@@ -620,6 +622,7 @@ def run_application(base_dir, venv_python):
                             print(f"[*] Force-stopping stale process on port {current_port} (PID: {pid})...")
                             subprocess.run(f"kill -9 {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
+                passption:
                 pass
 
             print(f"[*] Starting main application instance...")

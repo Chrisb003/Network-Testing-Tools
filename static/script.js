@@ -1254,11 +1254,15 @@ function renderNetworks() {
         return `
         <tr>
             <td onclick="event.stopPropagation()"><input type="checkbox" class="networks-check" value="${n.id}" onchange="toggleSelection('networks', this)" ${isChecked}></td>
-            <td><strong>${escapeHTML(n.name)}</strong></td>
+            <td onclick="event.stopPropagation(); openNetworkConfig(${n.id}, '${safeName}', '${safeComment}')" style="cursor:pointer" title="Edit Name & Comment">
+                <strong>${escapeHTML(n.name)}</strong> <i class="bi bi-pencil ms-2 small text-muted"></i>
+            </td>
             <td class="font-monospace small">${n.gateway_mac}</td>
             <td>${n.gateway_ip}</td>
             <td><span class="badge bg-secondary">${n.device_count}</span></td>
-            <td><small class="text-muted">${escapeHTML(n.comments || '')}</small></td>
+            <td onclick="event.stopPropagation(); openNetworkConfig(${n.id}, '${safeName}', '${safeComment}')" style="cursor:pointer" title="Edit Name & Comment">
+                <small class="text-muted">${escapeHTML(n.comments || '')}</small>
+            </td>
             <td><small>${n.last_scan}</small></td>
             <td class="text-end text-nowrap">
                 <div class="btn-group">
@@ -1354,8 +1358,12 @@ function renderWifiHistoryTable() {
         <tr>
             <td onclick="event.stopPropagation()"><input type="checkbox" class="wifi-check" value="${h.id}" onchange="toggleSelection('wifi', this)" ${isChecked}></td>
             <td><small class="text-muted">${h.timestamp}</small></td>
-            <td><div class="fw-bold text-primary">${escapeHTML(h.name)}</div></td>
-            <td><small class="text-muted">${escapeHTML(h.comments) || 'No comments'}</small></td>
+            <td onclick="event.stopPropagation(); openWifiScanConfig(${h.id}, '${safeName}', '${safeComment}')" style="cursor:pointer" title="Edit Name & Comment">
+                <div class="fw-bold text-primary d-inline-block">${escapeHTML(h.name)}</div> <i class="bi bi-pencil ms-2 small text-muted"></i>
+            </td>
+            <td onclick="event.stopPropagation(); openWifiScanConfig(${h.id}, '${safeName}', '${safeComment}')" style="cursor:pointer" title="Edit Name & Comment">
+                <small class="text-muted">${escapeHTML(h.comments) || 'No comments'}</small>
+            </td>
             <td class="text-end text-nowrap">
                 <div class="btn-group">
                     <button class="btn btn-sm ${h.is_protected ? 'btn-warning' : 'btn-outline-secondary'}" onclick="toggleProtection('wifi', ${h.id}, ${h.is_protected})" title="${h.is_protected ? 'Unlock' : 'Lock (Protect from Cleanup)'}">
@@ -1390,7 +1398,7 @@ function filterWifiHistory() {
  */
 function loadWifiNetworksHistory() {
     const tb = document.getElementById('wifi-net-hist-table');
-    if (tb) tb.innerHTML = '<tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>';
+    if (tb) tb.innerHTML = '<tr><td colspan="8" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Loading Wi-Fi History...</h5></td></tr>';
 
     fetch('/api/wifi_networks_history')
         .then(r => r.json())
@@ -1404,7 +1412,7 @@ function loadWifiNetworksHistory() {
             renderWifiNetworksHistory();
         })
         .catch(err => {
-            if (tb) tb.innerHTML = `<tr><td colspan="7" class="text-center p-4 text-danger">Error: ${err.message}</td></tr>`;
+            if (tb) tb.innerHTML = `<tr><td colspan="8" class="text-center p-4 text-danger">Error: ${err.message}</td></tr>`;
         });
 }
 
@@ -2542,15 +2550,18 @@ function scanDevices(mode = 'new', forceMerge = false) {
     } else if (mode === 'split') {
         if (splitBtn) splitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
         allDevices = []; // Split creates a blank new table visually
-        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Split Scan...</h5></td></tr>`;
+        // FIXED: colspan="11" to cover the Actions column
+        if (tb) tb.innerHTML = `<tr><td colspan="11" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Split Scan...</h5></td></tr>`;
     } else if (mode === 'isolation') {
         if (isoBtn) isoBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
         allDevices = []; 
-        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Isolation Scan...</h5></td></tr>`;
+        // FIXED: colspan="11" to cover the Actions column
+        if (tb) tb.innerHTML = `<tr><td colspan="11" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Isolation Scan...</h5></td></tr>`;
     } else {
         b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
         allDevices = []; 
-        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Scanning Network...</h5></td></tr>`;
+        // FIXED: colspan="11" to cover the Actions column
+        if (tb) tb.innerHTML = `<tr><td colspan="11" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Scanning Network...</h5></td></tr>`;
     }
     
     const btnSel = document.getElementById('btn-remove-selected');
@@ -2685,7 +2696,8 @@ function scanDevices(mode = 'new', forceMerge = false) {
             
             alert(data.message || 'Scan failed.');
             if (allDevices.length === 0) {
-                tb.innerHTML = `<tr><td colspan="10" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> ${data.message}</td></tr>`;
+                // FIXED: colspan="11" to cover the Actions column
+                tb.innerHTML = `<tr><td colspan="11" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> ${data.message}</td></tr>`;
             }
         }
     };
@@ -2701,7 +2713,8 @@ function scanDevices(mode = 'new', forceMerge = false) {
         if (isoBtn) { isoBtn.disabled = false; isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolated Scan'; }
         
         if (allDevices.length === 0) {
-            tb.innerHTML = '<tr><td colspan="10" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> Connection to scanner lost.</td></tr>';
+            // FIXED: colspan="11" to cover the Actions column
+            tb.innerHTML = '<tr><td colspan="11" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> Connection to scanner lost.</td></tr>';
         } else {
             renderDevices(allDevices); 
         }

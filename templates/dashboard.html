@@ -1,4 +1,4 @@
-<!-- Version number 1.0.8 -->
+<!-- Version number 1.0.9 -->
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -963,7 +963,7 @@
                         <p class="text-muted small">These same scripts can be used to fully remove the application as well.</p>
 
                         <div class="help-item">
-                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and asks to install Npcap directly from the official website. Creates Desktop/Start Menu shortcuts <strong>with an option to bypass UAC prompts for seamless, passwordless launching.</strong> To begin the installation quickly, open <strong>PowerShell</strong> and paste:
+                            <strong><code>Windows-Installer.ps1</code> PowerShell script:</strong> Requests Administrator privileges, downloads and installs Python natively if missing, and syncs project files. Prompts for Dedicated Test Device mode (configuring Windows Wi-Fi Hotspots) and asks to install Npcap directly from the official website. Creates Desktop/Start Menu shortcuts <strong>with an option to bypass UAC prompts via Scheduled Tasks for seamless, passwordless launching.</strong> To begin the installation quickly, open <strong>PowerShell</strong> and paste:
                             <div class="bg-dark text-success p-2 rounded small font-monospace mt-1 mb-3 user-select-all" style="overflow-x: auto; white-space: nowrap;">&amp; ([scriptblock]::Create((irm "https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/Windows-Installer.ps1")))</div>
                         </div>
                         <div class="help-item">
@@ -980,7 +980,7 @@
 
                         <h5 class="text-primary border-bottom pb-2 mb-3 mt-4">Dashboard Basics</h5>
                         <div class="help-item">
-                            <strong>Seamless Launching:</strong> If you used the automated installers, you can configure your Desktop and Start Menu shortcuts to bypass UAC (Windows) or admin password prompts (macOS), allowing the dashboard to start instantly with a single click.
+                            <strong>Seamless Launching:</strong> If you used the automated installers, your Desktop and Start Menu shortcuts are configured to completely bypass UAC (Windows) or admin password prompts (macOS), allowing the high-privilege dashboard to start instantly with a single click. <em>Note: On Windows, even if you selected the 'Invisible Background Process' option, a black terminal window will briefly flash for a split-second when clicking the shortcut. This is perfectly normal—it is just the Windows Task Scheduler handing the process off to the invisible background environment!</em>
                         </div>
                         <div class="help-item">
                             <strong>System Tray Icon:</strong> When launched on a desktop environment, the app adds an icon to your system tray (or macOS menu bar). You can right-click this icon to instantly restart or shut down the dashboard. <em>Note: If running as a background daemon, without a display, or in Dedicated Server Mode, this icon hides automatically.</em>
@@ -1053,7 +1053,7 @@
                             <strong>Remove Selected / Offline:</strong> Permanently deletes the selected (or fully offline) devices from the active network's historical database.
                         </div>
                         <div class="help-item">
-                            <strong>Network Scan History -> Merge:</strong> Check two or more networks in the history table and click "Merge". You will be asked to choose a "Main" network. All devices and history will be bundled into the main network, and the duplicates will be deleted.
+                            <strong>Network Scan History (Merge & Edit):</strong> Check two or more networks in the history table and click "Merge" to bundle their devices and history together into a single profile. You can also quickly rename or update notes on any network directly from the table by clicking the pencil icon <i class="bi bi-pencil small text-muted"></i> next to its name or comment.
                         </div>
                         <div class="help-item">
                             <strong>Auto-Match Toggle (Network History):</strong> Clicking the network icon (<i class="bi bi-diagram-3-fill text-success"></i>) in the Actions column allows you to disable or enable whether future "New Scans" are allowed to merge into that specific profile.
@@ -1075,7 +1075,7 @@
                             <strong>Auto-Logging & Merging:</strong> Every time you press Scan, the results are automatically saved to the database. You can use the <strong>Merge</strong> tool in the History tab to combine multiple physical scans from different areas into a single master map of a building.
                         </div>
                         <div class="help-item">
-                            <strong>Wi-Fi Comments & Expanding Notes:</strong> You can click the pencil icon next to any SSID in the active scan or global history to add a global comment. In the active scan view, long multi-line comments are neatly tucked away—just click the dropdown arrow to expand and read them!
+                            <strong>Wi-Fi Comments & Quick Editing:</strong> You can click the pencil icon <i class="bi bi-pencil small text-muted"></i> next to any Scan Name or SSID in the active scan and global history tables to quickly edit their names or add a global comment. In the active scan view, long multi-line comments are neatly tucked away—just click the dropdown arrow to expand and read them!
                         </div>
                         <div class="help-item">
                             <strong>WiFi Scan History vs. Global Wi-Fi History:</strong> The "Scan History" tab shows individual point-in-time snapshots of your airwaves. The "Global Wi-Fi History" tab aggregates every unique SSID ever seen into a master directory, showing exactly how many times it was detected, when it was first/last seen, and allows you to apply global comments or lock (protect) the SSID from database cleanups.
@@ -1123,7 +1123,7 @@
                             <strong>Database Maintenance (Cleaning):</strong> The "Old > X Days" buttons permanently wipe historical logs and inactive devices that exceed that age limit. Items you have manually "Locked" (Padlocked) will survive this process.
                         </div>
                         <div class="help-item">
-                            <strong>System Updates:</strong> Ensure your 'Update Channel' is set to Stable. Clicking "Check for Updates" compares your core application files against the GitHub repository. It will list the changes and handle the download, installation, and server restart automatically.
+                            <strong>System Updates:</strong> Ensure your 'Update Channel' is set to Stable. Clicking "Check for Updates" compares your core application files against the GitHub repository. It will list the changes and handle the download, installation, and server restart automatically. <em>If your system is already fully up to date, the install button will turn into a yellow <strong>Force Reinstall</strong> button, allowing you to cleanly re-download and apply the current version again if you suspect any files are corrupted.</em>
                         </div>
                         <div class="help-item">
                             <strong>Network Connection Types:</strong> Add or remove custom connection names (e.g., '5G Home Internet') that appear in the Speed Test dropdown.

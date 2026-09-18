@@ -42,7 +42,7 @@ A robust, fault-tolerant network diagnostic dashboard designed for troubleshooti
 Currently the scripts are hosted seperately to this app to reduce the number of extra files downloaded. They can be found here - https://github.com/Chrisb003/Network-Testing-Tools-Install-Scripts. These scripts completely automate environment setup, GitHub syncing, background execution, and uninstallation. *Note: You can run these scripts again at any time to cleanly uninstall the application and remove background services.*
 
 ### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="20" alt="Windows" /> Windows Automated Setup
-The `Windows-Installer.ps1` script requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. It downloads and prompts the user to install Npcap directly from the official website, automatically unlocks folder permissions, and creates Desktop/Start Menu shortcuts **with an option to bypass UAC prompts for seamless, passwordless launching.**
+The `Windows-Installer.ps1` script requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. It downloads and prompts the user to install Npcap directly from the official website, automatically unlocks folder permissions, and creates Desktop/Start Menu shortcuts **with an option to bypass UAC prompts via Scheduled Tasks for seamless, passwordless launching.**
 
 Open **PowerShell** and paste the following command to begin:
 ```powershell
@@ -50,7 +50,7 @@ Open **PowerShell** and paste the following command to begin:
 ```
 
 ### <img src="https://cdn.simpleicons.org/apple/ffffff" width="20" alt="macOS" /> macOS Automated Setup
-The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 3.14 natively if missing) and downloads the core project files securely to your home folder. It builds a native macOS `.app` shortcut in your Applications folder **and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.**
+The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 3.14 natively if missing) and downloads the core project files securely to your home folder. It builds a native macOS `.app` shortcut in your Applications folder **and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.** even if you selected the 'Invisible Background Process' option, a black terminal window will briefly flash for a split-second when clicking the shortcut. This is perfectly normal—it is just the Windows Task Scheduler handing the process off to the invisible background environment!*
 
 Open the **Terminal** app and paste the following command:
 ```bash
@@ -119,8 +119,8 @@ sudo python3 setup_env.py
 ## 📖 Application Usage Guide
 
 ### Dashboard Basics
-* **Seamless Launching:** If you used the automated installers, you can configure your Desktop and Start Menu shortcuts to bypass UAC (Windows) or admin password prompts (macOS), allowing the dashboard to start instantly with a single click.
-* **System Tray Icon:** When launched on a desktop environment, the app adds an icon to your system tray. You can right-click this icon to instantly restart or shut down the dashboard. *Note: If running as a background daemon, without a display, or in Dedicated Server Mode, this icon hides automatically.*
+* **Seamless Launching:** If you used the automated installers, your Desktop and Start Menu shortcuts are configured to completely bypass UAC (Windows) or admin password prompts (macOS), allowing the high-privilege dashboard to start instantly with a single click. *Note: On Windows, even if you selected the 'Invisible Background Process' option, a black terminal window will briefly flash for a split-second when clicking the shortcut. This is perfectly normal—it is just the Windows Task Scheduler handing the process off to the invisible background environment!*
+* **System Tray Icon:** When launched on a desktop environment, the app adds an icon to your system tray. You can double-click it to open the dashboard, or right-click to instantly restart or shut down the server. *Note: If running as a background daemon, without a display, or in Dedicated Server Mode, this icon hides automatically.*
 * **Table Sorting:** All data tables across the dashboard are dynamically sortable. Click any column header to toggle ascending/descending order.
 * **Touch Mode:** Click the Hand Icon to increase the size of buttons, checkboxes, and table rows for easier tapping on mobile devices.
 
@@ -133,11 +133,12 @@ sudo python3 setup_env.py
 * **Scan Modes:** Use "New Scan" to match against previous networks, "Split Scan" to save as a new independent profile, or "Isolated Scan" to block historical merging entirely. "Continue Scan" resumes without deep-port-checking offline devices to save time.
 * **Device Customization:** Click on a device's Name or Comment cell to open the metadata editor. Details follow the device's MAC address across any network it connects to.
 * **Unknown Devices:** Devices in deep sleep mode (like phones) or basic IoT gear may not respond with a hostname. You can click "Unknown" to manually assign a custom name to these.
-* **Merge Networks:** Check two or more networks in the history table and click "Merge" to bundle duplicate history into a single main network.
+* **Merge Networks & Inline Editing:** Check two or more networks in the history table and click "Merge" to bundle duplicate history into a single main network. You can also quickly rename or update notes on any network directly from the table by clicking the pencil icon next to its name or comment.
 
 ### Wi-Fi Scanning
 * **Adapter Dropdown:** Choosing "Auto" instructs the system to intelligently scan across ALL un-hidden Wi-Fi adapters simultaneously to merge the most comprehensive signal data.
 * **Auto-Logging:** Every time you press Scan, results are automatically saved to the database. You can rename scans or add comments.
+* **Wi-Fi Comments & Quick Editing:** You can click the pencil icon next to any Scan Name or SSID in the active scan and global history tables to quickly edit their names or add a global comment. In the active scan view, long multi-line comments are neatly tucked away—just click the dropdown arrow to expand and read them!
 * **Global Wi-Fi History:** View an aggregate list of every unique SSID ever seen, including detection counts and last-seen dates.
 * **macOS MAC Address Restriction:** By default, macOS restricts applications from viewing individual BSSID (MAC addresses) for nearby Wi-Fi networks due to privacy policies. However, if you use the automated installer script and launch the application from its native shortcut in the Applications folder (with proper Location and Accessibility permissions granted), it may successfully reveal the underlying network MAC addresses.
 * **Raspberry Pi Wi-Fi:** If Wi-Fi scans return completely empty on a Raspberry Pi, it means your WLAN Country Code has not been set. Run `sudo raspi-config` in a terminal to set it.
@@ -147,7 +148,7 @@ sudo python3 setup_env.py
 * **Database Import & Export:** Download a full `.db` backup to your local machine, or upload an existing database to merge its historical networks, devices, and scans into your current setup without deleting your existing data.
 * **Database Maintenance:** Use the "Old > X Days" buttons to permanently wipe historical logs and inactive devices. Items you have manually "Locked" (Padlock Icon) will survive this process.
 * **Network Connection Types:** Add or remove custom connection names (e.g., '5G Home Internet') that appear in the Speed Test dropdown.
-* **System Updates:** Click "Check for Updates" to compare your core application files against the GitHub repository. It will list changes and handle the download, installation, and server restart automatically.
+* **System Updates:** Click "Check for Updates" to compare your core application files against the GitHub repository. It will list changes and handle the download, installation, and server restart automatically. *If your system is already fully up to date, the install button will turn into a **Force Reinstall** button, allowing you to cleanly re-download and apply the current version again if you suspect any files are corrupted.*
 * **Power Controls:** "Restart App" cleanly reboots the Python server in-place without asking for your sudo/admin password again. "Shutdown App" kills the server and background supervisor completely.
 
 ---

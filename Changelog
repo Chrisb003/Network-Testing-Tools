@@ -1,19 +1,27 @@
 # Changelog
 ## [1.0.17] - terminal window fix for windowss
+** Setup script 1.0.5 -
+* Minor fix for the hidden terminal windows with Windows.
+* 
+** Dashboard HTML 1.0.8 -
+* Small UI fixes. Fixing backgrounds of tables and adding edit buttons to the names in the wifi scan history and network scan history.
+* Help section updated
+
+## [1.0.17] - terminal window fix for windowss
 ** Main App Script 1.0.13 -
-* Fix bug caused by hidden windows.
+* Fix bug caused by hidden terminal windows.
 * Fix for issue with network scan on windows if tailscale or other VPN service is running.
 
 ## [1.0.16] - terminal window fix for windowss
 ** Main App Script 1.0.12 -
-* Fix bug caused by hidden windows.
+* Fix bug caused by hidden terminal windows.
 * 
 ** Dashboard HTML 1.0.8 -
 * Able to now force it to update the version even if detected update version is the same as the currently installed version.
 
 ## [1.0.15] - terminal window fix for windows
 ** Main App Script 1.0.12 -
-* Fix window visability if you chose to start the code in a hidden window on windows.
+* Fix window visability if you chose to start the code in a hidden terminal window on windows.
 
 ## [1.0.14] - terminal window fix for windowss
 ** Setup script 1.0.4 -
