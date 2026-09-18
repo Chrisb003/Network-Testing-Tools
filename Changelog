@@ -1,5 +1,12 @@
 # Changelog
-## [1.0.15] - terminal window fix for windowss
+## [1.0.16] - terminal window fix for windowss
+** Main App Script 1.0.12 -
+* Fix bug caused by hidden windows.
+* 
+** Dashboard HTML 1.0.8 -
+* Able to now force it to update the version even if detected update version is the same as the currently installed version.
+
+## [1.0.15] - terminal window fix for windows
 ** Main App Script 1.0.12 -
 * Fix window visability if you chose to start the code in a hidden window on windows.
 

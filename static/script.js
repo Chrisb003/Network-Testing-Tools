@@ -3667,7 +3667,12 @@ function openUpdateModal() {
     msg.innerText = "Checking for updates...";
     msg.className = "alert alert-info";
     cl.innerHTML = "Fetching release notes...";
+    
+    // Reset button state and clear any old titles
     btn.disabled = true;
+    btn.className = "btn btn-primary px-4";
+    btn.innerText = "Install Update";
+    btn.removeAttribute('title');
 
     // Failsafe link to the GitHub repository if parsing or formatting fails
     const githubFallbackHtml = '<p class="text-muted mb-0">Unable to load release notes securely. <a href="https://github.com/Chrisb003/Network-Testing-Tools/blob/main/Changelog" target="_blank" class="text-primary text-decoration-underline"><i class="bi bi-box-arrow-up-right me-1"></i>View Changelog on GitHub</a></p>';
@@ -3714,7 +3719,12 @@ function openUpdateModal() {
             } else {
                 msg.className = "alert alert-success"; 
                 msg.innerText = "Your system and all core files are up to date."; 
-                btn.disabled = true;
+                
+                // --- NEW: Allow Forced Reinstall ---
+                btn.disabled = false;
+                btn.innerText = "Force Reinstall";
+                btn.className = "btn btn-outline-warning px-4 text-dark";
+                btn.title = "Redownload and install the current version again.";
             }
             return fetch('/api/update/changelog');
         })
@@ -3801,18 +3811,21 @@ function applyUpdate() {
     localStorage.setItem('update_pending', 'true');
 
     const btn = document.getElementById('btn-apply');
+    const origClass = btn.className; 
+    const origText = btn.innerText;
+    
     btn.disabled = true; 
     btn.innerText = "Installing...";
 
     fetch('/api/update/apply', {method: 'POST'})
         .then(r => r.json())
         .then(d => { 
-            // BUGFIX: Check for the 'error' key specifically to prevent "undefined" alerts
             if (d.error) {
                 alert("Update Failed: " + d.error);
                 localStorage.removeItem('update_pending');
                 btn.disabled = false;
-                btn.innerText = "Install Update";
+                btn.innerText = origText;
+                btn.className = origClass;
             } else {
                 alert(d.message || "Update applied successfully."); 
                 setTimeout(() => location.reload(), 5000); 

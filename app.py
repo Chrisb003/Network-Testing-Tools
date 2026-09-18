@@ -50,28 +50,24 @@ except AttributeError:
     pass
 # ------------------------------------------------
 
-# --- NEW: Fix for Windows Background Terminal Flashing & Crash ---
-# Intercepts all OS-level terminal commands (Ping, ARP, Netsh, Ookla).
-# 1. Forces them to run completely hidden (CREATE_NO_WINDOW).
-# 2. Redirects standard inputs/outputs to prevent "Invalid Handle" crashes 
-#    when running under the invisible pythonw.exe environment.
+# --- NEW: Fix for Windows Background Terminal Flashing ---
+# Intercepts all OS-level terminal commands (Ping, ARP, Netsh, Ookla)
+# and forces them to run completely hidden (CREATE_NO_WINDOW).
 if platform.system() == "Windows":
     _original_popen = subprocess.Popen
     def _patched_popen(*args, **kwargs):
         if 'creationflags' not in kwargs:
             kwargs['creationflags'] = 0x08000000 # CREATE_NO_WINDOW
-        
-        # Protect background processes from crashing by giving them dummy file handles
+            
+        # Give the background process a safe standard input pipe so it doesn't 
+        # crash trying to read from a missing Windows Console subsystem.
         if kwargs.get('stdin') is None:
-            kwargs['stdin'] = subprocess.DEVNULL
-        if kwargs.get('stdout') is None:
-            kwargs['stdout'] = subprocess.DEVNULL
-        if kwargs.get('stderr') is None:
-            kwargs['stderr'] = subprocess.DEVNULL
+            kwargs['stdin'] = subprocess.PIPE
             
         return _original_popen(*args, **kwargs)
     subprocess.Popen = _patched_popen
 # ---------------------------------------------------------
+
 
 # ==========================================
 # PERMISSION ENGINE
@@ -213,7 +209,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
