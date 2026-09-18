@@ -1,4 +1,8 @@
 # Changelog
+## [1.0.11] - Mac OS adapter type fix
+** Main App Script 1.0.9 -
+* Speed test network type auto updates with connection type. This can be changed manually but on mac os this was not being detected correctly.
+
 ## [1.0.11] - Network scan fixes, UI fixes
 ** Dashboard HTML 1.0.7 -
 * Speed test name was being updated when an isolated scan was being done. This is now fixed.

@@ -190,7 +190,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -2048,24 +2048,28 @@ def api_live_bandwidth():
 def get_adapters():
     """
     Fetches the physical and virtual network adapters available on the host machine.
-    - Utilizes ThreadPoolExecutor to run heavy OS-level terminal commands (Gateway/Wi-Fi info) concurrently,
-      cutting the API response time dramatically (from ~3 seconds to ~0.5 seconds).
-    - Identifies if an adapter is Wi-Fi vs Ethernet using name fuzzy-matching and physical link speed checks.
-    - Evaluates which adapter is actively providing internet ('Active') and which one the user has prioritized ('Pinned').
+    - Utilizes ThreadPoolExecutor to run heavy OS-level terminal commands concurrently.
+    - Accurately identifies Wi-Fi vs Ethernet using strict OS-level framework queries.
+    - Evaluates which adapter is actively providing internet ('Active') and which one is 'Pinned'.
     """
     adapters_data = []
     interfaces = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     
     # Execute heavy OS calls concurrently (Cuts delay dramatically)
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         f_ext = executor.submit(get_extended_iface_info)
         f_wifi = executor.submit(get_wifi_rates)
         f_active = executor.submit(get_active_interface_name)
+        f_wifi_ifaces = executor.submit(get_visible_wifi_interfaces)
         
         ext_info = f_ext.result()
         wifi_rates = f_wifi.result()
         active_iface_name = f_active.result()
+        known_wifi_ifaces = f_wifi_ifaces.result()
+        
+    # Extract the precise hardware IDs (like 'en0') that the OS confirmed are Wi-Fi cards
+    known_wifi_ids = [i["id"] for i in known_wifi_ifaces]
     
     primary_gw = "Unknown"
     primary_dns = "Unknown"
@@ -2078,7 +2082,7 @@ def get_adapters():
                 settings[row[0]] = {
                     "name": row[1], 
                     "visible": row[2], 
-                    "is_primary": bool(row[3]) # Tracks if the user pinned this adapter for scanning
+                    "is_primary": bool(row[3]) 
                 }
                 if row[3] == 1:
                     pinned_mac = row[0]
@@ -2132,9 +2136,11 @@ def get_adapters():
              if gw != "-": primary_gw = gw
              if dns != "-": primary_dns = dns
 
-        # --- NEW: Identify if it is Wi-Fi or Ethernet ---
+        # --- NEW: Identify if it is Wi-Fi or Ethernet (Fixed for macOS) ---
         is_wifi = False
-        if any(w in name.lower() for w in ["wi-fi", "wireless", "wlan", "802.11"]):
+        if name in known_wifi_ids:
+            is_wifi = True
+        elif any(w in name.lower() for w in ["wi-fi", "wireless", "wlan", "802.11"]):
             is_wifi = True
 
         raw_speed = st.speed if st else 0
