@@ -42,7 +42,7 @@ A robust, fault-tolerant network diagnostic dashboard designed for troubleshooti
 Currently the scripts are hosted seperately to this app to reduce the number of extra files downloaded. They can be found here - https://github.com/Chrisb003/Network-Testing-Tools-Install-Scripts. These scripts completely automate environment setup, GitHub syncing, background execution, and uninstallation. *Note: You can run these scripts again at any time to cleanly uninstall the application and remove background services.*
 
 ### <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows11/windows11-original.svg" width="20" alt="Windows" /> Windows Automated Setup
-The `Windows-Installer.ps1` script requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. It downloads and prompts the user to install Npcap directly from the official website, automatically unlocks folder permissions, and creates Desktop/Start Menu shortcuts **with an option to bypass UAC prompts via Scheduled Tasks for seamless, passwordless launching.**
+The `Windows-Installer.ps1` script requests Administrator privileges, downloads and installs Python 3.14 natively if missing, and syncs project files. It downloads and prompts the user to install Npcap directly from the official website, automatically unlocks folder permissions, and creates Desktop/Start Menu shortcuts **with an option to bypass UAC prompts via Scheduled Tasks for seamless, passwordless launching.** even if you selected the 'Invisible Background Process' option, a black terminal window will briefly flash for a split-second when clicking the shortcut. This is perfectly normal—it is just the Windows Task Scheduler handing the process off to the invisible background environment!*
 
 Open **PowerShell** and paste the following command to begin:
 ```powershell
@@ -50,7 +50,7 @@ Open **PowerShell** and paste the following command to begin:
 ```
 
 ### <img src="https://cdn.simpleicons.org/apple/ffffff" width="20" alt="macOS" /> macOS Automated Setup
-The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 3.14 natively if missing) and downloads the core project files securely to your home folder. It builds a native macOS `.app` shortcut in your Applications folder **and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.** even if you selected the 'Invisible Background Process' option, a black terminal window will briefly flash for a split-second when clicking the shortcut. This is perfectly normal—it is just the Windows Task Scheduler handing the process off to the invisible background environment!*
+The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 3.14 natively if missing) and downloads the core project files securely to your home folder. It builds a native macOS `.app` shortcut in your Applications folder **and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.** 
 
 Open the **Terminal** app and paste the following command:
 ```bash
