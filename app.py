@@ -190,7 +190,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.0.11"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -5979,7 +5979,7 @@ def create_tray_icon():
     """
     Initializes and runs the cross-platform system tray icon using 'pystray'.
     - Skips execution if running in headless/daemon mode ONLY on Linux or unknown OS.
-    - Provides a native context menu allowing the user to seamlessly Restart or Shutdown the Python server.
+    - Provides a native context menu allowing the user to seamlessly Restart, Shutdown, or Open the Dashboard.
     - macOS Fix: Integrates with the native NSApplication runloop to prevent locking up the OS dock.
     """
     sys_plat = platform.system()
@@ -5994,6 +5994,7 @@ def create_tray_icon():
     try:
         import pystray
         from PIL import Image
+        import webbrowser
     except ImportError:
         print("[*] 'pystray' or 'Pillow' missing. Skipping system tray icon.")
         return
@@ -6017,6 +6018,14 @@ def create_tray_icon():
         print(f"[!] Failed to load tray icon image: {e}")
         return
 
+    def on_open(icon, item):
+        print("[*] Tray Action: Open Dashboard requested.")
+        try:
+            port = get_current_port()
+            webbrowser.open(f"http://127.0.0.1:{port}")
+        except Exception as e:
+            print(f"[!] Failed to open browser: {e}")
+
     def on_restart(icon, item):
         print("[*] Tray Action: Restart requested.")
         threading.Thread(target=restart_server).start()
@@ -6032,7 +6041,9 @@ def create_tray_icon():
         os._exit(0)
 
     try:
+        # Create the Menu with the new "Open Dashboard" option
         menu = pystray.Menu(
+            pystray.MenuItem("Open Dashboard", on_open, default=True),
             pystray.MenuItem("Restart Dashboard", on_restart),
             pystray.MenuItem("Stop Dashboard", on_stop)
         )
