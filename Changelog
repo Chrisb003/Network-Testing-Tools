@@ -1,4 +1,8 @@
 # Changelog
+## [1.0.15] - terminal window fix for windowss
+** Main App Script 1.0.12 -
+* Fix window visability if you chose to start the code in a hidden window on windows.
+
 ## [1.0.14] - terminal window fix for windowss
 ** Setup script 1.0.4 -
 * Fix for windows so if you start the app with the terminal window hidden when it launches the setup python script when that then starts the main app python script the window remains hidden. It can still be closed from either the taskbar icon or from within the dashboard interface on a web browser.
