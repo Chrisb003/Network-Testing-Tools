@@ -51,17 +51,28 @@ except AttributeError:
 # ------------------------------------------------
 
 # --- NEW: Safe Windows Background Terminal Suppression ---
-# Intercepts OS-level terminal commands (Ping, ARP, Netsh, Ookla) 
-# and forces them to run completely hidden without breaking process pipes.
+# Intercepts OS-level terminal commands (Ping, ARP, Netsh, Ookla).
+# 1. Forces them to run completely hidden (CREATE_NO_WINDOW).
+# 2. Redirects standard inputs/outputs to DEVNULL to prevent "Invalid Handle" crashes 
+#    when running under a windowless Python environment.
 if platform.system() == "Windows":
     _original_popen = subprocess.Popen
     def _patched_popen(*args, **kwargs):
         if 'creationflags' not in kwargs:
             kwargs['creationflags'] = 0x08000000 # CREATE_NO_WINDOW
+        
+        # Prevent child processes from crashing by giving them dummy file handles.
+        # We only apply DEVNULL if the caller hasn't explicitly requested a PIPE.
+        if kwargs.get('stdin') is None:
+            kwargs['stdin'] = subprocess.DEVNULL
+        if kwargs.get('stdout') is None:
+            kwargs['stdout'] = subprocess.DEVNULL
+        if kwargs.get('stderr') is None:
+            kwargs['stderr'] = subprocess.DEVNULL
+            
         return _original_popen(*args, **kwargs)
     subprocess.Popen = _patched_popen
 # ---------------------------------------------------------
-
 
 # ==========================================
 # PERMISSION ENGINE
@@ -788,17 +799,33 @@ def get_isp_info():
 def get_local_ip():
     """
     Identifies the primary local LAN IP address used for internet routing.
-    Creates a dummy UDP socket connecting to Google DNS. Because UDP is connectionless, 
-    no packets are actually sent, but the OS calculates which local interface IP would be used.
+    Actively bypasses virtual VPN adapters (like Tailscale) to ensure the physical subnet is scanned.
     """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('8.8.8.8', 80))
-        return s.getsockname()[0]
+        target_ip = s.getsockname()[0]
     except:
-        return '127.0.0.1'
+        target_ip = '127.0.0.1'
     finally:
         s.close()
+        
+    # If the OS routed through a VPN adapter, we need to bypass it to find the real physical LAN IP
+    interfaces = psutil.net_if_addrs()
+    for name, addrs in interfaces.items():
+        for a in addrs:
+            if a.family == socket.AF_INET and a.address == target_ip:
+                name_lower = name.lower()
+                # Check against common virtual/VPN adapter names
+                if any(x in name_lower for x in ["tailscale", "wireguard", "zerotier", "openvpn", "tun", "tap", "vethernet"]):
+                    # VPN detected! Find the first available physical IPv4 address instead
+                    for n, n_addrs in interfaces.items():
+                        if any(x in n.lower() for x in ["tailscale", "wireguard", "zerotier", "openvpn", "tun", "tap", "vethernet", "loopback", "lo"]):
+                            continue
+                        for n_a in n_addrs:
+                            if n_a.family == socket.AF_INET and not n_a.address.startswith('169.254') and n_a.address != '127.0.0.1':
+                                return n_a.address
+    return target_ip
 
 def cleanup_old_files():
     """
@@ -1212,17 +1239,9 @@ def get_bandwidth():
 def get_active_interface_name():
     """
     Connects a dummy socket to find the active internet routing IP, then matches it to an interface name.
-    Important: It checks the database to see if the interface is marked "hidden" by the user.
-    If it is hidden, it returns an empty string to prevent the app from auto-selecting it.
+    Relies on get_local_ip() to automatically bypass VPNs so Scapy binds to a physical Layer 2 interface.
     """
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('8.8.8.8', 80))
-        target_ip = s.getsockname()[0]
-    except:
-        target_ip = '127.0.0.1'
-    finally:
-        s.close()
+    target_ip = get_local_ip()
 
     if target_ip == '127.0.0.1':
         return "" 
@@ -2105,8 +2124,10 @@ def get_adapters():
     for name, addrs in interfaces.items():
         st = stats.get(name)
         
-        # Completely ignore internal software loopbacks and Hyper-V virtual switches to reduce noise
-        if "Loopback" in name or "vEthernet" in name or name == "lo": 
+        # --- NEW: VPN FILTERING ---
+        # Completely ignore internal software loopbacks, VPNs, and virtual switches to reduce noise
+        name_lower = name.lower()
+        if any(x in name_lower for x in ["loopback", "vethernet", "lo", "tailscale", "wireguard", "zerotier", "openvpn", "tun", "tap"]): 
             continue
         
         ip4, mac = "-", "-"
@@ -2149,7 +2170,7 @@ def get_adapters():
              if gw != "-": primary_gw = gw
              if dns != "-": primary_dns = dns
 
-        # --- NEW: Identify if it is Wi-Fi or Ethernet (Fixed for macOS) ---
+        # --- Identify if it is Wi-Fi or Ethernet ---
         is_wifi = False
         if name in known_wifi_ids:
             is_wifi = True
