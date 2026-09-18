@@ -35,7 +35,7 @@ except AttributeError:
 # ------------------------------------------------
 
 # --- Configuration ---
-SETUP_VERSION = "1.0.3"
+SETUP_VERSION = "1.0.4"
 VENV_DIR_NAME = "venv"
 
 # Core Python dependencies required for the dashboard to function
@@ -376,8 +376,14 @@ def get_venv_paths(venv_path):
     Accounts for the structural differences between Windows (Scripts folder) and Unix (bin folder).
     """
     if platform.system() == "Windows":
+        # --- FIX: Match the visibility state of the supervisor ---
+        # If the user launched this script invisibly via pythonw.exe, 
+        # we must use pythonw.exe for the main application to keep it hidden!
+        is_silent = sys.executable.lower().endswith("pythonw.exe")
+        target_exe = "pythonw.exe" if is_silent else "python.exe"
+        
         return {
-            "python": venv_path / "Scripts" / "python.exe",
+            "python": venv_path / "Scripts" / target_exe,
             "bin_dir": venv_path / "Scripts"
         }
     else:
@@ -552,12 +558,9 @@ def run_application(base_dir, venv_python):
     print("="*60)
     
     # --- NEW: Trigger macOS Permissions as Standard User BEFORE Sudo ---
-    # Triggering these native APIs as a standard user forces the OS to prompt for permission
-    # If run as sudo first, macOS silently denies the request without prompting the user.
     if platform.system() == "Darwin":
         print("[*] Probing macOS Network & Location permissions...")
         try:
-            # 1. Trigger Local Network Prompt
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             s.send(b"probing-local-network")
@@ -565,7 +568,6 @@ def run_application(base_dir, venv_python):
         except: pass
 
         try:
-            # 2. Trigger Location Prompt via Native Framework
             import CoreLocation
             loc_manager = CoreLocation.CLLocationManager.alloc().init()
             loc_manager.requestAlwaysAuthorization()
@@ -573,23 +575,24 @@ def run_application(base_dir, venv_python):
         except: pass
 
         try:
-            # 3. Fallback Wi-Fi trigger
             airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
             if os.path.exists(airport_path):
                 subprocess.Popen([airport_path, "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except: pass
         
-        time.sleep(1.5) # Give the UI prompt time to appear on screen
+        time.sleep(1.5) 
     # -------------------------------------------------------------------
 
     cmd = [str(venv_python), str(app_path)]
     
-    # Elevate to sudo on Linux for network scanning, bypass for macOS to allow CoreLocation prompts
     if platform.system() == "Linux" and not is_admin():
         print("[*] Elevating privileges for network scanning...")
         cmd = ["sudo"] + cmd
             
     first_launch = True
+    
+    # --- WINDOWS FIX: OS-Level Flag to suppress all console popups ---
+    CREATE_NO_WINDOW = 0x08000000 if platform.system() == "Windows" else 0
     
     try:
         while True:
@@ -598,12 +601,12 @@ def run_application(base_dir, venv_python):
             # --- FORCE STOP / CLEANUP: Kill any stale process blocking the port natively ---
             try:
                 if platform.system() == "Windows":
-                    out = subprocess.check_output(f"netstat -ano | findstr :{current_port}", shell=True, text=True)
+                    out = subprocess.check_output(f"netstat -ano | findstr :{current_port}", shell=True, text=True, creationflags=CREATE_NO_WINDOW)
                     for line in out.strip().split('\n'):
                         if "LISTENING" in line and f":{current_port}" in line.split()[1]:
                             pid = line.strip().split()[-1]
                             print(f"[*] Force-stopping stale process on port {current_port} (PID: {pid})...")
-                            subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
                 else:
                     out = subprocess.check_output(f"lsof -t -i:{current_port}", shell=True, text=True)
                     for pid in out.strip().split('\n'):
@@ -614,14 +617,18 @@ def run_application(base_dir, venv_python):
                 pass
 
             print(f"[*] Starting main application instance...")
-            process = subprocess.Popen(cmd)
+            
+            # Force the main app to launch with No-Window flags on Windows
+            if platform.system() == "Windows":
+                process = subprocess.Popen(cmd, creationflags=CREATE_NO_WINDOW)
+            else:
+                process = subprocess.Popen(cmd)
             
             print(f"[*] Waiting for server to spin up on port {current_port}...")
             server_ready = False
             for _ in range(30):
                 current_port = get_configured_port(base_dir)
                 try:
-                    # Continually probe the port until the Flask server successfully binds to it
                     with socket.create_connection(("127.0.0.1", current_port), timeout=1):
                         server_ready = True
                         break
@@ -638,26 +645,21 @@ def run_application(base_dir, venv_python):
             elif server_ready:
                 print(f"\n[*] Application successfully restarted on port {current_port}.\n")
             
-            # Suspend the supervisor thread and wait for the application process to terminate or crash
             process.wait()
             
-            # --- Check for intentional shutdown signal ---
             shutdown_file = base_dir / "shutdown_signal"
             if shutdown_file.exists():
                 print("\n[*] Intentional shutdown signal received. Stopping supervisor safely.")
                 try:
-                    shutdown_file.unlink() # Clean up the file
+                    shutdown_file.unlink()
                 except OSError:
-                    # Fallback for Linux/macOS if the file is locked by Root
                     if platform.system() != "Windows":
                         subprocess.run(["sudo", "rm", "-f", str(shutdown_file)], stderr=subprocess.DEVNULL)
-                sys.exit(0) # Exit the supervisor loop completely
+                sys.exit(0)
             
-            # If we reach here and no signal exists, it was an unexpected crash
             print(f"\n[!] WARNING: Main application stopped unexpectedly (Exit code: {process.returncode}).")
             print("[*] Restarting application loop in 3 seconds...\n")
             
-            # Ensure the dead process is fully cleaned up before looping
             try:
                 process.kill()
             except:
