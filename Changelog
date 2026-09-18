@@ -1,4 +1,8 @@
 # Changelog
+## [1.0.11] - network scanning fix
+** Main App Script 1.0.10 -
+* Fixed a bug with the network scan on windows after it getting broken again fixing a couple of other bits.
+
 ## [1.0.11] - Mac OS adapter type fix
 ** Main App Script 1.0.9 -
 * Speed test network type auto updates with connection type. This can be changed manually but on mac os this was not being detected correctly.

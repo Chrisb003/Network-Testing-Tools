@@ -190,7 +190,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -2562,13 +2562,6 @@ def get_network_devices(net_id):
 def scan_network():
     """
     Robust Pinned-First Network Scanner (Standard JSON Response Mode).
-    1. Locks onto a specific physical adapter if pinned by the user.
-    2. Performs a rapid Scapy ARP sweep using exact IP routing.
-    3. Unconditionally merges the OS ARP table to catch devices Scapy missed.
-    4. Triggers the Native OS Fallback Sweep (SendARP on Windows / Ping on Mac).
-    5. TARGETED HISTORICAL POKE: Re-tests offline devices at their last known IPs.
-    6. Threads out hostname resolution and port scanning concurrently.
-    7. Saves a historical snapshot of the results utilizing strict VLAN matching.
     """
     worker_cfg = get_worker_config() if 'get_worker_config' in globals() else {"scan_workers": 20, "ping_workers": 30}
     pinned_mac = None
@@ -2616,30 +2609,26 @@ def scan_network():
     # --- 1. PERFORM SCAPY ARP SCAN ---
     ans = []
     is_windows = platform.system() == "Windows"
-    scan_timeout = 3.0 if is_windows else 1.5
-    scan_inter = 0.03 if is_windows else 0.01
+    scan_timeout = 2.5 if is_windows else 1.5
+    scan_inter = 0.01
+    scan_retry = 2 if is_windows else 1
 
     try:
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                     timeout=scan_timeout, retry=1, verbose=0, inter=scan_inter, 
+                     timeout=scan_timeout, retry=scan_retry, verbose=0, inter=scan_inter, 
                      iface=scapy_iface, promisc=False)
     except Exception as e:
         print(f"[*] Scapy targeted bind failed: {e}. Retrying globally...")
         try:
             ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                         timeout=scan_timeout, retry=1, verbose=0, inter=scan_inter, promisc=False)
+                         timeout=scan_timeout, retry=scan_retry, verbose=0, inter=scan_inter, promisc=False)
         except: pass
 
-    scanned_results = []
-    with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-        futures = [executor.submit(process_device_info, received, gateway_ip) for _, received in ans]
-        for future in futures: scanned_results.append(future.result())
-
-    found_ips = [d['ip'] for d in scanned_results]
+    raw_candidates = [received for _, received in ans]
     network = ipaddress.IPv4Network(target_subnet, strict=False)
 
-    class MockReceived:
-        def __init__(self, ip_found, mac_found):
+    class MockDev:
+        def __init__(self, ip_found, mac_found): 
             self.ip = ip_found
             self.psrc = ip_found
             self.mac = mac_found
@@ -2653,23 +2642,40 @@ def scan_network():
                 ip_found, raw_mac = match.groups()
                 mac_found = ':'.join([p.zfill(2) for p in raw_mac.replace('-', ':').split(':')]).lower()
                 
-                if ip_found not in found_ips and not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and not mac_found.startswith('33:33') and ipaddress.IPv4Address(ip_found) in network:
-                    devices.append(MockReceived(ip_found, mac_found))
-                    found_ips.append(ip_found)
+                # Unconditional grab: We will deduplicate perfectly at the end to prevent logic drops
+                if not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and not mac_found.startswith('33:33'):
+                    try:
+                        if ipaddress.IPv4Address(ip_found) in network:
+                            devices.append(MockDev(ip_found, mac_found))
+                    except: pass
         except: pass
         return devices
 
     def force_discovery(ip_str):
-        if is_windows:
+        """Hybrid Layer-2 / Layer-3 Sweep to bypass strict Windows Firewalls"""
+        sys_plat = platform.system().lower()
+        if sys_plat == 'windows':
+            # 1. Native Windows Kernel ARP (Bypasses ICMP/Ping Firewalls completely)
             try:
                 import ctypes, socket
                 dest_ip = int.from_bytes(socket.inet_aton(ip_str), 'little')
                 mac_addr = (ctypes.c_ubyte * 6)()
                 mac_len = ctypes.c_ulong(6)
-                if ctypes.windll.iphlpapi.SendARP(dest_ip, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len)) == 0:
-                    mac_str = ':'.join(f'{b:02x}' for b in bytes(mac_addr))
-                    if not mac_str.startswith('ff:ff') and not mac_str.startswith('00:00'):
-                        return MockReceived(ip_str, mac_str)
+                ctypes.windll.iphlpapi.SendARP(dest_ip, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len))
+            except: pass
+            
+            # 2. Native Ping (Safety net for routed VLANs where ARP drops)
+            cmd = ['ping', '-n', '1', '-w', '250', ip_str]
+            try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except: pass
+        elif sys_plat == 'darwin':
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.settimeout(0.1)
+                    s.sendto(b'\x00', (ip_str, 5353))
+            except: pass
+            cmd = ['ping', '-c', '1', '-W', '250', ip_str]
+            try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except: pass
         else:
             try:
@@ -2677,54 +2683,34 @@ def scan_network():
                     s.settimeout(0.1)
                     s.sendto(b'\x00', (ip_str, 5353))
             except: pass
-            
-            sys_plat = platform.system().lower()
-            cmd = ['ping', '-c', '1', '-W', '300', ip_str] if sys_plat == 'darwin' else ['ping', '-c', '1', '-W', '1', ip_str]
+            cmd = ['ping', '-c', '1', '-W', '1', ip_str]
             try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except: pass
-        return None
 
     # --- 2. UNCONDITIONAL OS ARP TABLE MERGE ---
-    initial_arp_devices = scrape_arp()
-    if initial_arp_devices:
-        with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-            futures = [executor.submit(process_device_info, dev, gateway_ip) for dev in initial_arp_devices]
-            for future in futures: scanned_results.append(future.result())
+    raw_candidates.extend(scrape_arp())
 
-    # --- 3. NATIVE OS FALLBACK SWEEP ---
-    if is_windows or len(scanned_results) <= 15:
-        print("[*] Scan found few devices. Initiating Native OS Fallback Sweep...")
-        fallback_devices = []
-        max_threads = 100 if is_windows else worker_cfg['ping_workers']
+    # --- 3. ROCK-SOLID OS HYBRID FALLBACK SWEEP ---
+    found_ips = set(getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates)
+    
+    if is_windows or len(found_ips) <= 15:
+        print("[*] Scan found few devices. Initiating OS Hybrid Fallback Sweep...")
+        max_threads = 60 if is_windows else 255
         
         with ThreadPoolExecutor(max_workers=max_threads) as executor:
-            futures = []
             for ip_obj in network.hosts(): 
                 ip_str = str(ip_obj)
                 if ip_str not in found_ips:
-                    futures.append(executor.submit(force_discovery, ip_str))
-            
-            for future in futures:
-                res = future.result()
-                if res and res.ip not in found_ips:
-                    fallback_devices.append(res)
-                    found_ips.append(res.ip)
+                    executor.submit(force_discovery, ip_str)
                     
-        if not is_windows:
-            time.sleep(0.5)
-            fallback_devices.extend(scrape_arp())
-            
-        if fallback_devices:
-            with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-                futures = [executor.submit(process_device_info, dev, gateway_ip) for dev in fallback_devices]
-                for future in futures: scanned_results.append(future.result())
+        time.sleep(0.5) 
+        raw_candidates.extend(scrape_arp())
 
     # --- 4. EXTRACT GATEWAY MAC FROM RESULTS ---
     gateway_mac = None
-    for device in scanned_results:
-        if device["ip"] == gateway_ip:
-            gateway_mac = device["mac"]
-            if "(Router)" not in device["hostname"]: device["hostname"] = f"{device['hostname']} (Router)"
+    for device in raw_candidates:
+        if getattr(device, 'psrc', getattr(device, 'ip', '')) == gateway_ip:
+            gateway_mac = getattr(device, 'hwsrc', getattr(device, 'mac', None))
             break
 
     if not gateway_mac and gateway_ip != "-" and gateway_ip != "Unknown":
@@ -2734,15 +2720,6 @@ def scan_network():
                 
         if not gateway_mac: gateway_mac = get_gateway_mac(gateway_ip)
         if not gateway_mac: gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
-            
-        scanned_results.append({
-            "ip": gateway_ip, "mac": gateway_mac,
-            "hostname": f"{resolve_hostname(gateway_ip, gateway_mac)} (Router)",
-            "vendor": get_mac_vendor(gateway_mac, fetch_online=False),
-            "services": check_open_ports(gateway_ip)['services']
-        })
-    elif not gateway_mac:
-        gateway_mac = f"NO_MAC_{int(time.time()*1000)}"
 
     # --- 5. NETWORK IDENTIFICATION ---
     network_id = None
@@ -2752,16 +2729,18 @@ def scan_network():
         if existing_net:
             network_id = existing_net[0]
             final_network_name = existing_net[1]
+        else:
+            final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
 
-    # --- 6. TARGETED HISTORICAL POKE (SECOND CHANCE FOR OFFLINE DEVICES) ---
+    # --- 6. TARGETED HISTORICAL POKE ---
     if network_id and allow_match_val == 1:
         historical_targets = []
-        found_macs = set(d['mac'] for d in scanned_results)
+        found_macs = set(getattr(d, 'hwsrc', getattr(d, 'mac', '')) for d in raw_candidates)
+        found_ips = set(getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates)
         
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             for r in conn.execute("SELECT ip_address, mac_address FROM devices WHERE network_id=?", (network_id,)).fetchall():
                 hist_ip, hist_mac = r[0], r[1]
-                # Only poke if the device is currently missing AND its old IP is not being used by a new device
                 if hist_mac not in found_macs and hist_ip not in found_ips and hist_ip != "0.0.0.0":
                     try:
                         if ipaddress.IPv4Address(hist_ip) in network:
@@ -2770,33 +2749,37 @@ def scan_network():
                     
         if historical_targets:
             print(f"[*] Targeted Poke: Giving {len(historical_targets)} historical devices a second chance at their last known IPs...")
-            fallback_devices = []
-            max_threads = 100 if is_windows else worker_cfg['ping_workers']
-            
+            max_threads = 60 if is_windows else 255
             with ThreadPoolExecutor(max_workers=max_threads) as executor:
-                futures = [executor.submit(force_discovery, ip) for ip in historical_targets]
-                for future in futures:
-                    res = future.result()
-                    if res and res.ip not in found_ips:
-                        fallback_devices.append(res)
-                        found_ips.append(res.ip)
-                        
-            if not is_windows:
-                time.sleep(0.5)
-                fallback_devices.extend(scrape_arp())
-                
-            unique_new = []
-            for d in fallback_devices:
-                if d.mac not in found_macs:
-                    unique_new.append(d)
-                    found_macs.add(d.mac)
-                    if d.ip not in found_ips: found_ips.append(d.ip)
-                    
-            if unique_new:
-                with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-                    futures = [executor.submit(process_device_info, dev, gateway_ip) for dev in unique_new]
-                    for future in futures: scanned_results.append(future.result())
+                for ip in historical_targets:
+                    executor.submit(force_discovery, ip)
+            time.sleep(0.5)
+            raw_candidates.extend(scrape_arp())
 
+    # --- 7. DEDUPLICATE ALL CANDIDATES ---
+    unique_candidates = {}
+    for d in raw_candidates:
+        ip = getattr(d, 'psrc', getattr(d, 'ip', None))
+        if ip: unique_candidates[ip] = d
+    raw_candidates = list(unique_candidates.values())
+
+    # --- 8. PROCESS ALL DEVICES CONCURRENTLY ---
+    scanned_results = []
+    with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
+        futures = [executor.submit(process_device_info, dev, gateway_ip) for dev in raw_candidates]
+        for future in futures: scanned_results.append(future.result())
+
+    # --- 9. MANUALLY APPEND GATEWAY & LOCALHOST IF MISSED ---
+    found_ips = [d['ip'] for d in scanned_results]
+    
+    if gateway_ip not in found_ips and gateway_ip != "-" and gateway_ip != "Unknown":
+        scanned_results.append({
+            "ip": gateway_ip, "mac": gateway_mac,
+            "hostname": f"{resolve_hostname(gateway_ip, gateway_mac)} (Router)",
+            "vendor": get_mac_vendor(gateway_mac, fetch_online=False),
+            "services": check_open_ports(gateway_ip)['services']
+        })
+        
     if target_ip_val not in found_ips and target_mac_val and target_ip_val != "127.0.0.1":
         scanned_results.append({
             "ip": target_ip_val, "mac": target_mac_val,
@@ -2805,7 +2788,7 @@ def scan_network():
             "services": check_open_ports(target_ip_val)['services']
         })
 
-    # --- 7. DB NETWORK CREATION & DEVICE SAVING ---
+    # --- 10. DB NETWORK CREATION & DEVICE SAVING ---
     try:
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
@@ -2815,7 +2798,6 @@ def scan_network():
             else:
                 cursor.execute("SELECT id FROM networks WHERE gateway_mac=? AND gateway_ip=?", (gateway_mac, gateway_ip))
                 allow_match_val = 0 if cursor.fetchone() else 1
-                final_network_name = f"Network {gateway_mac[-5:]} ({gateway_ip})"
                 cursor.execute("INSERT INTO networks (gateway_mac, name, last_scan, gateway_ip, allow_matching, comments) VALUES (?, ?, ?, ?, ?, '')", 
                                (gateway_mac, final_network_name, current_time, gateway_ip, allow_match_val))
                 network_id = cursor.lastrowid
@@ -2856,7 +2838,7 @@ def scan_network():
             
     except Exception as e: 
         return jsonify({"error": f"DB Error: {str(e)}"})
-
+    
 @app.route('/api/scan_network_stream')
 def scan_network_stream():
     """
@@ -3002,6 +2984,8 @@ def scan_network_stream():
                 conn.commit()
 
             yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment})}\n\n"
+            # KEEP ALIVE: Prevent browser SSE disconnects during heavy backend blocks
+            yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
             try:
                 scapy_iface = conf.route.route(target_ip_val)[0]
@@ -3011,22 +2995,24 @@ def scan_network_stream():
             # --- 2. PERFORM SCAPY SCAN ---
             ans = []
             is_windows = platform.system() == "Windows"
-            scan_timeout = 3.0 if is_windows else 1.5
-            scan_inter = 0.03 if is_windows else 0.01
+            scan_timeout = 2.5 if is_windows else 1.5
+            scan_inter = 0.01
+            scan_retry = 2 if is_windows else 1
 
             try:
                 ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                             timeout=scan_timeout, retry=1, verbose=0, inter=scan_inter, 
+                             timeout=scan_timeout, retry=scan_retry, verbose=0, inter=scan_inter, 
                              iface=scapy_iface, promisc=False)
             except Exception as e:
                 print(f"[*] Scapy targeted bind failed: {e}. Retrying globally...")
                 try:
                     ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                                 timeout=scan_timeout, retry=1, verbose=0, inter=scan_inter, promisc=False)
+                                 timeout=scan_timeout, retry=scan_retry, verbose=0, inter=scan_inter, promisc=False)
                 except Exception as e2:
                     print(f"[*] Scapy global bind failed: {e2}")
 
             raw_candidates = [received for _, received in ans]
+            network = ipaddress.IPv4Network(target_subnet, strict=False)
 
             class MockDev:
                 def __init__(self, ip_found, mac_found): 
@@ -3035,9 +3021,6 @@ def scan_network_stream():
                     self.mac = mac_found
                     self.hwsrc = mac_found
 
-            network = ipaddress.IPv4Network(target_subnet, strict=False)
-            found_ips = [getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates]
-
             def scrape_arp():
                 devices = []
                 try:
@@ -3045,24 +3028,37 @@ def scan_network_stream():
                     for match in re.finditer(r'(\d{1,3}(?:\.\d{1,3}){3}).*?([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})', arp_out):
                         ip_found, raw_mac = match.groups()
                         mac_found = ':'.join([p.zfill(2) for p in raw_mac.replace('-', ':').split(':')]).lower()
-                        if ip_found not in found_ips and not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and not mac_found.startswith('33:33') and ipaddress.IPv4Address(ip_found) in network:
-                            devices.append(MockDev(ip_found, mac_found))
-                            found_ips.append(ip_found)
+                        if not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and not mac_found.startswith('33:33'):
+                            try:
+                                if ipaddress.IPv4Address(ip_found) in network:
+                                    devices.append(MockDev(ip_found, mac_found))
+                            except: pass
                 except Exception as e:
                     print(f"[*] OS ARP Table Parsing Failed: {e}")
                 return devices
 
             def force_discovery(ip_str):
-                if is_windows:
+                """Hybrid Layer-2 / Layer-3 Sweep to bypass strict Windows Firewalls"""
+                sys_plat = platform.system().lower()
+                if sys_plat == 'windows':
                     try:
                         import ctypes, socket
                         dest_ip = int.from_bytes(socket.inet_aton(ip_str), 'little')
                         mac_addr = (ctypes.c_ubyte * 6)()
                         mac_len = ctypes.c_ulong(6)
-                        if ctypes.windll.iphlpapi.SendARP(dest_ip, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len)) == 0:
-                            mac_str = ':'.join(f'{b:02x}' for b in bytes(mac_addr))
-                            if not mac_str.startswith('ff:ff') and not mac_str.startswith('00:00'):
-                                return MockDev(ip_str, mac_str)
+                        ctypes.windll.iphlpapi.SendARP(dest_ip, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len))
+                    except: pass
+                    cmd = ['ping', '-n', '1', '-w', '250', ip_str]
+                    try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except: pass
+                elif sys_plat == 'darwin':
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                            s.settimeout(0.1)
+                            s.sendto(b'\x00', (ip_str, 5353))
+                    except: pass
+                    cmd = ['ping', '-c', '1', '-W', '250', ip_str]
+                    try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except: pass
                 else:
                     try:
@@ -3070,51 +3066,38 @@ def scan_network_stream():
                             s.settimeout(0.1)
                             s.sendto(b'\x00', (ip_str, 5353))
                     except: pass
-                    sys_plat = platform.system().lower()
-                    cmd = ['ping', '-c', '1', '-W', '300', ip_str] if sys_plat == 'darwin' else ['ping', '-c', '1', '-W', '1', ip_str]
+                    cmd = ['ping', '-c', '1', '-W', '1', ip_str]
                     try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except: pass
-                return None
 
+            yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
             raw_candidates.extend(scrape_arp())
 
-            # --- 3. NATIVE OS FALLBACK SWEEP ---
-            if is_windows or len(raw_candidates) <= 15:
-                print("[*] Scan found few devices. Initiating Native OS Fallback Sweep...")
-                fallback_found = []
-                max_threads = 100 if is_windows else worker_cfg['ping_workers']
-                
+            # --- 3. ROCK-SOLID OS HYBRID FALLBACK SWEEP ---
+            found_ips = set(getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates)
+            
+            if is_windows or len(found_ips) <= 15:
+                print("[*] Scan found few devices. Initiating OS Hybrid Fallback Sweep...")
+                max_threads = 60 if is_windows else 255
                 with ThreadPoolExecutor(max_workers=max_threads) as executor:
-                    futures = []
                     for ip_obj in network.hosts(): 
                         ip_str = str(ip_obj)
                         if ip_str not in found_ips:
-                            futures.append(executor.submit(force_discovery, ip_str))
-                    
-                    for future in futures:
-                        res = future.result()
-                        if res and res.ip not in found_ips:
-                            fallback_found.append(res)
-                            found_ips.append(res.ip)
-                
-                if not is_windows:
-                    time.sleep(0.5) 
-                    fallback_found.extend(scrape_arp())
-                    
-                for d in fallback_found:
-                    if d.ip not in found_ips:
-                        raw_candidates.append(d)
-                        found_ips.append(d.ip)
+                            executor.submit(force_discovery, ip_str)
+                time.sleep(0.5) 
+                raw_candidates.extend(scrape_arp())
 
-            # --- 4. TARGETED HISTORICAL POKE (SECOND CHANCE FOR OFFLINE DEVICES) ---
+            yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
+
+            # --- 4. TARGETED HISTORICAL POKE ---
             if not is_isolation and not is_split:
                 historical_targets = []
                 found_macs = set(getattr(d, 'hwsrc', getattr(d, 'mac', '')) for d in raw_candidates)
+                found_ips = set(getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates)
                 
                 for mac, state in existing_states.items():
                     if mac not in found_macs:
                         hist_ip = state.get('ip')
-                        # Only poke if the device is currently missing AND its old IP is not being used by a new device
                         if hist_ip and hist_ip != "0.0.0.0" and hist_ip not in found_ips:
                             try:
                                 if ipaddress.IPv4Address(hist_ip) in network:
@@ -3123,29 +3106,23 @@ def scan_network_stream():
 
                 if historical_targets:
                     print(f"[*] Targeted Poke: Giving {len(historical_targets)} historical devices a second chance at their last known IPs...")
-                    fallback_found = []
-                    max_threads = 100 if is_windows else worker_cfg['ping_workers']
-                    
+                    max_threads = 60 if is_windows else 255
                     with ThreadPoolExecutor(max_workers=max_threads) as executor:
-                        futures = [executor.submit(force_discovery, ip) for ip in historical_targets]
-                        for future in futures:
-                            res = future.result()
-                            if res and res.ip not in found_ips:
-                                fallback_found.append(res)
-                                found_ips.append(res.ip)
-                    
-                    if not is_windows:
-                        time.sleep(0.5)
-                        fallback_found.extend(scrape_arp())
-                        
-                    for d in fallback_found:
-                        mac = getattr(d, 'hwsrc', getattr(d, 'mac', ''))
-                        if mac not in found_macs:
-                            raw_candidates.append(d)
-                            found_macs.add(mac)
-                            if d.ip not in found_ips: found_ips.append(d.ip)
+                        for ip in historical_targets:
+                            executor.submit(force_discovery, ip)
+                    time.sleep(0.5)
+                    raw_candidates.extend(scrape_arp())
 
-            # --- 5. DEFERRED ROUTER MAC RESOLUTION & POST-SCAN MATCHING ---
+            yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
+
+            # --- 5. DEDUPLICATE ALL CANDIDATES ---
+            unique_candidates = {}
+            for d in raw_candidates:
+                ip = getattr(d, 'psrc', getattr(d, 'ip', None))
+                if ip: unique_candidates[ip] = d
+            raw_candidates = list(unique_candidates.values())
+
+            # --- 6. DEFERRED ROUTER MAC RESOLUTION & POST-SCAN MATCHING ---
             if initial_was_placeholder and gateway_ip != "-" and gateway_ip != "Unknown":
                 resolved_mac = None
                 for d in raw_candidates:
@@ -3184,12 +3161,11 @@ def scan_network_stream():
             found_ips = [getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates]
             if gateway_ip not in found_ips and gateway_ip != "-" and gateway_ip != "Unknown":
                 raw_candidates.append(MockDev(gateway_ip, gateway_mac))
-                found_ips.append(gateway_ip)
 
             if target_ip_val not in found_ips and target_mac_val:
                 raw_candidates.append(MockDev(target_ip_val, target_mac_val))
 
-            # --- 6. PROCESS DEVICES STREAM ---
+            # --- 7. PROCESS DEVICES STREAM ---
             tasks = []
             for d in raw_candidates:
                 mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
@@ -3275,7 +3251,7 @@ def scan_network_stream():
                         yield f"data: {json.dumps({'type': 'device', 'device': dev})}\n\n"
                     except Exception: pass
 
-            # --- 7. APPEND OFFLINE DEVICES ---
+            # --- 8. APPEND OFFLINE DEVICES ---
             offline_devices = []
             with sqlite3.connect(DB_NAME, timeout=10) as conn:
                 conn.row_factory = sqlite3.Row
