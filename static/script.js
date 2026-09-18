@@ -3668,11 +3668,13 @@ function openUpdateModal() {
     msg.className = "alert alert-info";
     cl.innerHTML = "Fetching release notes...";
     
-    // Reset button state and clear any old titles
+    // Reset button state and clear any old styles/titles
     btn.disabled = true;
+    btn.setAttribute('disabled', 'true');
     btn.className = "btn btn-primary px-4";
     btn.innerText = "Install Update";
     btn.removeAttribute('title');
+    btn.removeAttribute('style');
 
     // Failsafe link to the GitHub repository if parsing or formatting fails
     const githubFallbackHtml = '<p class="text-muted mb-0">Unable to load release notes securely. <a href="https://github.com/Chrisb003/Network-Testing-Tools/blob/main/Changelog" target="_blank" class="text-primary text-decoration-underline"><i class="bi bi-box-arrow-up-right me-1"></i>View Changelog on GitHub</a></p>';
@@ -3693,13 +3695,7 @@ function openUpdateModal() {
             const isHigher = isVersionHigher(remote, local);
             const updateFound = d.update_available || isHigher || crossChannelUpdate;
             
-            // BUGFIX: If remote is 0.0.0, the branch does not exist on GitHub (404 Error).
-            if (remote === "0.0.0") {
-                msg.className = "alert alert-danger"; 
-                msg.innerText = `Update Error: The '${channel}' branch could not be found on your GitHub repository.`; 
-                btn.disabled = true;
-            } 
-            else if (updateFound) {
+            if (updateFound) {
                 pendingRemoteVersion = remote; 
                 msg.className = "alert alert-warning";
                 
@@ -3715,15 +3711,22 @@ function openUpdateModal() {
                 }
                 
                 msg.innerText = `${statusText}: ${reasonText}`;
+                
                 btn.disabled = false;
+                btn.removeAttribute('disabled');
             } else {
                 msg.className = "alert alert-success"; 
                 msg.innerText = "Your system and all core files are up to date."; 
                 
-                // --- NEW: Allow Forced Reinstall ---
+                // --- NEW: Allow Forced Reinstall with explicit un-greyed styles ---
                 btn.disabled = false;
+                btn.removeAttribute('disabled'); 
                 btn.innerText = "Force Reinstall";
-                btn.className = "btn btn-outline-warning px-4 text-dark";
+                // Explicit inline background and dark text overrides Bootstrap's dark mode bugs
+                btn.className = "btn px-4 fw-bold";
+                btn.style.backgroundColor = "#ffc107";
+                btn.style.color = "#000000";
+                btn.style.borderColor = "#ffc107";
                 btn.title = "Redownload and install the current version again.";
             }
             return fetch('/api/update/changelog');
