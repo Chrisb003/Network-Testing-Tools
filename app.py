@@ -2557,9 +2557,9 @@ def scan_network():
     """
     Robust Pinned-First Network Scanner (Standard JSON Response Mode).
     1. Locks onto a specific physical adapter if pinned by the user.
-    2. Performs a rapid Scapy ARP sweep (Relaxed timeouts for Windows Npcap stability).
+    2. Performs a rapid Scapy ARP sweep (OS-optimized timeouts).
     3. Unconditionally merges the OS ARP table to catch devices Scapy missed.
-    4. Triggers an OS-level Ping Sweep fallback if total devices <= 5.
+    4. Triggers an OS-level Ping Sweep fallback if total devices <= 15 or on Windows.
     5. Threads out hostname resolution and port scanning concurrently.
     6. Saves a historical snapshot of the results utilizing strict VLAN matching.
     """
@@ -2605,19 +2605,22 @@ def scan_network():
     ext_info = get_extended_iface_info()
     gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
 
-    # --- 1. PERFORM SCAPY ARP SCAN ---
+    # --- 1. PERFORM SCAPY ARP SCAN (OS-OPTIMIZED TIMEOUTS) ---
     ans = []
+    is_windows = platform.system() == "Windows"
+    scan_timeout = 2.5 if is_windows else 1.5
+    scan_inter = 0.02 if is_windows else 0.01
+
     try:
         # 'srp' sends out Layer 2 ARP requests targeting the entire subnet
-        # Timeouts slightly relaxed (2.5s) to prevent Windows Npcap from dropping packets
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                     timeout=2.5, retry=1, verbose=0, inter=0.02, 
+                     timeout=scan_timeout, retry=1, verbose=0, inter=scan_inter, 
                      iface=target_iface, promisc=False)
     except Exception as e:
         print(f"[*] Scapy targeted bind failed on {target_iface}: {e}. Retrying globally...")
         try:
             ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                         timeout=2.5, retry=1, verbose=0, inter=0.02, promisc=False)
+                         timeout=scan_timeout, retry=1, verbose=0, inter=scan_inter, promisc=False)
         except: pass
 
     scanned_results = []
@@ -2637,9 +2640,26 @@ def scan_network():
             self.hwsrc = mac_found
             self.mac = mac_found
 
-    # --- 2. UNCONDITIONAL OS ARP TABLE MERGE ---
-    # Windows Npcap can sometimes drop packets during high-speed scans. 
-    # Merging the native OS ARP table ensures we catch everything the OS already knows about.
+    # --- 2. OS-AGNOSTIC PING SWEEP & ARP TABLE MERGE ---
+    # Windows Npcap frequently drops Layer 2 packets, so we unconditionally ping sweep on Windows 
+    # to force the OS to populate its native ARP table. For macOS/Linux, we only fallback if Scapy misses devices.
+    if is_windows or len(scanned_results) <= 15:
+        print("[*] Initiating OS Ping Sweep to guarantee device discovery...")
+        def fast_ping(ip_str):
+            sys_plat = platform.system().lower()
+            if sys_plat == 'windows':
+                cmd = ['ping', '-n', '1', '-w', '500', ip_str] 
+            elif sys_plat == 'darwin':
+                cmd = ['ping', '-c', '1', '-W', '500', ip_str] 
+            else:
+                cmd = ['ping', '-c', '1', '-W', '1', ip_str]   
+            try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except: pass
+
+        with ThreadPoolExecutor(max_workers=worker_cfg['ping_workers']) as executor:
+            for ip in network.hosts(): executor.submit(fast_ping, str(ip))
+            
+    # Always scrape the OS ARP table afterward to catch anything Scapy missed or the Ping sweep revealed
     try:
         arp_out = subprocess.check_output(["arp", "-a"], text=True)
         arp_devices = []
@@ -2659,42 +2679,7 @@ def scan_network():
     except Exception as e:
         pass
 
-    # --- 3. OS-AGNOSTIC PING SWEEP FALLBACK ---
-    if len(scanned_results) <= 5:
-        print("[*] Scan found few devices. Initiating OS Ping Sweep...")
-        def fast_ping(ip_str):
-            sys_plat = platform.system().lower()
-            if sys_plat == 'windows':
-                cmd = ['ping', '-n', '1', '-w', '500', ip_str] 
-            elif sys_plat == 'darwin':
-                cmd = ['ping', '-c', '1', '-W', '500', ip_str] 
-            else:
-                cmd = ['ping', '-c', '1', '-W', '1', ip_str]   
-            try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except: pass
-
-        with ThreadPoolExecutor(max_workers=worker_cfg['ping_workers']) as executor:
-            for ip in network.hosts(): executor.submit(fast_ping, str(ip))
-        
-        try:
-            arp_out = subprocess.check_output(["arp", "-a"], text=True)
-            arp_devices_fallback = []
-            
-            for match in re.finditer(r'(\d{1,3}(?:\.\d{1,3}){3}).*?([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})', arp_out):
-                ip_found, raw_mac = match.groups()
-                mac_found = ':'.join([p.zfill(2) for p in raw_mac.replace('-', ':').split(':')]).lower()
-                
-                if ip_found not in found_ips and not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and ipaddress.IPv4Address(ip_found) in network:
-                    arp_devices_fallback.append(MockReceived(ip_found, mac_found))
-                    found_ips.append(ip_found)
-
-            if arp_devices_fallback:
-                with ThreadPoolExecutor(max_workers=worker_cfg['scan_workers']) as executor:
-                    futures = [executor.submit(process_device_info, dev, gateway_ip) for dev in arp_devices_fallback]
-                    for future in futures: scanned_results.append(future.result())
-        except: pass
-
-    # --- 4. EXTRACT GATEWAY MAC FROM RESULTS ---
+    # --- 3. EXTRACT GATEWAY MAC FROM RESULTS ---
     gateway_mac = None
     found_ips = [d["ip"] for d in scanned_results]
     
@@ -2705,7 +2690,7 @@ def scan_network():
                 device["hostname"] = f"{device['hostname']} (Router)"
             break
 
-    # FIXED: Check DB for existing allow_matching network by IP BEFORE falling back to NO_MAC
+    # Check DB for existing allow_matching network by IP BEFORE falling back to NO_MAC
     if not gateway_mac and gateway_ip != "-" and gateway_ip != "Unknown":
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             existing_net = conn.execute(
@@ -2739,12 +2724,12 @@ def scan_network():
             "services": check_open_ports(target_ip_val)['services']
         })
 
-    # --- 5. DB NETWORK CREATION & DEVICE SAVING ---
+    # --- 4. DB NETWORK CREATION & DEVICE SAVING ---
     try:
         with sqlite3.connect(DB_NAME, timeout=10) as conn:
             cursor = conn.cursor()
             
-            # FIXED: Respect allow_matching=1 and strict VLAN rules
+            # Respect allow_matching=1 and strict VLAN rules
             cursor.execute("SELECT id, name FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 ORDER BY last_scan DESC LIMIT 1", (gateway_mac, gateway_ip))
             row = cursor.fetchone()
             
@@ -2780,7 +2765,7 @@ def scan_network():
                     glob_vend = cursor.fetchone()
                     if glob_vend: final_vendor = glob_vend[0]
 
-                # FIXED: COALESCE(NULLIF...) ensures custom names are never overwritten by empty strings
+                # COALESCE(NULLIF...) ensures custom names are never overwritten by empty strings
                 cursor.execute("""
                     INSERT INTO devices (mac_address, network_id, hostname, custom_name, custom_vendor, ip_address, previous_ip, discovery_status, last_seen, services, is_online, vendor, last_network_name)
                     VALUES (?, ?, ?, ?, ?, ?, NULL, 'New Device', ?, ?, 1, ?, ?)
@@ -2811,7 +2796,7 @@ def scan_network():
             
     except Exception as e: 
         return jsonify({"error": f"DB Error: {str(e)}"})
-    
+
 @app.route('/api/scan_network_stream')
 def scan_network_stream():
     """
@@ -2974,13 +2959,13 @@ def scan_network_stream():
             ans = []
             try:
                 ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                             timeout=1.5, retry=0, verbose=0, inter=0.01, 
+                             timeout=2.5, retry=1, verbose=0, inter=0.02, 
                              iface=target_iface, promisc=False)
             except Exception as e:
                 print(f"[*] Scapy targeted bind failed on {target_iface}: {e}. Retrying globally...")
                 try:
                     ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_subnet), 
-                                 timeout=1.5, retry=0, verbose=0, inter=0.01, promisc=False)
+                                 timeout=2.5, retry=1, verbose=0, inter=0.02, promisc=False)
                 except Exception as e2:
                     print(f"[*] Scapy global bind failed: {e2}")
 
@@ -2991,9 +2976,14 @@ def scan_network_stream():
                     self.ip, self.mac = ip, mac
                     self.psrc, self.hwsrc = ip, mac
 
-            # --- 3. OS-AGNOSTIC PING SWEEP FALLBACK ---
-            if len(raw_candidates) <= 1:
-                print("[*] Scapy scan found few devices. Initiating OS Ping Sweep...")
+            # --- 3. OS-AGNOSTIC PING SWEEP & ARP TABLE MERGE ---
+            network = ipaddress.IPv4Network(target_subnet, strict=False)
+            found_ips = [getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates]
+
+            # Windows Npcap frequently drops Layer 2 packets, so we unconditionally ping sweep on Windows 
+            # to force the OS to populate its native ARP table. For macOS/Linux, we only fallback if Scapy finds few devices.
+            if platform.system() == "Windows" or len(raw_candidates) <= 15:
+                print("[*] Initiating OS Ping Sweep to guarantee device discovery...")
                 def fast_ping(ip_str):
                     sys_plat = platform.system().lower()
                     if sys_plat == 'windows':
@@ -3005,21 +2995,20 @@ def scan_network_stream():
                     try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except: pass
 
-                network = ipaddress.IPv4Network(target_subnet, strict=False)
                 with ThreadPoolExecutor(max_workers=worker_cfg['ping_workers']) as executor:
                     for ip_obj in network.hosts(): executor.submit(fast_ping, str(ip_obj))
-                
-                try:
-                    arp_out = subprocess.check_output(["arp", "-a"], text=True)
-                    found_ips = [getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates]
-                    for match in re.finditer(r'(\d{1,3}(?:\.\d{1,3}){3}).*?([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})', arp_out):
-                        ip_found, raw_mac = match.groups()
-                        mac_found = ':'.join([p.zfill(2) for p in raw_mac.replace('-', ':').split(':')]).lower()
-                        if ip_found not in found_ips and not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and ipaddress.IPv4Address(ip_found) in network:
-                            raw_candidates.append(MockDev(ip_found, mac_found))
-                            found_ips.append(ip_found)
-                except Exception as e:
-                    print(f"[*] OS Ping Sweep Parsing Failed: {e}")
+
+            # Always scrape the OS ARP table afterward to catch anything Scapy missed or the Ping sweep revealed
+            try:
+                arp_out = subprocess.check_output(["arp", "-a"], text=True)
+                for match in re.finditer(r'(\d{1,3}(?:\.\d{1,3}){3}).*?([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})', arp_out):
+                    ip_found, raw_mac = match.groups()
+                    mac_found = ':'.join([p.zfill(2) for p in raw_mac.replace('-', ':').split(':')]).lower()
+                    if ip_found not in found_ips and not mac_found.startswith('ff:ff') and not mac_found.startswith('01:00:5e') and ipaddress.IPv4Address(ip_found) in network:
+                        raw_candidates.append(MockDev(ip_found, mac_found))
+                        found_ips.append(ip_found)
+            except Exception as e:
+                print(f"[*] OS ARP Table Parsing Failed: {e}")
 
             # --- DEFERRED ROUTER MAC RESOLUTION & POST-SCAN MATCHING ---
             # If we started with a provisional placeholder, check if the scan successfully discovered the router MAC.
