@@ -161,7 +161,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // Restore Last Active Page on Refresh
-    const lastPage = localStorage.getItem('lastActivePage');
+    localStorage.removeItem('lastActivePage'); // Clean up the old legacy storage so it doesn't conflict
+    
+    const lastPage = sessionStorage.getItem('lastActivePage');
     if (lastPage) {
         const targetLink = document.querySelector(`[onclick*="showPage('${lastPage}'"]`);
         if (targetLink) {
@@ -311,7 +313,6 @@ function compareIP(ipA, ipB) {
     return String(ipA).localeCompare(String(ipB));
 }
 
-
 /**
  * Master navigation controller for the Single Page Application (SPA).
  * Hides all pages, reveals the target page, and updates the active state in the navbar.
@@ -319,8 +320,9 @@ function compareIP(ipA, ipB) {
  * @param {HTMLElement} link - The navigation anchor element that was clicked.
  */
 function showPage(id, link) {
-    // Save the active page to local storage to persist across server restarts or page refreshes
-    localStorage.setItem('lastActivePage', id);
+    // Save the active page to session storage to persist across page refreshes and updates,
+    // but reset to default (Interfaces) when a brand new tab/window is opened on app startup.
+    sessionStorage.setItem('lastActivePage', id);
     
     // Hide all pages
     document.querySelectorAll('.page-section').forEach(p => p.classList.add('hidden'));
@@ -3620,8 +3622,8 @@ function formatNotesToHTML(notesArray) {
                 html += '</ul>';
                 inList = false;
             }
-            // Insert a clean vertical gap
-            html += `<div style="height: 1rem;"></div>`;
+            // Insert a clean vertical gap (halved to 0.5rem)
+            html += `<div style="height: 0.5rem;"></div>`;
             
         } else {
             // Start a new list if we aren't currently inside one

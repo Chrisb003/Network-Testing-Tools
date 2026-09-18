@@ -1,4 +1,9 @@
 # Changelog
+## [1.0.10] - Network scan fixes, UI fixes
+** Dashboard HTML 1.0.6 -
+* Behaviour of loading page updated to remember where you were if you refresh the page but start from the interfaces page on start up.
+* Updated formating of changelog
+
 ## [1.0.9] - Network scan fixes, UI fixes
 ** Main App Script 1.0.8 -
 * Network scan fixes.
