@@ -161,7 +161,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // Restore Last Active Page on Refresh
-    const lastPage = localStorage.getItem('lastActivePage');
+    localStorage.removeItem('lastActivePage'); // Clean up the old legacy storage so it doesn't conflict
+    
+    const lastPage = sessionStorage.getItem('lastActivePage');
     if (lastPage) {
         const targetLink = document.querySelector(`[onclick*="showPage('${lastPage}'"]`);
         if (targetLink) {
@@ -311,7 +313,6 @@ function compareIP(ipA, ipB) {
     return String(ipA).localeCompare(String(ipB));
 }
 
-
 /**
  * Master navigation controller for the Single Page Application (SPA).
  * Hides all pages, reveals the target page, and updates the active state in the navbar.
@@ -319,8 +320,9 @@ function compareIP(ipA, ipB) {
  * @param {HTMLElement} link - The navigation anchor element that was clicked.
  */
 function showPage(id, link) {
-    // Save the active page to local storage to persist across server restarts or page refreshes
-    localStorage.setItem('lastActivePage', id);
+    // Save the active page to session storage to persist across page refreshes and updates,
+    // but reset to default (Interfaces) when a brand new tab/window is opened on app startup.
+    sessionStorage.setItem('lastActivePage', id);
     
     // Hide all pages
     document.querySelectorAll('.page-section').forEach(p => p.classList.add('hidden'));
@@ -2297,7 +2299,7 @@ function loadNetworkDevices(id, name, comment = "") {
     if (b) b.innerHTML = '<i class="bi bi-search"></i> New Scan';
     if (cBtn) cBtn.classList.remove('hidden');
     if (splitBtn) splitBtn.classList.remove('hidden'); 
-    if (isoBtn) isoBtn.classList.add('hidden'); 
+    if (isoBtn) isoBtn.classList.remove('hidden'); // Fixed: Keep Isolated Scan visible
     
     if(name) {
         document.getElementById('device-tab-title').innerText = `Devices in: ${name}`;
@@ -2544,7 +2546,7 @@ function scanDevices(mode = 'new', forceMerge = false) {
     } else if (mode === 'isolation') {
         if (isoBtn) isoBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
         allDevices = []; 
-        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Isolation Scan...</h5></td></tr>`;
+        if (tb) tb.innerHTML = `<tr><td colspan="10" class="text-center p-5"><div class="spinner-border text-primary mb-3"></div><h5 class="text-muted">Performing Isolated Scan...</h5></td></tr>`;
     } else {
         b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
         allDevices = []; 
@@ -2588,6 +2590,10 @@ function scanDevices(mode = 'new', forceMerge = false) {
             if (splitBtn && mode === 'split') {
                 splitBtn.disabled = false;
                 splitBtn.innerHTML = '<i class="bi bi-diagram-2"></i> Split Scan';
+            }
+            if (isoBtn && mode === 'isolation') {
+                isoBtn.disabled = false;
+                isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolated Scan';
             }
             
             if (confirm("We detected that the IP Subnet or Router MAC address is different from this loaded network.\n\nIs this the same network?\n- Click OK to force a merge into this network.\n- Click Cancel to safely start a New Scan instead.")) {
@@ -2642,8 +2648,8 @@ function scanDevices(mode = 'new', forceMerge = false) {
             }
             if (isoBtn) {
                 isoBtn.disabled = false;
-                isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolation Scan';
-                isoBtn.classList.add('hidden'); 
+                isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolated Scan';
+                isoBtn.classList.remove('hidden'); // Fixed: Ensure it stays visible after scan
             }
             
             if (btnSel) btnSel.classList.remove('hidden');
@@ -2672,7 +2678,7 @@ function scanDevices(mode = 'new', forceMerge = false) {
             b.innerHTML = '<i class="bi bi-search"></i> New Scan';
             if (cBtn) { cBtn.disabled = false; cBtn.innerHTML = '<i class="bi bi-play-fill"></i> Continue Scan'; }
             if (splitBtn) { splitBtn.disabled = false; splitBtn.innerHTML = '<i class="bi bi-diagram-2"></i> Split Scan'; }
-            if (isoBtn) { isoBtn.disabled = false; isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolation Scan'; }
+            if (isoBtn) { isoBtn.disabled = false; isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolated Scan'; }
             
             alert(data.message || 'Scan failed.');
             if (allDevices.length === 0) {
@@ -2689,7 +2695,7 @@ function scanDevices(mode = 'new', forceMerge = false) {
         b.innerHTML = '<i class="bi bi-search"></i> New Scan';
         if (cBtn) { cBtn.disabled = false; cBtn.innerHTML = '<i class="bi bi-play-fill"></i> Continue Scan'; }
         if (splitBtn) { splitBtn.disabled = false; splitBtn.innerHTML = '<i class="bi bi-diagram-2"></i> Split Scan'; }
-        if (isoBtn) { isoBtn.disabled = false; isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolation Scan'; }
+        if (isoBtn) { isoBtn.disabled = false; isoBtn.innerHTML = '<i class="bi bi-shield-lock"></i> Isolated Scan'; }
         
         if (allDevices.length === 0) {
             tb.innerHTML = '<tr><td colspan="10" class="text-center p-4 text-danger"><i class="bi bi-exclamation-triangle"></i> Connection to scanner lost.</td></tr>';
@@ -3540,7 +3546,7 @@ function isVersionHigher(v1, v2) {
 
 /**
  * Custom Parser to convert markdown text into structured JSON objects.
- * Separates the version number, optional title, and bullet points.
+ * Separates the version number, optional title, subheadings, blank lines, and bullet points.
  */
 function parseChangelogText(rawText) {
     const lines = rawText.split('\n');
@@ -3550,7 +3556,7 @@ function parseChangelogText(rawText) {
     const versionRegex = /^##\s*\[(.*?)\](?:\s*-\s*(.*))?/;
 
     for (let line of lines) {
-        line = line.trim();
+        line = line.trim(); // This turns "* " into just "*"
         if (!line || line === '# Changelog') continue;
 
         const match = line.match(versionRegex);
@@ -3563,9 +3569,23 @@ function parseChangelogText(rawText) {
                 notes: []
             };
         } else if (currentRelease) {
-            let cleanLine = line.replace(/^[\*\-]\s*/, '').trim();
-            if (cleanLine) {
-                currentRelease.notes.push(cleanLine);
+            // 1. Check if the line is meant to be a subheading (starts with **)
+            if (line.startsWith('**')) {
+                let subheading = line.replace(/\*/g, '').trim();
+                if (subheading) {
+                    currentRelease.notes.push({ type: 'subheading', text: subheading });
+                }
+            } 
+            // 2. Check if the line is just a lone asterisk or dash (empty bullet point)
+            else if (line === '*' || line === '-') {
+                currentRelease.notes.push({ type: 'blank' });
+            } 
+            // 3. Otherwise, treat it as a standard bullet point
+            else {
+                let cleanLine = line.replace(/^[\*\-]\s*/, '').trim();
+                if (cleanLine) {
+                    currentRelease.notes.push({ type: 'note', text: cleanLine });
+                }
             }
         }
     }
@@ -3574,15 +3594,52 @@ function parseChangelogText(rawText) {
 }
 
 /**
- * Formats an array of release notes into an HTML unordered list.
+ * Formats an array of release notes into HTML, dynamically creating lists, 
+ * bold subheadings, and inserting blank line gaps as needed.
  */
 function formatNotesToHTML(notesArray) {
     if (notesArray.length === 0) return '<p class="text-muted mb-0">No notes provided.</p>';
-    let html = '<ul class="mb-0 ps-3">';
-    notesArray.forEach(note => {
-        html += `<li class="mb-1">${note}</li>`;
+    
+    let html = '';
+    let inList = false;
+
+    notesArray.forEach((item, index) => {
+        if (item.type === 'subheading') {
+            // Close the previous list if we were currently inside one
+            if (inList) {
+                html += '</ul>';
+                inList = false;
+            }
+            
+            // Add a full line gap if it's following previous text, 
+            // but keep it tight if it is the very first line of the release notes.
+            const topMargin = index === 0 ? 'mt-1' : 'mt-3';
+            html += `<div class="fw-bold text-secondary ${topMargin} mb-1" style="font-size: 0.85rem; text-transform: uppercase;">${escapeHTML(item.text)}</div>`;
+            
+        } else if (item.type === 'blank') {
+            // Close the current list to break the block
+            if (inList) {
+                html += '</ul>';
+                inList = false;
+            }
+            // Insert a clean vertical gap (halved to 0.5rem)
+            html += `<div style="height: 0.5rem;"></div>`;
+            
+        } else {
+            // Start a new list if we aren't currently inside one
+            if (!inList) {
+                html += '<ul class="mb-0 ps-3">';
+                inList = true;
+            }
+            html += `<li class="mb-1">${escapeHTML(item.text)}</li>`;
+        }
     });
-    html += '</ul>';
+
+    // Close the final list if the array ends on a bullet point
+    if (inList) {
+        html += '</ul>';
+    }
+
     return html;
 }
 
@@ -3606,8 +3663,11 @@ function openUpdateModal() {
     
     msg.innerText = "Checking for updates...";
     msg.className = "alert alert-info";
-    cl.innerText = "Fetching release notes...";
+    cl.innerHTML = "Fetching release notes...";
     btn.disabled = true;
+
+    // Failsafe link to the GitHub repository if parsing or formatting fails
+    const githubFallbackHtml = '<p class="text-muted mb-0">Unable to load release notes securely. <a href="https://github.com/Chrisb003/Network-Testing-Tools/blob/main/Changelog" target="_blank" class="text-primary text-decoration-underline"><i class="bi bi-box-arrow-up-right me-1"></i>View Changelog on GitHub</a></p>';
 
     fetch('/api/update/check')
         .then(r => r.json())
@@ -3658,65 +3718,73 @@ function openUpdateModal() {
         .then(r => r.json())
         .then(d => { 
             if (!d.changelog) {
-                cl.innerHTML = '<p class="text-muted mb-0">No release notes available for this version.</p>';
+                cl.innerHTML = githubFallbackHtml;
                 return;
             }
             
-            const releases = parseChangelogText(d.changelog);
-            if (releases.length === 0) {
-                cl.innerText = d.changelog;
-                return;
-            }
-
-            cl.innerHTML = ""; // Clear fetching text
-
-            // --- 1. Render Latest Release (Index 0) ---
-            const latest = releases[0];
-            const latestTitleDisplay = latest.title ? `<span class="fw-normal text-muted">- ${escapeHTML(latest.title)}</span>` : '';
-            
-            const latestHtml = `
-                <div class="card border-success mb-3">
-                    <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center py-2 px-3">
-                        <h6 class="mb-0 fw-bold text-success">
-                            <i class="bi bi-star-fill me-1"></i> Version ${escapeHTML(latest.version)} ${latestTitleDisplay}
-                        </h6>
-                        <span class="badge bg-success rounded-pill">Latest</span>
-                    </div>
-                    <div class="card-body py-2 px-3">
-                        ${formatNotesToHTML(latest.notes)}
-                    </div>
-                </div>
-            `;
-            cl.insertAdjacentHTML('beforeend', latestHtml);
-
-            // --- 2. Render Older Releases (Index 1 to End) ---
-            if (releases.length > 1) {
-                let olderHtml = `
-                    <details class="mt-3">
-                        <summary class="fw-bold text-primary mb-2" style="cursor: pointer;">View Previous Versions</summary>
-                        <div class="pt-2 border-top border-secondary-subtle">
-                `;
-
-                for (let i = 1; i < releases.length; i++) {
-                    const release = releases[i];
-                    const titleDisplay = release.title ? `<span class="fw-normal text-muted">- ${escapeHTML(release.title)}</span>` : '';
-                    
-                    olderHtml += `
-                        <div class="mb-3">
-                            <div class="fw-bold text-body mb-1">Version ${escapeHTML(release.version)} ${titleDisplay}</div>
-                            ${formatNotesToHTML(release.notes)}
-                        </div>
-                    `;
+            try {
+                const releases = parseChangelogText(d.changelog);
+                
+                // If the parser could not understand the formatting, use the fallback link
+                if (releases.length === 0) {
+                    cl.innerHTML = githubFallbackHtml;
+                    return;
                 }
 
-                olderHtml += `</div></details>`;
-                cl.insertAdjacentHTML('beforeend', olderHtml);
+                cl.innerHTML = ""; // Clear fetching text
+
+                // --- 1. Render Latest Release (Index 0) ---
+                const latest = releases[0];
+                const latestTitleDisplay = latest.title ? `<span class="fw-normal text-muted">- ${escapeHTML(latest.title)}</span>` : '';
+                
+                const latestHtml = `
+                    <div class="card border-success mb-3">
+                        <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center py-2 px-3">
+                            <h6 class="mb-0 fw-bold text-success">
+                                <i class="bi bi-star-fill me-1"></i> Version ${escapeHTML(latest.version)} ${latestTitleDisplay}
+                            </h6>
+                            <span class="badge bg-success rounded-pill">Latest</span>
+                        </div>
+                        <div class="card-body py-2 px-3">
+                            ${formatNotesToHTML(latest.notes)}
+                        </div>
+                    </div>
+                `;
+                cl.insertAdjacentHTML('beforeend', latestHtml);
+
+                // --- 2. Render Older Releases (Index 1 to End) ---
+                if (releases.length > 1) {
+                    let olderHtml = `
+                        <details class="mt-3">
+                            <summary class="fw-bold text-primary mb-2" style="cursor: pointer;">View Previous Versions</summary>
+                            <div class="pt-2 border-top border-secondary-subtle">
+                    `;
+
+                    for (let i = 1; i < releases.length; i++) {
+                        const release = releases[i];
+                        const titleDisplay = release.title ? `<span class="fw-normal text-muted">- ${escapeHTML(release.title)}</span>` : '';
+                        
+                        olderHtml += `
+                            <div class="mb-3">
+                                <div class="fw-bold text-body mb-1">Version ${escapeHTML(release.version)} ${titleDisplay}</div>
+                                ${formatNotesToHTML(release.notes)}
+                            </div>
+                        `;
+                    }
+
+                    olderHtml += `</div></details>`;
+                    cl.insertAdjacentHTML('beforeend', olderHtml);
+                }
+            } catch (parseError) {
+                // If a Javascript error occurs during parsing or formatting, show the fallback link safely
+                cl.innerHTML = githubFallbackHtml;
             }
         })
         .catch(err => {
             msg.className = "alert alert-danger";
             msg.innerText = "Error communicating with update server.";
-            cl.innerText = "Check your internet connection.";
+            // If the fetch fails entirely, provide the link here as well
+            cl.innerHTML = '<p class="text-muted mb-0">Check your internet connection or <a href="https://github.com/Chrisb003/Network-Testing-Tools/blob/main/Changelog" target="_blank" class="text-primary text-decoration-underline"><i class="bi bi-box-arrow-up-right me-1"></i>View Changelog on GitHub</a>.</p>';
         });
 }
 
