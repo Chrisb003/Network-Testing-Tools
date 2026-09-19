@@ -1,5 +1,10 @@
 # Changelog
-## [1.0.17] - terminal window fix for windowss
+## [1.0.19] - network scan fixes
+** Main App Script 1.0.14 -
+* Duplicate error on mac when doing network scan.
+* automatching was incorrectly set if an isolated scan had been done before on that same network.
+
+## [1.0.18] - terminal window fix for windowss
 ** Setup script 1.0.5 -
 * Minor fix for the hidden terminal windows with Windows.
 * 

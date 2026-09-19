@@ -214,7 +214,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.13"
+APP_VERSION = "1.0.14"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -2790,11 +2790,16 @@ def scan_network():
             time.sleep(0.5)
             raw_candidates.extend(scrape_arp())
 
-    # --- 7. DEDUPLICATE ALL CANDIDATES ---
+# --- 7. DEDUPLICATE ALL CANDIDATES ---
+    # Strictly deduplicate by MAC address to prevent SQLite UNIQUE constraint crashes
     unique_candidates = {}
     for d in raw_candidates:
         ip = getattr(d, 'psrc', getattr(d, 'ip', None))
-        if ip: unique_candidates[ip] = d
+        mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
+        if mac and mac != "-" and not mac.startswith("Unknown"):
+            unique_candidates[mac] = d
+        elif ip:
+            unique_candidates[ip] = d
     raw_candidates = list(unique_candidates.values())
 
     # --- 8. PROCESS ALL DEVICES CONCURRENTLY ---
@@ -3150,10 +3155,15 @@ def scan_network_stream():
             yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
             # --- 5. DEDUPLICATE ALL CANDIDATES ---
+            # Strictly deduplicate by MAC address to prevent SQLite UNIQUE constraint crashes
             unique_candidates = {}
             for d in raw_candidates:
                 ip = getattr(d, 'psrc', getattr(d, 'ip', None))
-                if ip: unique_candidates[ip] = d
+                mac = getattr(d, 'hwsrc', getattr(d, 'mac', None))
+                if mac and mac != "-" and not mac.startswith("Unknown"):
+                    unique_candidates[mac] = d
+                elif ip:
+                    unique_candidates[ip] = d
             raw_candidates = list(unique_candidates.values())
 
             # --- 6. DEFERRED ROUTER MAC RESOLUTION & POST-SCAN MATCHING ---
@@ -3172,17 +3182,25 @@ def scan_network_stream():
                     
                     with sqlite3.connect(DB_NAME, timeout=10) as conn:
                         c = conn.cursor()
-                        c.execute("SELECT id, name, comments FROM networks WHERE gateway_mac=? AND gateway_ip=? AND id!=?", (gateway_mac, gateway_ip, network_id))
+                        # STRICT MATCHING: Only merge if the historical network allows it
+                        c.execute("SELECT id, name, comments FROM networks WHERE gateway_mac=? AND gateway_ip=? AND allow_matching=1 AND id!=?", (gateway_mac, gateway_ip, network_id))
                         existing_match = c.fetchone()
                         
                         if existing_match and not is_isolation and not is_split:
                             matched_net_id, final_network_name, final_network_comment = existing_match[0], existing_match[1], existing_match[2] or ""
                             
                             c.execute("UPDATE device_scans SET network_id=?, network_name=? WHERE network_id=?", (matched_net_id, final_network_name, network_id))
-                            c.execute("UPDATE devices SET network_id=?, last_network_name=? WHERE network_id=?", (matched_net_id, final_network_name, network_id))
+                            
+                            # SAFE MERGE: Prevents UNIQUE constraint crashes if device already exists in the matched network
+                            c.execute("UPDATE OR IGNORE devices SET network_id=?, last_network_name=? WHERE network_id=?", (matched_net_id, final_network_name, network_id))
+                            c.execute("DELETE FROM devices WHERE network_id=?", (network_id,))
+                            
                             c.execute("UPDATE networks SET last_scan=? WHERE id=?", (current_time, matched_net_id))
                             c.execute("DELETE FROM networks WHERE id=?", (network_id,))
                             network_id = matched_net_id
+                            
+                            # Ensure devices in the matched network are reset to offline before the stream starts
+                            c.execute("UPDATE devices SET is_online=0 WHERE network_id=?", (network_id,))
                             
                             print(f"[*] Post-Scan Match: Merged temporary network into existing historical network ID {network_id}")
                         else:
@@ -3191,13 +3209,6 @@ def scan_network_stream():
                         conn.commit()
 
                     yield f"data: {json.dumps({'type': 'init', 'network_id': network_id, 'network_name': final_network_name, 'network_comment': final_network_comment})}\n\n"
-
-            found_ips = [getattr(d, 'psrc', getattr(d, 'ip', '')) for d in raw_candidates]
-            if gateway_ip not in found_ips and gateway_ip != "-" and gateway_ip != "Unknown":
-                raw_candidates.append(MockDev(gateway_ip, gateway_mac))
-
-            if target_ip_val not in found_ips and target_mac_val:
-                raw_candidates.append(MockDev(target_ip_val, target_mac_val))
 
             # --- 7. PROCESS DEVICES STREAM ---
             tasks = []
