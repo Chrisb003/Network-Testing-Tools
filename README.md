@@ -73,7 +73,7 @@ Once the setup completes, the Waitress WSGI server will spin up. If you ran the 
 
 Open your web browser and navigate to your chosen port (e.g., port 81):
 ```text
-[http://127.0.0.1:81](http://127.0.0.1:81)
+http://127.0.0.1:81
 ```
 If you enabled the Wi-Fi hotspot during installation, connect your phone to the broadcasted SSID and navigate to the Gateway IP with your configured port (usually `http://10.42.0.1:81` on Linux or `http://192.168.137.1:81` on Windows).
 
