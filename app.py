@@ -214,7 +214,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.15"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -1857,29 +1857,35 @@ def set_port():
 
 def check_webport_file():
     """
-    Headless CLI Fallback: Checks for a physical 'webport' file in the root directory.
-    If a user locks themselves out of the dashboard by setting a bad port, they can just create
-    a file named 'webport' containing '8080' to force a recovery on the next boot.
+    Maintains a physical 'webport' file in the root directory.
+    If a user manually edits this file, it syncs the new port to the database.
+    If the file is accidentally deleted, it regenerates it using the current database port.
     """
     port_file = os.path.join(app.root_path, "webport")
     if os.path.exists(port_file):
-        print("[*] 'webport' file detected. Updating web server port...")
         try:
             with open(port_file, "r") as f:
                 new_port = f.read(10).strip()
                 
-            # ADDED STRICT VALIDATION: Must be numbers AND a valid port range
+            # STRICT VALIDATION: Must be numbers AND a valid port range
             if new_port.isdigit() and 1 <= int(new_port) <= 65535:
                 with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                     conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('web_port', ?)", (new_port,))
                     conn.commit()
-                print(f"[✓] Web port successfully updated to {new_port}.")
             else:
-                print(f"[!] Invalid port '{new_port}' in webport file. Ignoring and deleting.")
-                
-            os.remove(port_file)
+                print(f"[!] Invalid port '{new_port}' in webport file. Overwriting with database default.")
+                curr_port = get_current_port()
+                with open(port_file, "w") as f:
+                    f.write(str(curr_port))
         except Exception as e:
             print(f"[X] Failed to process webport file: {e}")
+    else:
+        # File is missing, recreate it so it ALWAYS exists
+        try:
+            curr_port = get_current_port()
+            with open(port_file, "w") as f:
+                f.write(str(curr_port))
+        except: pass
 
 def check_dev_file():
     """

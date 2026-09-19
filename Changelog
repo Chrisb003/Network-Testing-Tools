@@ -1,4 +1,8 @@
 # Changelog
+## [1.0.20] - webport file
+** Main App Script 1.0.15 -
+* webport file exists all the time now. This is to support the new script I made for the pi that creates a captive portal opening to the dashboard. So it knows which port number to use.
+
 ## [1.0.19] - network scan fixes
 ** Main App Script 1.0.14 -
 * Duplicate error on mac when doing network scan.
