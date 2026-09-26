@@ -35,7 +35,7 @@ except AttributeError:
 # ------------------------------------------------
 
 # --- Configuration ---
-SETUP_VERSION = "1.0.5"
+SETUP_VERSION = "1.0.6"
 VENV_DIR_NAME = "venv"
 
 # Core Python dependencies required for the dashboard to function
@@ -403,6 +403,14 @@ def install_requirements(python_path):
     """
     print("[*] Installing Python dependencies...")
     try:
+        # --- NEW: MACOS PIP FAILSAFE ---
+        # Some macOS Python installations silently skip installing 'pip' inside the venv.
+        # This forces the OS to bootstrap pip directly into the virtual environment.
+        try:
+            subprocess.check_call([str(python_path), "-m", "ensurepip", "--default-pip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+            
         subprocess.check_call([str(python_path), "-m", "pip", "install", "--upgrade", "pip"], stdout=subprocess.DEVNULL)
         
         # Log what we are installing

@@ -326,7 +326,7 @@ def is_version_compatible(backup_ver, current_ver):
     return True
 
 def get_safe_filename(name):
-    """
+    r"""
     Sanitizes user input (like custom network names) to create valid OS file paths.
     Strips Windows/Mac/Linux invalid path characters (\ / * ? : " < > |) and replaces spaces.
     """

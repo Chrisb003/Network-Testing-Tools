@@ -1,5 +1,9 @@
 # Changelog
 ## [1.0.20] - webport file
+** Setup Script 1.0.6 -
+* pip fix for macos
+
+## [1.0.20] - webport file
 ** Main App Script 1.0.15 -
 * webport file exists all the time now. This is to support the new script I made for the pi that creates a captive portal opening to the dashboard. So it knows which port number to use.
 
