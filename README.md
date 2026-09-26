@@ -52,6 +52,8 @@ Open **PowerShell** and paste the following command to begin:
 ### <img src="https://cdn.simpleicons.org/apple/ffffff" width="20" alt="macOS" /> macOS Automated Setup
 The `MacOS-Installer.sh` script verifies macOS prerequisites (installing Python 3.14 natively if missing) and downloads the core project files securely to your home folder. It builds a native macOS `.app` shortcut in your Applications folder **and includes an option to configure passwordless execution so the dashboard launches without asking for your admin password every time.** 
 
+The first run of the dashboard will open a termnial window and set up the enviroment but if you have choosen the passwordless launch after when it launches next time it will hide the terminal window. For Mac os you must enable location permissions for python for it to work correctly. Without the location permission the mac addresses of the wifi networks will be returned as unknown.
+
 Open the **Terminal** app and paste the following command:
 ```bash
 curl -sSLq https://raw.githubusercontent.com/Chrisb003/Network-Testing-Tools-Install-Scripts/refs/heads/main/MacOS-Installer.sh | sh
@@ -95,7 +97,7 @@ python setup_env.py
 ### <img src="https://cdn.simpleicons.org/apple/ffffff" width="16" alt="macOS" /> macOS Prerequisites
 * **Python 3.12+** (3.14+ recommended).
 * **Administrator access** via `sudo` to allow Scapy to read ARP tables.
-* **Location Services** permissions granted to your Terminal. macOS strictly requires this for Wi-Fi scanning functions to return data.
+* **Location Services** permissions granted python. macOS strictly requires this for Wi-Fi scanning functions to return data.
 
 From the project folder, open your terminal and run:
 ```bash
