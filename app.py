@@ -214,7 +214,7 @@ def setup_file_logging():
 setup_file_logging()
 
 # --- Configuration ---
-APP_VERSION = "1.0.15"
+APP_VERSION = "1.0.16"
 
 # Chrome, Firefox, and Edge restrict web traffic on these specific ports for security reasons
 RESTRICTED_PORTS = {87, 512, 513, 514, 515, 6000, 6665, 6666, 6667, 6668, 6669}
@@ -1616,10 +1616,40 @@ def check_open_ports(ip):
         
     return {"services": ", ".join(services) if services else "None"}
 
+def get_scapy_iface(ip_val, mac_val, default_name):
+    """
+    Finds the exact Scapy NetworkInterface object matching the physical IP or MAC.
+    This entirely bypasses OS routing table hijacks caused by Tailscale/VPNs.
+    """
+    try:
+        import scapy.interfaces
+        # 1. Match by exact IP string
+        if ip_val and ip_val != '127.0.0.1':
+            for iface_name, iface in scapy.interfaces.IFACES.items():
+                if getattr(iface, 'ip', None) == ip_val:
+                    return iface
+                if hasattr(iface, 'ips'):
+                    # Handle different scapy versions (ips can be dict or list)
+                    ips_list = iface.ips if isinstance(iface.ips, list) else list(iface.ips.values()) if isinstance(iface.ips, dict) else []
+                    if ip_val in ips_list:
+                        return iface
+                        
+        # 2. Match by MAC address
+        if mac_val and mac_val != '-':
+            clean_mac = mac_val.lower().replace('-', ':')
+            for iface_name, iface in scapy.interfaces.IFACES.items():
+                if getattr(iface, 'mac', '').lower() == clean_mac:
+                    return iface
+    except: pass
+    
+    try:
+        return conf.route.route(ip_val)[0]
+    except:
+        return default_name
+
 def get_gateway_mac(gateway_ip):
     """
     Resolves the actual physical MAC address of the network's gateway router.
-    This is crucial because Corporate VLANs or VPNs often reuse common IPs (like 192.168.1.1).
     By locking the Network ID to the Gateway MAC address, we prevent device collision in the database.
     """
     if not gateway_ip or gateway_ip == "-" or gateway_ip == "Unknown": 
@@ -1627,40 +1657,45 @@ def get_gateway_mac(gateway_ip):
     
     target_iface = None
     pinned_mac = None
+    target_ip_val = None
+    target_mac_val = None
 
-    # 1. Check if the user has explicitly pinned an adapter for scanning
     try:
         with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
             row = conn.execute("SELECT mac_address FROM adapter_settings WHERE is_primary = 1").fetchone()
-            if row:
-                pinned_mac = row[0]
-    except: 
-        pass
+            if row: pinned_mac = row[0]
+    except: pass
 
-    # 2. Match the Pinned MAC back to its system interface name
+    interfaces = psutil.net_if_addrs()
     if pinned_mac:
-        for name, addrs in psutil.net_if_addrs().items():
+        for name, addrs in interfaces.items():
             if any(a.family == psutil.AF_LINK and a.address == pinned_mac for a in addrs):
                 target_iface = name
+                target_mac_val = pinned_mac
+                for a in addrs:
+                    if a.family == socket.AF_INET: target_ip_val = a.address
                 break
 
-    # 3. Fallback to the active interface if no pin is configured
     if not target_iface:
         target_iface = get_active_interface_name()
+        target_ip_val = get_local_ip()
+        if target_iface in interfaces:
+            for a in interfaces[target_iface]:
+                if a.family == psutil.AF_LINK: target_mac_val = a.address
 
-    # Abort if the active interface was intentionally hidden by the user
     if not target_iface:
         return None
 
+    # --- FIX: Retrieve the strict physical Scapy interface to bypass VPNs ---
+    scapy_iface = get_scapy_iface(target_ip_val, target_mac_val, target_iface)
+
     try:
-        # Use 'iface' to force Scapy to only send the ARP request out of the target adapter
         ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), 
-                     timeout=2, verbose=0, iface=target_iface, promisc=False)
+                     timeout=2, verbose=0, iface=scapy_iface, promisc=False)
         for _, received in ans: 
             return received.hwsrc
     except Exception as e:
-        # If Windows/Npcap rejects the direct interface string, fall back to Scapy's default routing table
-        print(f"[*] Targeted Gateway MAC resolution failed on {target_iface}: {e}. Retrying globally...")
+        print(f"[*] Targeted Gateway MAC resolution failed: {e}. Retrying globally...")
         try:
             ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=gateway_ip), 
                          timeout=2, verbose=0, promisc=False)
@@ -2635,16 +2670,14 @@ def scan_network():
         return jsonify({"error": "Could not determine local IP subnet."})
 
     target_subnet = f"{target_ip_val.rsplit('.', 1)[0]}.0/24"
-    if target_iface: conf.iface = target_iface
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     ext_info = get_extended_iface_info()
     gateway_ip = ext_info.get(target_iface, {}).get("gateway", "-")
 
-    try:
-        scapy_iface = conf.route.route(target_ip_val)[0]
-    except:
-        scapy_iface = target_iface
+    # --- FIX: Retrieve the strict physical Scapy interface to bypass VPNs ---
+    scapy_iface = get_scapy_iface(target_ip_val, target_mac_val, target_iface)
+    if scapy_iface: conf.iface = scapy_iface
 
     # --- 1. PERFORM SCAPY ARP SCAN ---
     ans = []
@@ -2692,38 +2725,52 @@ def scan_network():
         return devices
 
     def force_discovery(ip_str):
-        """Hybrid Layer-2 / Layer-3 Sweep to bypass strict Windows Firewalls"""
+        """Hybrid Layer-2 / Layer-3 Sweep bound tightly to the physical adapter"""
         sys_plat = platform.system().lower()
         if sys_plat == 'windows':
-            # 1. Native Windows Kernel ARP (Bypasses ICMP/Ping Firewalls completely)
             try:
                 import ctypes, socket
                 dest_ip = int.from_bytes(socket.inet_aton(ip_str), 'little')
+                # FIX: Bind SendARP exactly to the physical adapter's IP to bypass Tailscale
+                src_ip = int.from_bytes(socket.inet_aton(target_ip_val), 'little') if target_ip_val and target_ip_val != '127.0.0.1' else 0
                 mac_addr = (ctypes.c_ubyte * 6)()
                 mac_len = ctypes.c_ulong(6)
-                ctypes.windll.iphlpapi.SendARP(dest_ip, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len))
+                ctypes.windll.iphlpapi.SendARP(dest_ip, src_ip, ctypes.byref(mac_addr), ctypes.byref(mac_len))
             except: pass
             
-            # 2. Native Ping (Safety net for routed VLANs where ARP drops)
-            cmd = ['ping', '-n', '1', '-w', '250', ip_str]
+            # FIX: Force ping out of the physical adapter via Source Binding
+            cmd = ['ping', '-n', '1', '-w', '250']
+            if target_ip_val and target_ip_val != '127.0.0.1':
+                cmd.extend(['-S', target_ip_val])
+            cmd.append(ip_str)
             try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except: pass
         elif sys_plat == 'darwin':
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    if target_ip_val and target_ip_val != '127.0.0.1':
+                        s.bind((target_ip_val, 0))
                     s.settimeout(0.1)
                     s.sendto(b'\x00', (ip_str, 5353))
             except: pass
-            cmd = ['ping', '-c', '1', '-W', '250', ip_str]
+            cmd = ['ping', '-c', '1', '-W', '250']
+            if target_iface:
+                cmd.extend(['-b', target_iface])
+            cmd.append(ip_str)
             try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except: pass
         else:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    if target_ip_val and target_ip_val != '127.0.0.1':
+                        s.bind((target_ip_val, 0))
                     s.settimeout(0.1)
                     s.sendto(b'\x00', (ip_str, 5353))
             except: pass
-            cmd = ['ping', '-c', '1', '-W', '1', ip_str]
+            cmd = ['ping', '-c', '1', '-W', '1']
+            if target_iface:
+                cmd.extend(['-I', target_iface])
+            cmd.append(ip_str)
             try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except: pass
 
@@ -3032,10 +3079,8 @@ def scan_network_stream():
             # KEEP ALIVE: Prevent browser SSE disconnects during heavy backend blocks
             yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
-            try:
-                scapy_iface = conf.route.route(target_ip_val)[0]
-            except:
-                scapy_iface = target_iface
+            # --- FIX: Retrieve the strict physical Scapy interface to bypass VPNs ---
+            scapy_iface = get_scapy_iface(target_ip_val, target_mac_val, target_iface)
 
             # --- 2. PERFORM SCAPY SCAN ---
             ans = []
@@ -3083,35 +3128,49 @@ def scan_network_stream():
                 return devices
 
             def force_discovery(ip_str):
-                """Hybrid Layer-2 / Layer-3 Sweep to bypass strict Windows Firewalls"""
+                """Hybrid Layer-2 / Layer-3 Sweep bound tightly to the physical adapter"""
                 sys_plat = platform.system().lower()
                 if sys_plat == 'windows':
                     try:
                         import ctypes, socket
                         dest_ip = int.from_bytes(socket.inet_aton(ip_str), 'little')
+                        src_ip = int.from_bytes(socket.inet_aton(target_ip_val), 'little') if target_ip_val and target_ip_val != '127.0.0.1' else 0
                         mac_addr = (ctypes.c_ubyte * 6)()
                         mac_len = ctypes.c_ulong(6)
-                        ctypes.windll.iphlpapi.SendARP(dest_ip, 0, ctypes.byref(mac_addr), ctypes.byref(mac_len))
+                        ctypes.windll.iphlpapi.SendARP(dest_ip, src_ip, ctypes.byref(mac_addr), ctypes.byref(mac_len))
                     except: pass
-                    cmd = ['ping', '-n', '1', '-w', '250', ip_str]
+                    cmd = ['ping', '-n', '1', '-w', '250']
+                    if target_ip_val and target_ip_val != '127.0.0.1':
+                        cmd.extend(['-S', target_ip_val])
+                    cmd.append(ip_str)
                     try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except: pass
                 elif sys_plat == 'darwin':
                     try:
                         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                            if target_ip_val and target_ip_val != '127.0.0.1':
+                                s.bind((target_ip_val, 0))
                             s.settimeout(0.1)
                             s.sendto(b'\x00', (ip_str, 5353))
                     except: pass
-                    cmd = ['ping', '-c', '1', '-W', '250', ip_str]
+                    cmd = ['ping', '-c', '1', '-W', '250']
+                    if target_iface:
+                        cmd.extend(['-b', target_iface])
+                    cmd.append(ip_str)
                     try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except: pass
                 else:
                     try:
                         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                            if target_ip_val and target_ip_val != '127.0.0.1':
+                                s.bind((target_ip_val, 0))
                             s.settimeout(0.1)
                             s.sendto(b'\x00', (ip_str, 5353))
                     except: pass
-                    cmd = ['ping', '-c', '1', '-W', '1', ip_str]
+                    cmd = ['ping', '-c', '1', '-W', '1']
+                    if target_iface:
+                        cmd.extend(['-I', target_iface])
+                    cmd.append(ip_str)
                     try: subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except: pass
 

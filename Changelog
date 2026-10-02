@@ -1,4 +1,8 @@
 # Changelog
+## [1.0.21] - webport file
+** Main App Script 1.0.16 -
+* More fixes for network scan on windows when VPN etc running.
+
 ## [1.0.20] - webport file
 ** Setup Script 1.0.6 -
 * pip fix for macos
